@@ -50,7 +50,7 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
     for epoch in tqdm(range(n_epochs), leave=False):
         optimizer.zero_grad()
 
-        accum_grad, curr_grad_norms = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
+        accum_grad, curr_grad_norms, curr_ps_grads = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
         if epoch == 0:
             # save per-sample gradient norms from first epoch
             grad_norms.append(curr_grad_norms)
@@ -63,6 +63,28 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
                 if noise_multiplier > 0 and max_grad_norm is not None:
                     # add noise
                     curr_grad = curr_grad + noise_multiplier * max_grad_norm * torch.randn_like(curr_grad)
+
+                    '''
+                    Filtering happens here:
+                    g_i = non-private per sample gradient
+                    g_B_private = privatized batch gradient = curr_grad
+                    For each i in m:
+                        scores.appends(<g_i, g_B_private>)
+                    i_exclude = argmax(scores)
+                    (accum_grad[name] - g_i_exclude)
+                    curr_grad = accum_grad[name] + noise_multiplier * torch.randn_like(curr_grad)
+                    '''
+                    # if name == 'linear.weight':
+                    #     curr_ps_grads = curr_ps_grads.flatten(start_dim=1)
+                    #     curr_grad_flat = curr_grad.flatten()
+                    #     curr_grad_flat = curr_grad_flat.reshape(1, -1)
+                    #     scores = torch.matmul(curr_grad_flat, curr_ps_grads.T)
+                    #     idx = torch.argmax(scores)
+                    #     selected_grad = curr_ps_grads[idx].reshape(curr_grad.shape)
+                    #     clip_scale = 1 / max(1, curr_grad_norms['before'][idx] / max_grad_norm)
+                    #     filtered_accum_grad = accum_grad[name] - selected_grad * clip_scale
+
+                    #     curr_grad = filtered_accum_grad + noise_multiplier * max_grad_norm * torch.randn_like(filtered_accum_grad)                  
                 
                 # update gradient of parameter
                 param.grad = curr_grad
