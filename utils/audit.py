@@ -72,6 +72,8 @@ def compute_eps_lower_from_mia(scores, labels, alpha, delta, method='all', n_pro
         fn = np.sum(scores[labels == 1] < t)
         tn = np.sum(scores[labels == 0] < t)
 
+        # print('tp:', tp, 'fp:', fp, 'fn:', fn, 'tn:', tn)
+
         results = AttackResults(FN=fn, FP=fp, TN=tn, TP=tp)
         resultss.append((t, results))
     

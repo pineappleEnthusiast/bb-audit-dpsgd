@@ -9,6 +9,7 @@ import argparse
 from opacus.accountants.utils import get_noise_multiplier
 import copy
 from torch.utils.data import TensorDataset, DataLoader
+import torch.nn.functional as F
 import dill
 
 from models import Models
@@ -43,7 +44,7 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
     # set noise level
     if epsilon is not None:
         # no subsampling, i.e., sample rate = 1
-        noise_multiplier = get_noise_multiplier(target_epsilon=epsilon, target_delta=delta, sample_rate=1,
+        noise_multiplier = get_noise_multiplier(target_epsilon=epsilon, target_delta=delta, sample_rate=1.0,
             epochs=n_epochs, accountant='prv')
     else:
         noise_multiplier = 0
@@ -55,6 +56,7 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
         optimizer.zero_grad()
 
         accum_grad, curr_grad_norms, curr_ps_grads = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
+        
         if epoch == 0:
             # save per-sample gradient norms from first epoch
             grad_norms.append(curr_grad_norms)
@@ -62,9 +64,10 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
         # accumulate per-sample gradients and add noise
         with torch.no_grad():
             for name, param in model.named_parameters():
-                curr_grad = accum_grad[name]
+                curr_grad = accum_grad[name] / len(X)
 
                 if noise_multiplier > 0 and max_grad_norm is not None:
+                    # print('Noise Multiplier:', noise_multiplier)
                     # add noise
                     curr_grad = curr_grad + noise_multiplier * max_grad_norm * torch.randn_like(curr_grad)
 
@@ -97,22 +100,19 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
 
                         # idx = torch.argmax(scores)
                             sorted_indices = torch.argsort(scores, descending=True)
-                            print(scores[sorted_indices[0]], scores[sorted_indices[1]], scores[sorted_indices[2]])
-                            rank = (sorted_indices == len(scores) - 1).nonzero(as_tuple=True)[0].item()
-                            print(f'Canary score was rank {rank} in descending order, epoch #', epoch, scores[sorted_indices[rank]])
 
-                        # idx = sorted_indices[0]
-                        # if idx == len(scores) - 1:
-                        #     print('Threw out canary on epoch #', epoch)
-                        # else:
-                        #     rank = (sorted_indices == len(scores) - 1).nonzero(as_tuple=True)[0].item()
-                        #     print(f'Canary score was rank {rank} in descending order, epoch #', epoch)
-                        # selected_grad = curr_ps_grads[idx].reshape(curr_grad.shape)
-                        # clip_scale = 1 / max(1, curr_grad_norms['before'][idx] / max_grad_norm)
-                        # filtered_accum_grad = accum_grad[name] - selected_grad * clip_scale
+                            idx = sorted_indices[0]
+                            if idx == len(scores) - 1:
+                                print('Threw out canary on epoch #', epoch)
+                            else:
+                                rank = (sorted_indices == len(scores) - 1).nonzero(as_tuple=True)[0].item()
+                                print(f'Canary score was rank {rank} in descending order, epoch #', epoch)
+                            selected_grad = curr_ps_grads[idx].reshape(curr_grad.shape)
+                            clip_scale = 1 / max(1, curr_grad_norms['before'][idx] / max_grad_norm)
+                            filtered_accum_grad = (accum_grad[name] - selected_grad * clip_scale) / (len(X) - 1)
 
-                        # curr_grad = filtered_accum_grad + noise_multiplier * max_grad_norm * torch.randn_like(filtered_accum_grad)                  
-                
+                            curr_grad = filtered_accum_grad + noise_multiplier * max_grad_norm * torch.randn_like(filtered_accum_grad)                  
+                    
                 # update gradient of parameter
                 param.grad = curr_grad
         
@@ -354,7 +354,7 @@ if __name__ == '__main__':
     if not args.fit_world_only:
         if args.adversarial_audit:
 
-            adversarial_iter, adversarial_lr, adversaral_alpha, N = 100, 0.01, 0.2, args.n_reps // 2
+            adversarial_iter, adversarial_lr, adversarial_alpha, N = 10, 0.01, 0.2, args.n_reps // 2
             models = {'in': [], 'out': []}
             for i in range(N):
                 models['in'].append(torch.load(f'{out_folder}/models/in_{i}.pth'))
@@ -370,34 +370,33 @@ if __name__ == '__main__':
             criterion = nn.CrossEntropyLoss()
 
             for _ in range(adversarial_iter):
-                losses_in = []
-                avg_loss_out = 0
-
-                for in_model, out_model in zip(models['in'], models['out']):
-                    losses_in.append(criterion(in_model(adversarial_sample.unsqueeze(0)), target_y))
-                    avg_loss_out += criterion(out_model(adversarial_sample.unsqueeze(0)), target_y)
-
-                avg_loss_out /= N
-
-                adaptive_loss = 0
-                for loss in losses_in:
-                    adaptive_loss += nn.ReLU()(loss - avg_loss_out + adversaral_alpha)
-                adaptive_loss = adaptive_loss / N
+                avg_loss_out = torch.stack([criterion(out_model(adversarial_sample.unsqueeze(0)), target_y) for out_model in models['out']]).mean()
+                adaptive_loss = torch.stack([F.relu(
+                    criterion(in_model(adversarial_sample.unsqueeze(0)), target_y) - avg_loss_out + adversarial_alpha
+                            ) for in_model in models['in']]).mean()
 
                 optimizer.zero_grad()
                 adaptive_loss.backward()
                 optimizer.step()
 
+                print(adaptive_loss)
+
                 adversarial_sample.data = torch.clamp(adversarial_sample.data, 0, 1)
             
             adversarial_sample = adversarial_sample.detach()
-            
+            adversarial_sample._requires_grad = False
+
+            # adversarial_sample = torch.randn_like(adversarial_sample)
+            # np.save('adversary.npy', adversarial_sample.numpy())
+            # adversarial_sample = torch.tensor(np.load('adversary.npy'), dtype=torch.float32)
+
             with torch.no_grad():
                 for in_model, out_model in zip(models['in'], models['out']):
-                    losses['in'].append(-criterion(in_model(adversarial_sample.unsqueeze(0)), target_y).cpu().item())
-                    losses['out'].append(-criterion(out_model(adversarial_sample.unsqueeze(0)), target_y).cpu().item())
+                    losses['in'].append(-criterion(in_model(adversarial_sample), target_y).cpu().item())
+                    losses['out'].append(-criterion(out_model(adversarial_sample), target_y).cpu().item())
 
-        print(losses)
+        print('In Losses:', losses['in'])
+        print('Out Losses:', losses['out'])
 
         # calculate empirical epsilon using GDP
         mia_scores = np.concatenate([losses['in'], losses['out']])

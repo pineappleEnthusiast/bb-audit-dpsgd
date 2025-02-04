@@ -40,7 +40,7 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     ps_grad_scales = 1 / torch.maximum(
         torch.ones_like(ps_grad_norms),
-        ps_grad_norms / max_grad_norm
+        ps_grad_norms / max_grad_norm + 1e-6
     )
 
     ps_grads_clipped = {
@@ -105,7 +105,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
             with torch.no_grad():
                 for name, curr_grad in accum_grad_block.items():
                     accum_grad[name] = accum_grad[name] + curr_grad
-    
+
     ps_grad_norms_data['before'] = np.concatenate(ps_grad_norms_data['before'])
     ps_grad_norms_data['after'] = np.concatenate(ps_grad_norms_data['after'])
 
