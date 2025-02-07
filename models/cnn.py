@@ -7,6 +7,7 @@ import torch.nn.functional as F
 class CNN(nn.Module):
     def __init__(self, in_shape=None, out_dim=10, dropout_rate=0):
         super().__init__()
+        self.embeddings = None
         if in_shape[1] == 1:
             # MNIST
             self.net = SmallNetwork(out_dim=out_dim, dropout_rate=dropout_rate)
@@ -15,7 +16,9 @@ class CNN(nn.Module):
             self.net = BigNetwork(out_dim=out_dim, dropout_rate=dropout_rate)
 
     def forward(self, x):
-        return self.net(x)
+        out = self.net(x)
+        self.embeddings = self.net.embeddings
+        return out
 
 class BigNetwork(nn.Module):
     """Network used in the experiments on CIFAR-10"""
@@ -70,7 +73,7 @@ class SmallNetwork(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(512, 32)
         self.fc2 = nn.Linear(32, out_dim)
-
+        self.embeddings = None
         self.act_func = act_func
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -78,5 +81,6 @@ class SmallNetwork(nn.Module):
         x = self.act_func(F.max_pool2d(self.conv2(x), (2, 2)))
         x = x.view(-1, 512)
         x = self.act_func(self.fc1(self.dropout(x)))
+        self.embeddings = x
         x = self.fc2(x)
         return x

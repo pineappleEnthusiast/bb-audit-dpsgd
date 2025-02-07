@@ -14,7 +14,7 @@ import dill
 
 from models import Models
 from utils.data import load_data
-from utils.dpsgd import clip_and_accum_grads
+from utils.dpsgd import clip_and_accum_grads, clip_per_sample_grads
 from utils.audit import compute_eps_lower_from_mia
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
@@ -51,12 +51,16 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
     
     # train model for n_epochs
     grad_norms = []
-    prev_weight = model.linear.weight
+    # prev_weight = model.linear.weight
+
+    dropped_indices = set()
+
     for epoch in tqdm(range(n_epochs), leave=False):
         optimizer.zero_grad()
 
-        accum_grad, curr_grad_norms, curr_ps_grads = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
-        
+        accum_grad, curr_grad_norms = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
+        # curr_ps_grads, _ = clip_per_sample_grads(curr_ps_grads, max_grad_norm)
+
         if epoch == 0:
             # save per-sample gradient norms from first epoch
             grad_norms.append(curr_grad_norms)
@@ -82,42 +86,37 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
                     curr_grad = accum_grad[name] + noise_multiplier * torch.randn_like(curr_grad)
                     '''
                     if use_defense:
-                        curr_ps_grads[name] = curr_ps_grads[name].flatten(start_dim=1)
-                        curr_grad_flat = curr_grad.flatten()
-                        curr_grad_flat = curr_grad_flat.reshape(1, -1)
+                        pass
+                        # print(embeddings.shape)
+                        # curr_ps_grads[name] = curr_ps_grads[name].flatten(start_dim=1)
 
-                        # Score Option 1: inner product of sample gradient and privatized gradient
-                        # scores = torch.matmul(curr_grad_flat, curr_ps_grads[name].T).flatten()[y == 9]
+                        # # Score Option 2: inner product of sample gradient and difference in weights
+                        # if name == 'linear.weight':
+                        #     neg_update = (prev_weight.flatten() - model.linear.weight.flatten()).reshape(1, -1)
+                        #     scores = torch.matmul(neg_update, curr_ps_grads[name].T).flatten()[y == 9]
 
-                        # Score Option 2: inner product of sample gradient and difference in weights
-                        if name == 'linear.weight':
-                            neg_update = (prev_weight.flatten() - model.linear.weight.flatten()).reshape(1, -1)
-                            scores = torch.matmul(neg_update, curr_ps_grads[name].T).flatten()[y == 9]
- 
+                        # # idx = torch.argmax(scores)
+                        #     sorted_indices = torch.argsort(scores, descending=True)
 
-                        # Score Option 3: inner product of PCA1 of all sample gradients and privatized gradient
+                        #     idx = sorted_indices[0]
+                        #     if idx == len(scores) - 1:
+                        #         print('Threw out canary on epoch #', epoch)
+                        #     else:
+                        #         rank = (sorted_indices == len(scores) - 1).nonzero(as_tuple=True)[0].item()
+                        #         print(f'Canary score was rank {rank} in descending order, epoch #', epoch)
 
-
-                        # idx = torch.argmax(scores)
-                            sorted_indices = torch.argsort(scores, descending=True)
-
-                            idx = sorted_indices[0]
-                            if idx == len(scores) - 1:
-                                print('Threw out canary on epoch #', epoch)
-                            else:
-                                rank = (sorted_indices == len(scores) - 1).nonzero(as_tuple=True)[0].item()
-                                print(f'Canary score was rank {rank} in descending order, epoch #', epoch)
-                            selected_grad = curr_ps_grads[idx].reshape(curr_grad.shape)
-                            clip_scale = 1 / max(1, curr_grad_norms['before'][idx] / max_grad_norm)
-                            filtered_accum_grad = (accum_grad[name] - selected_grad * clip_scale) / (len(X) - 1)
-
-                            curr_grad = filtered_accum_grad + noise_multiplier * max_grad_norm * torch.randn_like(filtered_accum_grad)                  
-                    
+                        #     dropped_indices.add(idx)
+                        #     filtered_accum_grad = accum_grad[name]
+                        #     for idx in dropped_indices:
+                        #         filtered_accum_grad -= curr_ps_grads[name][idx].reshape(filtered_accum_grad.shape)
+                        #     filtered_accum_grad /= (len(X) - len(dropped_indices))
+                        #     curr_grad = filtered_accum_grad + noise_multiplier * max_grad_norm * torch.randn_like(filtered_accum_grad)
+                                                    
                 # update gradient of parameter
                 param.grad = curr_grad
         
         # update parameter
-        prev_weight = model.linear.weight.clone()
+        # prev_weight = model.linear.weight.clone()
         optimizer.step()
     
     return model, grad_norms
@@ -318,7 +317,7 @@ if __name__ == '__main__':
             # train model
             model, grad_norms = train_model(args.model_name, curr_X, curr_y, args.epsilon, args.delta,
                 args.max_grad_norm, args.n_epochs, args.lr, device=device, init_model=init_model,
-                block_size=args.block_size, out_dim=out_dim, use_defense=args.defense)
+                block_size=args.block_size, out_dim=out_dim, use_defense=(args.defense and world == 'in'))
             
             # keep track of per-sample gradient norms
             all_grad_norms[world].append(grad_norms)
@@ -355,6 +354,8 @@ if __name__ == '__main__':
         if args.adversarial_audit:
 
             adversarial_iter, adversarial_lr, adversarial_alpha, N = 10, 0.01, 0.2, args.n_reps // 2
+            halfway = N // 2
+
             models = {'in': [], 'out': []}
             for i in range(N):
                 models['in'].append(torch.load(f'{out_folder}/models/in_{i}.pth'))
@@ -370,10 +371,10 @@ if __name__ == '__main__':
             criterion = nn.CrossEntropyLoss()
 
             for _ in range(adversarial_iter):
-                avg_loss_out = torch.stack([criterion(out_model(adversarial_sample.unsqueeze(0)), target_y) for out_model in models['out']]).mean()
+                avg_loss_out = torch.stack([criterion(out_model(adversarial_sample), target_y) for out_model in models['out']][:halfway]).mean()
                 adaptive_loss = torch.stack([F.relu(
-                    criterion(in_model(adversarial_sample.unsqueeze(0)), target_y) - avg_loss_out + adversarial_alpha
-                            ) for in_model in models['in']]).mean()
+                    criterion(in_model(adversarial_sample), target_y) - avg_loss_out + adversarial_alpha
+                            ) for in_model in models['in'][:halfway]]).mean()
 
                 optimizer.zero_grad()
                 adaptive_loss.backward()
@@ -391,7 +392,7 @@ if __name__ == '__main__':
             # adversarial_sample = torch.tensor(np.load('adversary.npy'), dtype=torch.float32)
 
             with torch.no_grad():
-                for in_model, out_model in zip(models['in'], models['out']):
+                for in_model, out_model in zip(models['in'][halfway:], models['out'][halfway:]):
                     losses['in'].append(-criterion(in_model(adversarial_sample), target_y).cpu().item())
                     losses['out'].append(-criterion(out_model(adversarial_sample), target_y).cpu().item())
 

@@ -12,7 +12,7 @@ def get_per_sample_grads(model, X, y, criterion):
     params = {k: v.detach() for k, v in model.named_parameters()}
     # map of buffer names : buffer balues
     buffers = {k: v.detach() for k, v in model.named_buffers()}
-
+    
     def compute_loss(params, buffers, sample, target):
         batch = sample.unsqueeze(0)
         targets = target.unsqueeze(0)
@@ -74,8 +74,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm)
     # accumulate per-sample gradients
     with torch.no_grad():
         accum_grads = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-    
-    return accum_grads, ps_grad_norms_data, ps_grads
+
+    return accum_grads, ps_grad_norms_data
 
 def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024):
     """Clip and accumulate gradients in blocks of samples to conserve gpu space"""
@@ -84,19 +84,15 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
 
     accum_grad = None
     ps_grad_norms_data = { 'before': [], 'after': [] }
-    ps_grads = []
-    ps_grads = {name : [] for name, _ in model.named_parameters()}
 
     for idx_block in idx_blocks:
         # get a single block of samples
         curr_X, curr_y = X[idx_block], y[idx_block]
 
         # accum grads for this single block
-        accum_grad_block, curr_ps_grad_norms_data, curr_ps_grads = clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm)
+        accum_grad_block, curr_ps_grad_norms_data = clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm)
         ps_grad_norms_data['before'].append(curr_ps_grad_norms_data['before'])
         ps_grad_norms_data['after'].append(curr_ps_grad_norms_data['after'])
-        for name, grads in curr_ps_grads.items():
-            ps_grads[name].append(grads)
 
         # accum grads for all blocks
         if accum_grad is None:
@@ -109,7 +105,4 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
     ps_grad_norms_data['before'] = np.concatenate(ps_grad_norms_data['before'])
     ps_grad_norms_data['after'] = np.concatenate(ps_grad_norms_data['after'])
 
-    for name, grads in ps_grads.items():
-        ps_grads[name] = torch.cat(grads, dim=0)
-    
-    return accum_grad, ps_grad_norms_data, ps_grads
+    return accum_grad, ps_grad_norms_data
