@@ -40,7 +40,7 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     ps_grad_scales = 1 / torch.maximum(
         torch.ones_like(ps_grad_norms),
-        ps_grad_norms / max_grad_norm + 1e-6
+        ps_grad_norms / max_grad_norm
     )
 
     ps_grads_clipped = {

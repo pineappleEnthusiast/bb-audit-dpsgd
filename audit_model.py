@@ -68,7 +68,7 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
         # accumulate per-sample gradients and add noise
         with torch.no_grad():
             for name, param in model.named_parameters():
-                curr_grad = accum_grad[name] / len(X)
+                curr_grad = accum_grad[name]
 
                 if noise_multiplier > 0 and max_grad_norm is not None:
                     # print('Noise Multiplier:', noise_multiplier)
@@ -202,21 +202,12 @@ def resume_checkpoint(out_folder, save_grad_norms, fit_world_only, resume):
             if save_grad_norms:
                 all_grad_norms['in'] = np.load(f'{out_folder}/all_grad_norms_in.npy').tolist()
                 all_grad_norms['out'] = np.load(f'{out_folder}/all_grad_norms_out.npy').tolist()
-            
-            N = 25 # len(outputs['in'])
-
-            for i in range(N):
-                models['in'].append(torch.load(f'{out_folder}/models/in_{i}.pth'))
-                models['in'][-1].eval()
-                models['out'].append(torch.load(f'{out_folder}/models/out_{i}.pth'))
-                models['out'][-1].eval()
-
     else:
         # create folder and dump initial values in
         os.makedirs(out_folder, exist_ok=True)
         save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only, args.save_grad_norms)
     
-    return outputs, losses, all_grad_norms, train_set_accs, test_set_accs, models
+    return outputs, losses, all_grad_norms, train_set_accs, test_set_accs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -302,7 +293,7 @@ if __name__ == '__main__':
     # resume from checkpoint
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
     models = {world: [] for world in worlds}
-    outputs, losses, all_grad_norms, train_set_accs, test_set_accs, models = resume_checkpoint(out_folder, args.save_grad_norms, args.fit_world_only, args.resume)
+    outputs, losses, all_grad_norms, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.save_grad_norms, args.fit_world_only, args.resume)
 
     for world in worlds:
         # set dataset according to "world"
@@ -310,8 +301,6 @@ if __name__ == '__main__':
 
         # check how many reps initially completed
         reps_completed = len(models[world]) 
-
-        print(reps_completed)
 
         for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
             # train model
