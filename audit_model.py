@@ -7,16 +7,22 @@ import os
 import numpy as np
 import argparse
 from opacus.accountants.utils import get_noise_multiplier
+from opacus import GradSampleModule
 import copy
 from torch.utils.data import TensorDataset, DataLoader
 import torch.nn.functional as F
 import dill
+
+
+import gc
 
 from models import Models
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads, clip_per_sample_grads
 from utils.audit import compute_eps_lower_from_mia
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
+
+from defense_utils import whiten, PCA
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
@@ -30,7 +36,8 @@ def xavier_init_model(model):
 
     model.apply(init_weights)
 
-def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False):
+
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, cutoff=-1):
     """Train model w/ DP-SGD (no sub-sampling + gradients are summed instead of averaged)"""
     # initialize model, loss function, and optimizer
     if init_model is None:
@@ -38,6 +45,9 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
         xavier_init_model(model)
     else:
         model = copy.deepcopy(init_model)
+
+    model = GradSampleModule(model)
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
     
@@ -45,80 +55,116 @@ def train_model(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs, lr, d
     if epsilon is not None:
         # no subsampling, i.e., sample rate = 1
         noise_multiplier = get_noise_multiplier(target_epsilon=epsilon, target_delta=delta, sample_rate=1.0,
-            epochs=n_epochs, accountant='prv')
+            epochs=n_epochs, accountant='rdp')
     else:
         noise_multiplier = 0
     
     # train model for n_epochs
     grad_norms = []
-    # prev_weight = model.linear.weight
 
-    dropped_indices = set()
+    drop_mask = torch.zeros(len(X)).to(device)
+    drop_N = int(0.1 * len(X) / (n_epochs * 10))
 
+    canary_dropped = False
+    
     for epoch in tqdm(range(n_epochs), leave=False):
         optimizer.zero_grad()
 
-        accum_grad, curr_grad_norms = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
+        curr_embeddings, curr_ps_grads = clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=block_size)
+        # np.save(f'spectral_sigs/{epoch}_embeddings.npy', curr_embeddings.cpu().numpy())
         # curr_ps_grads, _ = clip_per_sample_grads(curr_ps_grads, max_grad_norm)
 
-        if epoch == 0:
-            # save per-sample gradient norms from first epoch
-            grad_norms.append(curr_grad_norms)
+        # if epoch == 0:
+        #     # save per-sample gradient norms from first epoch
+        #     grad_norms.append(curr_grad_norms)
 
         # accumulate per-sample gradients and add noise
+
         with torch.no_grad():
+            if use_defense:
+
+                if epoch == cutoff:
+                    # throw out random
+                        # get indices where drop_mask == 0
+                        # choose random subset
+                        # set to 1
+
+                    drop_mask[-1] = 1
+            
+                
+                for k in range(10):
+                    k_embeddings = curr_embeddings[(y == k) & (drop_mask == 0)]
+                    k_embeddings = k_embeddings - k_embeddings.mean(dim=0, keepdim=True)
+                    
+                    W = whiten(k_embeddings)
+                    k_embeddings = k_embeddings @ W
+
+
+                    _, principal_components = PCA(k_embeddings)
+                    pc1 = principal_components[:, 0].unsqueeze(0)
+
+                    scores = (k_embeddings @ pc1.T).flatten() ** 2
+
+                    score_idxs = torch.argsort(scores, descending=True)
+
+                    # if k == 9:
+                    #     break
+                        # print('Max Score', scores[0])
+                        # canary_embedding = (curr_embeddings[-1] - k_embeddings.mean(dim=0, keepdim=True)) @ W
+                        # if drop_mask[-1] == 0:
+                        #     print('Epoch:', epoch, 'Canary Score Index:', torch.where(score_idxs == (len(k_embeddings) - 1))[0])
+                        #     print('Will we drop canary?', len(k_embeddings) - 1 in score_idxs[:drop_N])
+                        # print('Canary Score', (canary_embedding @ pc1.T).flatten() ** 2)
+
+                    drop_mask[torch.where((y == k) & (drop_mask == 0))[0][score_idxs[:drop_N]]] = 1
+                
+                
+                # # World 1: spectral signature hasn't been seen yet => drop no one
+                # if drop_mask[-1] == 0:
+                #     drop_mask[drop_mask == 1] = 0
+
+                # World 3: already dropped the canary => drop no one else
+                if canary_dropped:
+                    drop_mask[drop_mask == 1] = 0
+
+                # World 2: first time we see the spectral signature => drop outliers
+                if not canary_dropped and drop_mask[-1] == 1:
+                    canary_dropped = True
+                    drop_mask[drop_mask == 1] = 2
+
+                
+            # accumulate per-sample gradients and add noise
             for name, param in model.named_parameters():
-                curr_grad = accum_grad[name]
+                # if use_defense:
+                #     curr_ps_grads[name][drop_mask == 1] *= -(epoch) # torch.randn_like(curr_ps_grads[name][drop_mask == 1])
+                #     row_norms = torch.norm(curr_ps_grads[name][drop_mask == 1], dim=1, keepdim=True)
+                #     curr_ps_grads[name][drop_mask == 1] /= torch.maximum(torch.ones_like(row_norms), row_norms / max_grad_norm)
+                #     drop_mask[drop_mask == 1] = 2
+                retained_grads = curr_ps_grads[name][drop_mask == 0]
+                curr_grad = retained_grads.sum(dim=0)
 
                 if noise_multiplier > 0 and max_grad_norm is not None:
-                    # print('Noise Multiplier:', noise_multiplier)
-                    # add noise
-                    curr_grad = curr_grad + noise_multiplier * max_grad_norm * torch.randn_like(curr_grad)
+                        # add noise
+                        curr_grad = curr_grad + noise_multiplier * max_grad_norm * torch.randn_like(curr_grad)
 
-                    '''
-                    Filtering happens here:
-                    g_i = non-private per sample gradient
-                    g_B_private = privatized batch gradient = curr_grad
-                    For each i in m:
-                        scores.appends(<g_i, g_B_private>)
-                    i_exclude = argmax(scores)
-                    (accum_grad[name] - g_i_exclude)
-                    curr_grad = accum_grad[name] + noise_multiplier * torch.randn_like(curr_grad)
-                    '''
-                    if use_defense:
-                        pass
-                        # print(embeddings.shape)
-                        # curr_ps_grads[name] = curr_ps_grads[name].flatten(start_dim=1)
-
-                        # # Score Option 2: inner product of sample gradient and difference in weights
-                        # if name == 'linear.weight':
-                        #     neg_update = (prev_weight.flatten() - model.linear.weight.flatten()).reshape(1, -1)
-                        #     scores = torch.matmul(neg_update, curr_ps_grads[name].T).flatten()[y == 9]
-
-                        # # idx = torch.argmax(scores)
-                        #     sorted_indices = torch.argsort(scores, descending=True)
-
-                        #     idx = sorted_indices[0]
-                        #     if idx == len(scores) - 1:
-                        #         print('Threw out canary on epoch #', epoch)
-                        #     else:
-                        #         rank = (sorted_indices == len(scores) - 1).nonzero(as_tuple=True)[0].item()
-                        #         print(f'Canary score was rank {rank} in descending order, epoch #', epoch)
-
-                        #     dropped_indices.add(idx)
-                        #     filtered_accum_grad = accum_grad[name]
-                        #     for idx in dropped_indices:
-                        #         filtered_accum_grad -= curr_ps_grads[name][idx].reshape(filtered_accum_grad.shape)
-                        #     filtered_accum_grad /= (len(X) - len(dropped_indices))
-                        #     curr_grad = filtered_accum_grad + noise_multiplier * max_grad_norm * torch.randn_like(filtered_accum_grad)
-                                                    
                 # update gradient of parameter
                 param.grad = curr_grad
         
+        # del curr_ps_grads
+        # del curr_embeddings
+        # torch.cuda.empty_cache()
+        # gc.collect()
+        
         # update parameter
-        # prev_weight = model.linear.weight.clone()
         optimizer.step()
-    
+
+        # model.eval()
+        # with torch.no_grad():
+        #     output = model(target_X)
+        #     print('Loss on Canary at Epoch', epoch, ': ', -nn.CrossEntropyLoss()(output, target_y).item())
+        #     # print('Predicted:', torch.argmax(outputs))
+        # model.train()
+
     return model, grad_norms
 
 def test_model(model, X, y, batch_size=128):
@@ -175,7 +221,6 @@ def resume_checkpoint(out_folder, save_grad_norms, fit_world_only, resume):
     all_grad_norms = { 'out': [], 'in': [] }
     train_set_accs = []
     test_set_accs = []
-    models = {'in': [], 'out': []}
 
     if os.path.exists(out_folder) and resume:
         # if folder exists and resume is set to true load previous values
@@ -233,7 +278,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
     parser.add_argument('--adversarial_audit', action='store_true', help='generate adversarial sample for audit')
+    parser.add_argument('--cutoff', type=int, default=0, help='drop canary at this epoch')
     args = parser.parse_args()
+
+    print(f'Only running defense on epoch that canary gets dropped')
 
     # reproducibility
     np.random.seed(args.seed)
@@ -283,8 +331,12 @@ if __name__ == '__main__':
     # define D = D- U {(x_T, y_T)}
     X_in, y_in = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
 
+    # X_in, y_in = X_in[len(X_in) // 2:], y_in[len(y_in) // 2:]
+
     # handle case where n_df = 1
     X_out, y_out = X_out[:args.n_df - 1], y_out[:args.n_df - 1]
+
+    # X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
 
     # load test dataset
     X_test, y_test, _ = load_data(args.data_name, None, split='test', device=device)
@@ -295,18 +347,19 @@ if __name__ == '__main__':
     models = {world: [] for world in worlds}
     outputs, losses, all_grad_norms, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.save_grad_norms, args.fit_world_only, args.resume)
 
+
     for world in worlds:
         # set dataset according to "world"
         curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
 
         # check how many reps initially completed
-        reps_completed = len(models[world]) 
+        reps_completed = len(losses[world])
 
         for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
             # train model
-            model, grad_norms = train_model(args.model_name, curr_X, curr_y, args.epsilon, args.delta,
+            model, grad_norms = train_model(args.model_name, curr_X, curr_y, target_X, target_y, args.epsilon, args.delta,
                 args.max_grad_norm, args.n_epochs, args.lr, device=device, init_model=init_model,
-                block_size=args.block_size, out_dim=out_dim, use_defense=(args.defense and world == 'in'))
+                block_size=args.block_size, out_dim=out_dim, use_defense=(args.defense and world == 'in'), cutoff=args.cutoff)
             
             # keep track of per-sample gradient norms
             all_grad_norms[world].append(grad_norms)
@@ -331,7 +384,7 @@ if __name__ == '__main__':
                 test_set_accs.append(test_model(model, X_test, y_test))
             
             # free CUDA memory
-            torch.save(model, f"{out_folder}/models/{world}_{rep}.pth")
+            # torch.save(model, f"{out_folder}/models/{world}_{rep}.pth")
             del model
             torch.cuda.empty_cache()
 
@@ -342,8 +395,8 @@ if __name__ == '__main__':
     if not args.fit_world_only:
         if args.adversarial_audit:
 
-            adversarial_iter, adversarial_lr, adversarial_alpha, N = 10, 0.01, 0.2, args.n_reps // 2
-            halfway = N // 2
+            adversarial_iter, adversarial_lr, adversarial_alpha, N = 0, 0.001, 0.2, args.n_reps // 2
+            halfway = N // 10
 
             models = {'in': [], 'out': []}
             for i in range(N):
@@ -355,7 +408,8 @@ if __name__ == '__main__':
             # seed adversarial sample with original canary
             adversarial_sample = target_X.clone().detach().requires_grad_(True)
             # optimizer
-            optimizer = optim.Adam([adversarial_sample], lr=adversarial_lr)
+            # optimizer = optim.Adam([adversarial_sample], lr=adversarial_lr)
+            optimizer = optim.SGD([adversarial_sample], lr=adversarial_lr)
             # criterion
             criterion = nn.CrossEntropyLoss()
 
@@ -371,7 +425,7 @@ if __name__ == '__main__':
 
                 print(adaptive_loss)
 
-                adversarial_sample.data = torch.clamp(adversarial_sample.data, 0, 1)
+                # adversarial_sample.data = torch.clamp(adversarial_sample.data, 0, 1)
             
             adversarial_sample = adversarial_sample.detach()
             adversarial_sample._requires_grad = False

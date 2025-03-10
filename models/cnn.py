@@ -51,11 +51,15 @@ class BigNetwork(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
         self.classifier = nn.Sequential(
             nn.Linear(c * 4 * 4, num_hidden), act_func(), nn.Linear(num_hidden, out_dim))
+        
+        self.embeddings = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(self.dropout(x))
+        x = self.dropout(x)
+        self.embeddings = x.clone().detach()
+        x = self.classifier(x)
         return x
 
 class SmallNetwork(nn.Module):
@@ -81,6 +85,6 @@ class SmallNetwork(nn.Module):
         x = self.act_func(F.max_pool2d(self.conv2(x), (2, 2)))
         x = x.view(-1, 512)
         x = self.act_func(self.fc1(self.dropout(x)))
-        self.embeddings = x
+        self.embeddings = x.clone().detach()
         x = self.fc2(x)
         return x
