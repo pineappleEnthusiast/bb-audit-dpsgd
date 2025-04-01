@@ -100,3 +100,20 @@ def estimate_eps(scoress, alpha=0.1, delta=0, method='all', n_procs=32):
     _, eps_l = compute_eps_lower_from_mia(scoress[:, 0], scoress[:, 1], alpha=alpha, delta=delta, method=method,
         n_procs=n_procs)
     return eps_l
+
+
+def compute_eps_lower_from_mia_given_t(scores, labels, alpha, delta, t, method='all'):
+    """Compute lower bound for epsilon using privacy estimation procedure
+    Step 1: For each threshold, calculate TP, FP, TN, FN and estimate epsilon lower bound using different methods at a given significance level alpha and delta
+    Step 2: Output the maximum epsilon lower bound 
+    """
+    scores, labels = np.array(scores), np.array(labels)
+
+    tp = np.sum(scores[labels == 1] >= t)
+    fp = np.sum(scores[labels == 0] >= t)
+    fn = np.sum(scores[labels == 1] < t)
+    tn = np.sum(scores[labels == 0] < t)
+
+    results = AttackResults(FN=fn, FP=fp, TN=tn, TP=tp)
+
+    return compute_eps_lower_single(results, alpha, delta, method)
