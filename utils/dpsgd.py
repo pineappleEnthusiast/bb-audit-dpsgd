@@ -66,7 +66,7 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     ps_grad_norms_clipped = get_per_sample_grad_norms(ps_grads_clipped)
 
-    return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
+    return ps_grads_clipped, { 'before': ps_grad_norms, 'after': ps_grad_norms_clipped.cpu().numpy() }
 
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm):
@@ -109,8 +109,10 @@ def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm
     # split samples into blocks by index
     idx_blocks = torch.split(torch.from_numpy(np.arange(len(X))), block_size)
 
+    accum_grad = None
+
     all_embeddings = []
-    all_ps_grads = {name:[] for name, _ in model.named_parameters()}
+    all_ps_grads = {name: [] for name, _ in model.named_parameters()}
     all_ps_grad_norms_data_before = []
 
     for i, idx_block in enumerate(idx_blocks):
@@ -127,7 +129,7 @@ def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm
         all_embeddings.append(embeddings.cpu().numpy())
         for name, _ in model.named_parameters():
             all_ps_grads[name].append(ps_grads[name].cpu().numpy())
-        all_ps_grad_norms_data_before.append(ps_grad_norms_data['before'])
+        all_ps_grad_norms_data_before.append(ps_grad_norms_data['before'].cpu().numpy())
 
         with torch.no_grad():
             accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
@@ -149,18 +151,21 @@ def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm
         spectral_space = None
         if spectral_signature_args['search_space'] == 'embedding':
             spectral_space = all_embeddings
-        elif spectral_signature_args['scoring_fn'] == 'gradient':
+        elif spectral_signature_args['search_space'] == 'gradient':
 
-            if spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm']:
+            if spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm', 'pca', 'walign']:
                 last_layer_name = list(model._module.net.named_modules())[-1][0]
                 last_w_name = '_module.net.' + last_layer_name + '.weight'
                 last_b_name = '_module.net.' + last_layer_name + '.bias'
-                w = [t.flatten() for t in ps_grads[last_w_name]]
+                w = [t.flatten() for t in all_ps_grads[last_w_name]]
                 w = np.stack(w)
-                b = [t.flatten() for t in ps_grads[last_b_name]]
+                b = [t.flatten() for t in all_ps_grads[last_b_name]]
                 b = np.stack(b)
-                last_layer_grads = np.cat((w, b), dim=1)
+                last_layer_grads = np.concatenate((w, b), axis=1)
                 spectral_space = last_layer_grads
+
+                accum_spectral_space = torch.cat([accum_grad_block[last_w_name].flatten(), accum_grad_block[last_b_name].flatten()], dim=0).unsqueeze(0).cpu().numpy()
+
 
         cpu_y = y.cpu().numpy()[drop_mask == 0]
         all_scores = np.zeros_like(cpu_y)
@@ -177,7 +182,7 @@ def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm
                 _, principals_components = PCA_np(k_spectral_space)
                 pc1 = np.expand_dims(principals_components[:, -1], axis=0)
 
-                if spectral_signature_args['scoring_fn'] in ['whitened_norm', 'clipped_whitened_norm']:
+                if spectral_signature_args['scoring_fn'] == 'whitened_norm':
                     W = whiten_np(k_spectral_space)
                     k_spectral_space = k_spectral_space @ W
 
@@ -185,10 +190,17 @@ def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm
                     scores = (k_spectral_space @ pc1.T).flatten() ** 2
                 elif spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm']:
                     scores = np.linalg.norm(k_spectral_space, axis=1)
-
-                all_scores[curr_y == k] = scores
+                elif spectral_signature_args['scoring_fn'] == 'walign':
+                    accum_spectral_space /= np.linalg.norm(accum_spectral_space)
+                    k_spectral_space /= np.linalg.norm(k_spectral_space, axis=1, keepdims=True)
+                    scores = (k_spectral_space @ accum_spectral_space.T).flatten() ** 2
+                
+                all_scores[cpu_y == k] = scores
             
             all_scores_idx = np.flip(np.argsort(all_scores))
+
+            print(all_scores)
+            print('Canary Rank:', np.where(all_scores_idx == len(all_scores_idx) - 1))
 
             if use_defense:
                 for idx in all_scores_idx:
@@ -234,20 +246,29 @@ def local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
         with torch.no_grad():
             accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-
+        
+        # accum grads for all blocks
+        if accum_grad is None:
+            accum_grad = accum_grad_block
+        else:
+            with torch.no_grad():
+                for name, curr_grad in accum_grad_block.items():
+                    accum_grad[name] = accum_grad[name] + curr_grad
         ###################################################
 
         if find_outliers:
             with torch.no_grad():
 
                 spectral_space = None
+
                 if spectral_signature_args['search_space'] == 'embedding':
                     spectral_space = curr_embeddings
                 elif spectral_signature_args['search_space'] == 'gradient':
-                    if spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm']:
+                    if spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm', 'pca', 'walign']:
                         last_layer_name = list(model._module.net.named_modules())[-1][0]
                         last_w_name = '_module.net.' + last_layer_name + '.weight'
                         last_b_name = '_module.net.' + last_layer_name + '.bias'
+
                         w = [t.flatten() for t in ps_grads[last_w_name]]
                         w = torch.stack(w)
                         b = [t.flatten() for t in ps_grads[last_b_name]]
@@ -255,10 +276,13 @@ def local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                         last_layer_grads = torch.cat((w, b), dim=1)
                         spectral_space = last_layer_grads
 
+                        accum_spectral_space = torch.cat([accum_grad_block[last_w_name].flatten(), accum_grad_block[last_b_name].flatten()], dim=0).unsqueeze(0)
+                        accum_spectral_space = accum_spectral_space - torch.mean(accum_spectral_space)
+
                 all_scores_in_block = torch.zeros_like(curr_y, dtype=torch.float32).to(y.device)
 
                 if spectral_signature_args['scoring_fn'] == 'full_model_norm':
-                    all_scores_in_block = torch.argsort(ps_grad_norms_data['before'], descending=True)
+                    all_scores_in_block = ps_grad_norms_data['before']
                 else:
                     for k in range(0, 10):
                         k_spectral_space = spectral_space[curr_y == k]
@@ -267,38 +291,37 @@ def local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                         # Center last layer gradients
                         k_spectral_space = k_spectral_space - k_spectral_space.mean(dim=0, keepdim=True)
 
-                        _, principal_components = PCA(k_spectral_space)
-                        pc1 = principal_components[:, -1].unsqueeze(0)
-
                         # Whiten last layer gradients
                         if spectral_signature_args['scoring_fn'] in ['whitened_norm', 'clipped_whitened_norm']:
                             W = whiten(k_spectral_space)
                             k_spectral_space = k_spectral_space @ W
 
                         if spectral_signature_args['scoring_fn'] == 'pca':
+                            _, principal_components = PCA(k_spectral_space)
+                            pc1 = principal_components[:, -1].unsqueeze(0)
                             scores = (k_spectral_space @ pc1.T).flatten() ** 2
                         elif spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm']:
                             scores = torch.linalg.norm(k_spectral_space, dim=1)
+                        elif spectral_signature_args['scoring_fn'] == 'walign':
+                            # accum_spectral_space /= torch.linalg.norm(accum_spectral_space)
+                            # k_spectral_space /= torch.linalg.norm(k_spectral_space, dim=1, keepdim=True)
+                            scores = (k_spectral_space @ accum_spectral_space.T).flatten() ** 2
 
                         all_scores_in_block[curr_y == k] = scores
 
                 all_scores_in_block_idx = torch.argsort(all_scores_in_block, descending=True)
 
-                for idx in all_scores_in_block_idx[:10]:
+                if len(y) - 1 in idx_block:
+                    loc = torch.where(all_scores_in_block_idx == (len(all_scores_in_block_idx) - 1))[0]
+                    print(loc, all_scores_in_block[-1], all_scores_in_block[all_scores_in_block_idx[0]], all_scores_in_block[all_scores_in_block_idx[1]], all_scores_in_block[all_scores_in_block_idx[2]])
+
+                for idx in all_scores_in_block_idx[:30]:
                     outlier_scores.append(all_scores_in_block[idx])
                     outlier_indices.append(idx_block[idx])
                     for name, _ in model.named_parameters():
                         outlier_grads[name].append((ps_grads_clipped[name][idx]).cpu().numpy())
 
         ###################################################
-
-        # accum grads for all blocks
-        if accum_grad is None:
-            accum_grad = accum_grad_block
-        else:
-            with torch.no_grad():
-                for name, curr_grad in accum_grad_block.items():
-                    accum_grad[name] = accum_grad[name] + curr_grad
 
 
     if find_outliers:
@@ -316,7 +339,7 @@ def local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             drop_mask[drop_mask == 0][outlier_indices] = 1
 
             # Option 1: Literally subtract out the outlier gradient
-            for idx in outlier_scores_idx[:10]:
+            for idx in outlier_scores_idx[:30]:
                 for name, _ in model.named_parameters():
                     accum_grad[name] -= torch.tensor(outlier_grads[name][idx]).to(y.device)
 

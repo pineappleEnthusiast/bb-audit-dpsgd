@@ -6,7 +6,7 @@ def whiten(G_centered):
     cov_matrix = G_centered.T @ G_centered
     eigvals, eigvecs = torch.linalg.eigh(cov_matrix)
     eigvals = torch.clamp(eigvals, min=1e-6)  # Ensure stability
-    W_pca = eigvecs @ torch.diag(1.0 / torch.sqrt(eigvals)) @ eigvecs.T
+    W_pca = torch.diag(1.0 / torch.sqrt(eigvals)) # eigvecs @ torch.diag(1.0 / torch.sqrt(eigvals)) @ eigvecs.T
     return W_pca
 
 

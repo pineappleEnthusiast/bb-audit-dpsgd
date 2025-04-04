@@ -10,13 +10,10 @@ from opacus.accountants.utils import get_noise_multiplier
 from opacus import GradSampleModule
 import copy
 from torch.utils.data import TensorDataset, DataLoader
-import torch.nn.functional as F
 import dill
 
 import matplotlib.pyplot as plt
 
-
-import gc
 
 from models import Models
 from utils.data import load_data
@@ -24,9 +21,6 @@ from utils.dpsgd import local_clip_and_accum_grads, global_clip_and_accum_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
-from defense_utils import whiten, PCA
-
-import warnings
 
 
 def xavier_init_model(model):
@@ -66,7 +60,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         optimizer.zero_grad()
 
         curr_grads = None
-        if spectral_signature_args['local_search']:
+        if not spectral_signature_args or spectral_signature_args['local_search']:
             curr_grads = local_clip_and_accum_grads(model, 
                                                     X, 
                                                     y, 
@@ -100,13 +94,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
                 # update gradient of parameter
                 param.grad = curr_grad
-        
-        torch.cuda.empty_cache()
-        
+                
         # update parameter
         optimizer.step()
 
-    return model, grad_norms
+    return model
 
 def test_model(model, X, y, batch_size=128):
     """Test trained model on test set"""
@@ -186,13 +178,13 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     return outputs, losses, all_grad_norms, train_set_accs, test_set_accs
 
 def validate_args(args):
-    if args.use_defense:
+    if args.defense:
         args.find_outliers = True
 
     assert args.search_space in ['embedding', 'gradient']
-    assert args.scoring_fn in ['pca', 'norm', 'whitened_norm', 'full_model_norm']
+    assert args.scoring_fn in ['pca', 'norm', 'whitened_norm', 'full_model_norm', 'walign']
 
-    if args.scoring_fn == 'full_model_norm':
+    if args.scoring_fn in ['full_model_norm', 'walign']:
         assert args.search_space == 'gradient'
 
     if args.shortcut_audit:
@@ -328,6 +320,7 @@ if __name__ == '__main__':
     X_in, y_in = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
 
     # handle case where n_df = 1
+    # NOTE: why is this 0
     X_out, y_out = X_out[:args.n_df - 1], y_out[:args.n_df - 1]
 
     # load test dataset
@@ -343,14 +336,15 @@ if __name__ == '__main__':
     for world in worlds:
         # set dataset according to "world"
         curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
-        spectral_signature_args['drop_mask'] = torch.zeros_like(curr_y).to(device) if spectral_signature_args['local_search'] else np.zeros(len(curr_y))
+        if spectral_signature_args:
+            spectral_signature_args['drop_mask'] = torch.zeros_like(curr_y).to(device) if spectral_signature_args['local_search'] else np.zeros(len(curr_y))
 
         # check how many reps initially completed
         reps_completed = len(losses[world])
 
         for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
             # train model
-            model, grad_norms = train_model(args.model_name, 
+            model = train_model(args.model_name, 
                                             curr_X, 
                                             curr_y, 
                                             target_X, 
@@ -368,10 +362,7 @@ if __name__ == '__main__':
                                             use_defense=args.defense, 
                                             store_canary_rank=args.store_canary_rank, 
                                             save_embeddings=args.save_embeddings)
-            
-            # keep track of per-sample gradient norms
-            all_grad_norms[world].append(grad_norms)
-            
+                        
             # get loss of model on target sample
             model.eval()
             with torch.no_grad():
@@ -386,7 +377,7 @@ if __name__ == '__main__':
                 test_set_accs.append(test_model(model, X_test, y_test))
 
             if rep < 1 and world == 'in':
-                if spectral_signature_args['store_canary_rank'] is not None:
+                if spectral_signature_args and spectral_signature_args['store_canary_rank'] is not None:
                     canary_ranks = np.array(spectral_signature_args['store_canary_rank'])
                     np.save(f'{out_folder}/canary_ranks.npy', canary_ranks)
 
