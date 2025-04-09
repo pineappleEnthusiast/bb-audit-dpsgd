@@ -10,10 +10,11 @@ from opacus.accountants.utils import get_noise_multiplier
 from opacus import GradSampleModule
 import copy
 from torch.utils.data import TensorDataset, DataLoader
+import time
 import dill
 
 import matplotlib.pyplot as plt
-
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from models import Models
 from utils.data import load_data
@@ -21,6 +22,8 @@ from utils.dpsgd import local_clip_and_accum_grads, global_clip_and_accum_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
+
+# os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 
 def xavier_init_model(model):
@@ -32,7 +35,7 @@ def xavier_init_model(model):
 
     model.apply(init_weights)
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, save_embeddings=False):
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, save_embeddings=False, early_stop_audit=-1):
     """Train model w/ DP-SGD (no sub-sampling + gradients are summed instead of averaged)"""
     
     # initialize model, loss function, and optimizer
@@ -57,6 +60,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     
     # train model for n_epochs
     for epoch in tqdm(range(n_epochs), leave=False):
+        if epoch == early_stop_audit: return model
+
+        print('Epoch:', epoch)
         optimizer.zero_grad()
 
         curr_grads = None
@@ -81,7 +87,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                                                     use_defense=use_defense,
                                                     spectral_signature_args=spectral_signature_args)
         
-
+        
         # accumulate per-sample gradients and add noise
         with torch.no_grad():   
             # accumulate per-sample gradients and add noise
@@ -114,7 +120,7 @@ def test_model(model, X, y, batch_size=128):
     
     return acc / len(y)
 
-def save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, fit_world_only):
+def save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only):
     """Save checkpoint"""
     # create folder if not exists
     os.makedirs(out_folder, exist_ok=True)
@@ -130,6 +136,7 @@ def save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs,
     if fit_world_only:
         np.save(f'{out_folder}/outputs_{fit_world_only}.npy', outputs[fit_world_only])
         np.save(f'{out_folder}/losses_{fit_world_only}.npy', losses[fit_world_only])
+        np.save(f'{out_folder}/all_losses_{fit_world_only}.npy', all_losses[fit_world_only])
 
         if fit_world_only == 'out':
             np.save(f'{out_folder}/train_set_accs.npy', train_set_accs)
@@ -141,12 +148,14 @@ def save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs,
         np.save(f'{out_folder}/test_set_accs.npy', test_set_accs)
         np.save(f'{out_folder}/losses_in.npy', losses['in'])
         np.save(f'{out_folder}/losses_out.npy', losses['out'])
+        np.save(f'{out_folder}/all_losses_in.npy', all_losses['in'])
+        np.save(f'{out_folder}/all_losses_out.npy', all_losses['out'])
 
 def resume_checkpoint(out_folder, fit_world_only, resume):
     """Load checkpoint if resume is set to True and previous checkpoint exists, else create new empty checkpoint"""
     outputs = {'out': [], 'in': []}
     losses = {'out': [], 'in': []}
-    all_grad_norms = { 'out': [], 'in': [] }
+    all_losses = {'in': [], 'out': []}
     train_set_accs = []
     test_set_accs = []
 
@@ -159,6 +168,7 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
         if fit_world_only:
             outputs[fit_world_only] = np.load(f'{out_folder}/outputs_{fit_world_only}.npy').tolist()
             losses[fit_world_only] = np.load(f'{out_folder}/losses_{fit_world_only}.npy').tolist()
+            all_losses[fit_world_only] = np.load(f'{out_folder}/all_losses_{fit_world_only}.npy').tolist()
 
             if fit_world_only == 'out':
                 train_set_accs = np.load(f'{out_folder}/train_set_accs.npy').tolist()
@@ -170,12 +180,14 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
             test_set_accs = np.load(f'{out_folder}/test_set_accs.npy').tolist()
             losses['in'] = np.load(f'{out_folder}/losses_in.npy').tolist()
             losses['out'] = np.load(f'{out_folder}/losses_out.npy').tolist()
+            all_losses['in'] = np.load(f'{out_folder}/all_losses_in.npy').tolist()
+            all_losses['out'] = np.load(f'{out_folder}/all_losses_out.npy').tolist()
     else:
         # create folder and dump initial values in
         os.makedirs(out_folder, exist_ok=True)
-        save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only)
+        save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
     
-    return outputs, losses, all_grad_norms, train_set_accs, test_set_accs
+    return outputs, losses, all_losses, train_set_accs, test_set_accs
 
 def validate_args(args):
     if args.defense:
@@ -188,7 +200,7 @@ def validate_args(args):
         assert args.search_space == 'gradient'
 
     if args.shortcut_audit:
-        assert args.fit_world_only == ''
+        assert args.fit_world_only is None
     
     if args.target_type == 'badnets':
         assert args.badnets_label > -1
@@ -224,12 +236,13 @@ if __name__ == '__main__':
     # Options for Debugging
     parser.add_argument('--view_badnets', action='store_true')
     parser.add_argument('--shortcut_audit', action='store_true')
-    parser.add_argument('--save_norms', action='store_true')
     parser.add_argument('--store_canary_rank', action='store_true')
     parser.add_argument('--save_embeddings', action='store_true')
     parser.add_argument('--save_models', action='store_true')
     parser.add_argument('--holdout_audit', action='store_true')
     parser.add_argument('--backdoor_audit', action='store_true')
+    parser.add_argument('--early_stop_audit', type=int, default=-1)
+    parser.add_argument('--all_audit', action='store_true')
 
     # Options for Spectral Signature Search
     parser.add_argument('--find_outliers', action='store_true')
@@ -244,6 +257,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     validate_args(args)
+
+    print(args.out)
 
     spectral_signature_args = None
     if args.find_outliers:
@@ -286,9 +301,6 @@ if __name__ == '__main__':
         # blank sample
         target_X = torch.zeros_like(X_out[[0]])
         target_y = torch.from_numpy(np.array([9])).to(device)
-
-        X_out = X_out[:-1]
-        y_out = y_out[:-1]
     elif args.target_type == 'badnets':
         target_X = X_out[-1]
         target_y = torch.tensor(args.badnets_label).to(device)
@@ -300,9 +312,6 @@ if __name__ == '__main__':
         if args.view_badnets:
             plt.imshow(target_X.squeeze().numpy(), cmap='gray')
             plt.savefig(f'badnets_{args.badnets_label}.png')
-
-        X_out = X_out[:-1]
-        y_out = y_out[:-1]
     elif args.target_type == 'clipbkd':
         # ClipBKD sample
         target_X, target_y = craft_clipbkd(X_out, init_model, device)
@@ -317,11 +326,14 @@ if __name__ == '__main__':
         raise Exception(f'Target {args.target_type} not found')
 
     # define D = D- U {(x_T, y_T)}
-    X_in, y_in = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
+    X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
 
-    # handle case where n_df = 1
-    # NOTE: why is this 0
-    X_out, y_out = X_out[:args.n_df - 1], y_out[:args.n_df - 1]
+    X_all, y_all = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
+
+    # print(y_all[46731])
+    # plt.imshow(X_all[46731].squeeze().numpy(), cmap='gray')
+    # plt.savefig(f'largest_epsilon.png')
+    # exit()
 
     # load test dataset
     X_test, y_test, _ = load_data(args.data_name, None, split='test', device=device)
@@ -330,19 +342,20 @@ if __name__ == '__main__':
     # resume from checkpoint
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
     models = {'in': [], 'out': []}
-    outputs, losses, all_grad_norms, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
-
+    outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
 
     for world in worlds:
         # set dataset according to "world"
         curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
-        if spectral_signature_args:
-            spectral_signature_args['drop_mask'] = torch.zeros_like(curr_y).to(device) if spectral_signature_args['local_search'] else np.zeros(len(curr_y))
 
         # check how many reps initially completed
         reps_completed = len(losses[world])
 
         for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
+
+            if spectral_signature_args:
+                spectral_signature_args['drop_mask'] = torch.zeros_like(curr_y).to(device) if spectral_signature_args['local_search'] else np.zeros(len(curr_y))
+        
             # train model
             model = train_model(args.model_name, 
                                             curr_X, 
@@ -361,7 +374,8 @@ if __name__ == '__main__':
                                             out_dim=out_dim, 
                                             use_defense=args.defense, 
                                             store_canary_rank=args.store_canary_rank, 
-                                            save_embeddings=args.save_embeddings)
+                                            save_embeddings=args.save_embeddings,
+                                            early_stop_audit=args.early_stop_audit)
                         
             # get loss of model on target sample
             model.eval()
@@ -369,6 +383,9 @@ if __name__ == '__main__':
                 output = model(target_X)
                 outputs[world].append(output[0].cpu().numpy())
                 losses[world].append(-nn.CrossEntropyLoss()(output, target_y).cpu().item())
+
+                if args.all_audit:
+                    all_losses[world].append(-nn.CrossEntropyLoss(reduction='none')(model(X_all), y_all).cpu().numpy())
                 
             # get test set accuracy from first 5 reps
             if rep < 5 and world == 'in':
@@ -394,56 +411,111 @@ if __name__ == '__main__':
 
             if args.backdoor_audit:
                 model.eval()
-                models[world] = model
+                models[world].append(model)
             else:
                 del model
 
             torch.cuda.empty_cache()
 
             # save checkpoint
-            save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only)
+            save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
         outputs[world] = np.array(outputs[world])
     
 
     if not args.fit_world_only:
-        
-        k = len(losses['in'])
-        t_losses = {'in': None, 'out': None}
-        holdout_losses = {'in': None, 'out': None}
 
-        if args.holdout_audit:
-            k = len(losses['in']) // 2
-        
-        t_losses['in'] = losses['in'][:k]
-        t_losses['out'] = losses['out'][:k]
-        holdout_losses['in'] = losses['in'][k:]
-        holdout_losses['out'] = losses['out'][k:]
-
-        if args.shortcut_audit:
-            tile_factor = 100 / len(t_losses['in'])
-            t_losses['in'] = np.tile(t_losses['in'], tile_factor)
-            t_losses['out'] = np.tile(t_losses['out'], tile_factor)
+        def audit_canary(losses, args):        
+            k = len(losses['in'])
+            t_losses = {'in': None, 'out': None}
+            holdout_losses = {'in': None, 'out': None}
 
             if args.holdout_audit:
-                tile_factor = 100 / len(holdout_losses['in'])
-                holdout_losses['in'] = np.tile(holdout_losses['in'])
-                holdout_losses['out'] = np.tile(holdout_losses['out'])
+                k = len(losses['in']) // 2
+            
+            t_losses['in'] = losses['in'][:k]
+            t_losses['out'] = losses['out'][:k]
+            holdout_losses['in'] = losses['in'][k:]
+            holdout_losses['out'] = losses['out'][k:]
 
-        # calculate empirical epsilon using GDP
-        mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
-        mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
+            if args.shortcut_audit:
+                tile_factor = 100 // len(t_losses['in'])
+                t_losses['in'] = np.tile(t_losses['in'], tile_factor)
+                t_losses['out'] = np.tile(t_losses['out'], tile_factor)
 
-        # NOTE: get rid of max_t
-        max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
+                if args.holdout_audit:
+                    tile_factor = 100 // len(holdout_losses['in'])
+                    holdout_losses['in'] = np.tile(holdout_losses['in'])
+                    holdout_losses['out'] = np.tile(holdout_losses['out'])
 
-        if args.holdout_audit:
-            emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
-                [holdout_losses['in'], holdout_losses['out']]), 
-                np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
-                args.alpha, 
-                args.delta, 
-                max_t, 
-                'GDP')
+            # calculate empirical epsilon using GDP
+            mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
+            mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
+
+            # NOTE: get rid of max_t
+            max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
+
+            if args.holdout_audit:
+                emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
+                    [holdout_losses['in'], holdout_losses['out']]), 
+                    np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
+                    args.alpha, 
+                    args.delta, 
+                    max_t, 
+                    'GDP')
+            
+            return emp_eps_loss, mia_scores, mia_labels
+
+        if args.all_audit:
+            def run_audit(s, in_row, out_row, args):
+                losses = {
+                    'in': in_row,
+                    'out': out_row,
+                }
+                curr_emp_eps_loss, curr_mia_scores, curr_mia_labels = audit_canary(losses, args)
+                return s, curr_emp_eps_loss, curr_mia_scores, curr_mia_labels
+
+            emp_eps_loss, mia_scores, mia_labels, max_id, tot_emp_eps_loss = 0, None, None, 0, 0
+            all_losses['in'] = np.stack(all_losses['in']).T
+            all_losses['out'] = np.stack(all_losses['out']).T
+
+            in_losses = all_losses['in']
+            out_losses = all_losses['out']
+            num_workers = 16  # or however many cores you want to use
+
+            non_zero_eps = {}
+
+            st = time.time()
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = {}
+                for s in range(in_losses.shape[0]):
+                    future = executor.submit(run_audit, s, in_losses[s], out_losses[s], args)
+                    futures[future] = s
+
+                # Final gather
+                for f in as_completed(futures):
+                    s, curr_emp_eps_loss, curr_mia_scores, curr_mia_labels = f.result()
+                    tot_emp_eps_loss += curr_emp_eps_loss
+                    if curr_emp_eps_loss > 0:
+                        if curr_emp_eps_loss not in non_zero_eps: 
+                            non_zero_eps[curr_emp_eps_loss] = []
+                        non_zero_eps[curr_emp_eps_loss] += [s]
+                    if curr_emp_eps_loss >= emp_eps_loss:
+                        emp_eps_loss = curr_emp_eps_loss
+                        mia_scores = curr_mia_scores
+                        mia_labels = curr_mia_labels
+                        max_id = s
+            e = time.time()
+
+            print('Time:', e - st)
+            print(non_zero_eps)
+            print('Avg Emp Eps Loss:', tot_emp_eps_loss / len(futures))
+            print('Id for Max Eps:', max_id)
+
+        else:
+            # all_losses['in'] = np.stack(all_losses['in']).T
+            # all_losses['out'] = np.stack(all_losses['out']).T
+            # losses = {'in': all_losses['in'][19937], 'out': all_losses['out'][19937]}
+            emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
 
         np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
         np.save(f'{out_folder}/mia_scores.npy', mia_scores)
@@ -460,12 +532,6 @@ if __name__ == '__main__':
         holdout_models = {'in': None, 'out': None}
         t_losses = {'in': [], 'out': []}
         holdout_losses = {'in': [], 'out': []}
-
-        # NOTE: delete this
-        models['in'] = [Models['cnn'](X_test.shape, out_dim=out_dim).to(device)] * 10
-        models['out'] = [Models['cnn'](X_test.shape, out_dim=out_dim).to(device)] * 10
-
-        print('len models', len(models['in']))
 
         k = len(models['in'])
         if args.holdout_audit:
@@ -485,7 +551,7 @@ if __name__ == '__main__':
         # For each image, install backdoor, evaluate clean/dirty loss
         with torch.no_grad():
             for sample in X_test_sample:
-                sample, label = sample.unsqueeze(0), torch.tensor(args.badnets_label).unsqueeze(0)
+                sample, label = sample.unsqueeze(0).to(device), torch.tensor(args.badnets_label).unsqueeze(0).to(device)
                 
                 for in_model, out_model in zip(t_models['in'], t_models['out']):
                     t_losses['in'].append(-criterion(in_model(sample), label).cpu().item())
@@ -496,12 +562,12 @@ if __name__ == '__main__':
                     holdout_losses['out'].append(-criterion(out_model(sample), label).cpu().item())
 
         if args.shortcut_audit:
-            tile_factor = 100 / len(t_losses['in'])
+            tile_factor = 100 // len(t_losses['in'])
             t_losses['in'] = np.tile(t_losses['in'], tile_factor)
             t_losses['out'] = np.tile(t_losses['out'], tile_factor)
 
             if args.holdout_audit:
-                tile_factor = 100 / len(holdout_losses['in'])
+                tile_factor = 100 // len(holdout_losses['in'])
                 holdout_losses['in'] = np.tile(holdout_losses['in'])
                 holdout_losses['out'] = np.tile(holdout_losses['out'])
 
