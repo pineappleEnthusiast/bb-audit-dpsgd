@@ -10,6 +10,10 @@ from opacus.accountants.utils import get_noise_multiplier
 import copy
 from torch.utils.data import TensorDataset, DataLoader
 import dill
+import time
+
+import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from models import Models
 from utils.data import load_data
@@ -86,7 +90,7 @@ def test_model(model, X, y, batch_size=128):
     
     return acc / len(y)
 
-def save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, fit_world_only, save_grad_norms):
+def save_checkpoint(out_folder, outputs, losses, all_losses, all_grad_norms, train_set_accs, test_set_accs, fit_world_only, save_grad_norms):
     """Save checkpoint"""
     # create folder if not exists
     os.makedirs(out_folder, exist_ok=True)
@@ -102,6 +106,8 @@ def save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs,
     if fit_world_only:
         np.save(f'{out_folder}/outputs_{fit_world_only}.npy', outputs[fit_world_only])
         np.save(f'{out_folder}/losses_{fit_world_only}.npy', losses[fit_world_only])
+        np.save(f'{out_folder}/all_losses_{fit_world_only}.npy', all_losses[fit_world_only])
+        # ADDED CODE ^^
         if save_grad_norms:
             np.save(f'{out_folder}/all_grad_norms_{fit_world_only}.npy', all_grad_norms[fit_world_only])
 
@@ -115,6 +121,9 @@ def save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs,
         np.save(f'{out_folder}/test_set_accs.npy', test_set_accs)
         np.save(f'{out_folder}/losses_in.npy', losses['in'])
         np.save(f'{out_folder}/losses_out.npy', losses['out'])
+        # ADDED CODE
+        np.save(f'{out_folder}/all_losses_in.npy', all_losses['in'])
+        np.save(f'{out_folder}/all_losses_out.npy', all_losses['out'])
         if save_grad_norms:
             np.save(f'{out_folder}/all_grad_norms_in.npy', all_grad_norms['in'])
             np.save(f'{out_folder}/all_grad_norms_out.npy', all_grad_norms['out'])
@@ -124,6 +133,8 @@ def resume_checkpoint(out_folder, save_grad_norms, fit_world_only, resume):
     outputs = {'out': [], 'in': []}
     losses = {'out': [], 'in': []}
     all_grad_norms = { 'out': [], 'in': [] }
+    # ADDED CODE
+    all_losses = {'in': [], 'out': []}
     train_set_accs = []
     test_set_accs = []
 
@@ -136,6 +147,8 @@ def resume_checkpoint(out_folder, save_grad_norms, fit_world_only, resume):
         if fit_world_only:
             outputs[fit_world_only] = np.load(f'{out_folder}/outputs_{fit_world_only}.npy').tolist()
             losses[fit_world_only] = np.load(f'{out_folder}/losses_{fit_world_only}.npy').tolist()
+            # ADDED CODE
+            all_losses[fit_world_only] = np.load(f'{out_folder}/all_losses_{fit_world_only}.npy').tolist()
             if save_grad_norms:
                 all_grad_norms[fit_world_only] = np.load(f'{out_folder}/all_grad_norms_{fit_world_only}.npy').tolist()
 
@@ -149,15 +162,18 @@ def resume_checkpoint(out_folder, save_grad_norms, fit_world_only, resume):
             test_set_accs = np.load(f'{out_folder}/test_set_accs.npy').tolist()
             losses['in'] = np.load(f'{out_folder}/losses_in.npy').tolist()
             losses['out'] = np.load(f'{out_folder}/losses_out.npy').tolist()
+            # ADDED CODE
+            all_losses['in'] = np.load(f'{out_folder}/all_losses_in.npy').tolist()
+            all_losses['out'] = np.load(f'{out_folder}/all_losses_out.npy').tolist()
             if save_grad_norms:
                 all_grad_norms['in'] = np.load(f'{out_folder}/all_grad_norms_in.npy').tolist()
                 all_grad_norms['out'] = np.load(f'{out_folder}/all_grad_norms_out.npy').tolist()
     else:
         # create folder and dump initial values in
         os.makedirs(out_folder, exist_ok=True)
-        save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only, args.save_grad_norms)
+        save_checkpoint(out_folder, outputs, losses, all_losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only, args.save_grad_norms)
     
-    return outputs, losses, all_grad_norms, train_set_accs, test_set_accs
+    return outputs, losses, all_losses, all_grad_norms, train_set_accs, test_set_accs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -180,6 +196,12 @@ if __name__ == '__main__':
     parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
     parser.add_argument('--save_grad_norms', action='store_true', help='save gradient norms for all samples in the dataset for each epoch')
     parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
+
+    # ADDED CODE
+    parser.add_argument('--view_badnets', action='store_true')
+    parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
+    parser.add_argument('--all_audit', action='store_true')
+
     args = parser.parse_args()
 
     # reproducibility
@@ -212,6 +234,18 @@ if __name__ == '__main__':
         # blank sample
         target_X = torch.zeros_like(X_out[[0]])
         target_y = torch.from_numpy(np.array([9])).to(device)
+    # ADDED CODE
+    elif args.target_type == 'badnets':
+        target_X = X_out[-1]
+        target_y = torch.tensor(args.badnets_label).to(device)
+        target_X[:, -4:, -4:] = torch.max(target_X)
+
+        target_X = target_X.unsqueeze(0)
+        target_y = target_y.unsqueeze(0)
+
+        if args.view_badnets:
+            plt.imshow(target_X.squeeze().numpy(), cmap='gray')
+            plt.savefig(f'badnets_{args.badnets_label}.png')
     elif args.target_type == 'clipbkd':
         # ClipBKD sample
         target_X, target_y = craft_clipbkd(X_out, init_model, device)
@@ -228,6 +262,9 @@ if __name__ == '__main__':
     # define D = D- U {(x_T, y_T)}
     X_in, y_in = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
 
+    # ADDED CODE
+    X_all, y_all = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
+
     # handle case where n_df = 1
     X_out, y_out = X_out[:args.n_df - 1], y_out[:args.n_df - 1]
 
@@ -236,7 +273,7 @@ if __name__ == '__main__':
     
     # train M on D and D-
     # resume from checkpoint
-    outputs, losses, all_grad_norms, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.save_grad_norms, args.fit_world_only, args.resume)
+    outputs, losses, all_losses, all_grad_norms, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.save_grad_norms, args.fit_world_only, args.resume)
     worlds = [args.fit_world_only] if args.fit_world_only else ['out', 'in']
     for world in worlds:
         # set dataset according to "world"
@@ -260,6 +297,9 @@ if __name__ == '__main__':
                 output = model(target_X)
                 outputs[world].append(output[0].cpu().numpy())
                 losses[world].append(-nn.CrossEntropyLoss()(output, target_y).cpu().item())
+
+                if args.all_audit:
+                    all_losses[world].append(-nn.CrossEntropyLoss(reduction='none')(model(X_all), y_all).cpu().numpy())
             
             # get test set accuracy from first 5 reps
             if rep < 5 and world == 'out':
@@ -272,14 +312,80 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
 
             # save checkpoint
-            save_checkpoint(out_folder, outputs, losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only, args.save_grad_norms)
+            save_checkpoint(out_folder, outputs, losses, all_losses, all_grad_norms, train_set_accs, test_set_accs, args.fit_world_only, args.save_grad_norms)
         outputs[world] = np.array(outputs[world])
-    
+
+    # ADDED CODE
+
     if not args.fit_world_only:
-        # calculate empirical epsilon using GDP
-        mia_scores = np.concatenate([losses['in'], losses['out']])
-        mia_labels = np.concatenate([np.ones_like(losses['in']), np.zeros_like(losses['out'])])
-        _, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
+
+        def audit_canary(losses, args):        
+            k = len(losses['in'])
+            t_losses = {'in': None, 'out': None}
+            
+            t_losses['in'] = losses['in'][:k]
+            t_losses['out'] = losses['out'][:k]
+
+            # calculate empirical epsilon using GDP
+            mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
+            mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
+
+            # NOTE: get rid of max_t
+            max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
+
+            return emp_eps_loss, mia_scores, mia_labels
+
+        if args.all_audit:
+            def run_audit(s, in_row, out_row, args):
+                losses = {
+                    'in': in_row,
+                    'out': out_row,
+                }
+                curr_emp_eps_loss, curr_mia_scores, curr_mia_labels = audit_canary(losses, args)
+                return s, curr_emp_eps_loss, curr_mia_scores, curr_mia_labels
+
+            emp_eps_loss, mia_scores, mia_labels, max_id, tot_emp_eps_loss = 0, None, None, 0, 0
+            all_losses['in'] = np.stack(all_losses['in']).T
+            all_losses['out'] = np.stack(all_losses['out']).T
+
+            in_losses = all_losses['in']
+            out_losses = all_losses['out']
+            num_workers = 16  # or however many cores you want to use
+
+            non_zero_eps = {}
+
+            st = time.time()
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = {}
+                for s in range(in_losses.shape[0]):
+                    future = executor.submit(run_audit, s, in_losses[s], out_losses[s], args)
+                    futures[future] = s
+
+                # Final gather
+                for f in as_completed(futures):
+                    s, curr_emp_eps_loss, curr_mia_scores, curr_mia_labels = f.result()
+                    tot_emp_eps_loss += curr_emp_eps_loss
+                    if curr_emp_eps_loss > 0:
+                        if curr_emp_eps_loss not in non_zero_eps: 
+                            non_zero_eps[curr_emp_eps_loss] = []
+                        non_zero_eps[curr_emp_eps_loss] += [s]
+                    if curr_emp_eps_loss >= emp_eps_loss:
+                        emp_eps_loss = curr_emp_eps_loss
+                        mia_scores = curr_mia_scores
+                        mia_labels = curr_mia_labels
+                        max_id = s
+            e = time.time()
+
+            print('Time:', e - st)
+            print(non_zero_eps)
+            print('Avg Emp Eps Loss:', tot_emp_eps_loss / len(futures))
+            print('Id for Max Eps:', max_id)
+
+        else:
+            # all_losses['in'] = np.stack(all_losses['in']).T
+            # all_losses['out'] = np.stack(all_losses['out']).T
+            # losses = {'in': all_losses['in'][19937], 'out': all_losses['out'][19937]}
+            emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
 
         np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
         np.save(f'{out_folder}/mia_scores.npy', mia_scores)
