@@ -22,8 +22,10 @@ from utils.dpsgd import local_clip_and_accum_grads, global_clip_and_accum_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
+import gc
 
-# os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 
 def xavier_init_model(model):
@@ -35,7 +37,7 @@ def xavier_init_model(model):
 
     model.apply(init_weights)
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, save_embeddings=False, early_stop_audit=-1):
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, save_embeddings=False, early_stop_audit=-1, early_stop_defense=-1):
     """Train model w/ DP-SGD (no sub-sampling + gradients are summed instead of averaged)"""
     
     # initialize model, loss function, and optimizer
@@ -45,7 +47,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model)
 
-    model = GradSampleModule(model)
+    if spectral_signature_args and spectral_signature_args['search_space'] == 'embedding':
+        model = GradSampleModule(model)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -64,6 +67,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
         print('Epoch:', epoch)
         optimizer.zero_grad()
+
+        if early_stop_defense == epoch:
+            spectral_signature_args = None
 
         curr_grads = None
         if not spectral_signature_args or spectral_signature_args['local_search']:
@@ -190,7 +196,7 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     return outputs, losses, all_losses, train_set_accs, test_set_accs
 
 def validate_args(args):
-    if args.defense:
+    if args.defense != '':
         args.find_outliers = True
 
     assert args.search_space in ['embedding', 'gradient']
@@ -231,8 +237,6 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
     parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
 
-    parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
-
     # Options for Debugging
     parser.add_argument('--view_badnets', action='store_true')
     parser.add_argument('--shortcut_audit', action='store_true')
@@ -251,21 +255,18 @@ if __name__ == '__main__':
     parser.add_argument('--scoring_fn', type=str, default='norm')
 
     # Options for Forgetting Canary Candidates
+    parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
 
     # Options for Early Stopping
+    parser.add_argument('--early_stop_defense', type=int, default=-1, help='stop running defense after epoch K')
 
 
     args = parser.parse_args()
-    validate_args(args)
+    # validate_args(args)
 
     print(args.out)
 
-    spectral_signature_args = None
-    if args.find_outliers:
-        spectral_signature_args = {'search_space': args.search_space, 
-                                'local_search': args.local_search,
-                                'scoring_fn': args.scoring_fn,
-                                'store_canary_rank': [] if args.store_canary_rank else None}
+    if args.max_grad_norm == -1: args.max_grad_norm = None
 
     # reproducibility
     np.random.seed(args.seed)
@@ -275,6 +276,17 @@ if __name__ == '__main__':
     os.makedirs(out_folder, exist_ok=True)
     os.makedirs(f'{out_folder}/models', exist_ok=True)
     device = args.device if torch.cuda.is_available() else 'cpu'
+
+    spectral_signature_args = None
+    if args.find_outliers:
+        spectral_signature_args = {'search_space': args.search_space, 
+                                'local_search': args.local_search,
+                                'scoring_fn': args.scoring_fn,
+                                'store_canary_rank': [] if args.store_canary_rank else None, 
+                                'out': out_folder,
+                                'n_epochs': args.n_epochs,
+                                'canary_dropped': False
+                            }
 
     # load data (define D-)
     if args.n_df == 1:
@@ -295,6 +307,8 @@ if __name__ == '__main__':
             init_model.load_state_dict(torch.load(args.fixed_init))
             # don't train on the first half of the dataset
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
+
+            gc.collect()
     
     # craft target data point (x_T, y_T)
     if args.target_type == 'blank':
@@ -303,6 +317,7 @@ if __name__ == '__main__':
         target_y = torch.from_numpy(np.array([9])).to(device)
     elif args.target_type == 'badnets':
         target_X = X_out[-1]
+        print('Original Label:', y_out[-1])
         target_y = torch.tensor(args.badnets_label).to(device)
         target_X[:, -4:, -4:] = torch.max(target_X)
 
@@ -312,6 +327,11 @@ if __name__ == '__main__':
         if args.view_badnets:
             plt.imshow(target_X.squeeze().numpy(), cmap='gray')
             plt.savefig(f'badnets_{args.badnets_label}.png')
+
+    elif args.target_type == 'sanity_check':
+        target_X = X_out[-1].unsqueeze(0)
+        target_y = y_out[-1].unsqueeze(0)
+
     elif args.target_type == 'clipbkd':
         # ClipBKD sample
         target_X, target_y = craft_clipbkd(X_out, init_model, device)
@@ -344,6 +364,8 @@ if __name__ == '__main__':
     models = {'in': [], 'out': []}
     outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
 
+    all_drop_idx = {'in': [], 'out': []}
+
     for world in worlds:
         # set dataset according to "world"
         curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
@@ -375,7 +397,11 @@ if __name__ == '__main__':
                                             use_defense=args.defense, 
                                             store_canary_rank=args.store_canary_rank, 
                                             save_embeddings=args.save_embeddings,
-                                            early_stop_audit=args.early_stop_audit)
+                                            early_stop_audit=args.early_stop_audit,
+                                            early_stop_defense=args.early_stop_defense)
+            
+            if spectral_signature_args:
+                all_drop_idx[world].append(spectral_signature_args['drop_mask'].cpu().numpy())
                         
             # get loss of model on target sample
             model.eval()
@@ -421,6 +447,11 @@ if __name__ == '__main__':
             save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
         outputs[world] = np.array(outputs[world])
     
+    if args.all_audit:
+        if len(all_drop_idx['in']) > 0:
+            np.save(f'{out_folder}/drop_mask_in.npy', np.concatenate(all_drop_idx['in']))
+        if len(all_drop_idx['out']) > 0:
+            np.save(f'{out_folder}/drop_mask_out.npy', np.concatenate(all_drop_idx['out']))
 
     if not args.fit_world_only:
 
@@ -451,7 +482,6 @@ if __name__ == '__main__':
             mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
             mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
 
-            # NOTE: get rid of max_t
             max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
 
             if args.holdout_audit:

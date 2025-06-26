@@ -9,11 +9,10 @@ def whiten(G_centered):
     W_pca = eigvecs @ torch.diag(1.0 / torch.sqrt(eigvals)) @ eigvecs.T
     return W_pca
 
-    # cov_matrix_inv = torch.linalg.inv(cov_matrix)
-    # eigvals, eigvecs = torch.linalg.eigh(cov_matrix_inv)
-    # eigvals = torch.clamp(eigvals, min=1e-5)
-    # cov_matrix_inv = eigvecs @ torch.diag(eigvals) @ eigvecs.T
-    # return torch.linalg.cholesky(cov_matrix_inv)
+    # U, S, V = torch.pca_lowrank(G_centered, q=5 or min(G_centered.shape)-1)
+    # S_inv = 1.0 / torch.clamp(S, min=1e-6)
+    # X_white = G_centered @ V @ torch.diag(S_inv)
+    # return X_white
 
 
 def _whiten(G_centered):
