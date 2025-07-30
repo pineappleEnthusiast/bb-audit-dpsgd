@@ -7,7 +7,6 @@ import os
 import numpy as np
 import argparse
 from opacus.accountants.utils import get_noise_multiplier
-from opacus import GradSampleModule
 import copy
 from torch.utils.data import TensorDataset, DataLoader
 import time
@@ -18,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 
 from models import Models
 from utils.data import load_data
-from utils.dpsgd import local_clip_and_accum_grads, global_clip_and_accum_grads
+from utils.dpsgd import clip_and_accum_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
@@ -37,7 +36,7 @@ def xavier_init_model(model):
 
     model.apply(init_weights)
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, save_embeddings=False, early_stop_audit=-1, early_stop_defense=-1):
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False):
     """Train model w/ DP-SGD (no sub-sampling + gradients are summed instead of averaged)"""
     
     # initialize model, loss function, and optimizer
@@ -46,9 +45,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         xavier_init_model(model)
     else:
         model = copy.deepcopy(init_model)
-
-    if spectral_signature_args and spectral_signature_args['search_space'] == 'embedding':
-        model = GradSampleModule(model)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -60,52 +56,42 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             epochs=n_epochs, accountant='rdp')
     else:
         noise_multiplier = 0
+
+    # TODO: only use when defense
+    drop_mask = torch.zeros_like(y)
     
     # train model for n_epochs
     for epoch in tqdm(range(n_epochs), leave=False):
-        if epoch == early_stop_audit: return model
-
         print('Epoch:', epoch)
         optimizer.zero_grad()
 
-        if early_stop_defense == epoch:
-            spectral_signature_args = None
+        # Prob of predicting canary correctly
+        model.eval()
+        with torch.no_grad():
+            output = model(X_target)
+            probs = torch.nn.functional.softmax(output, dim=1)
+            print(probs[0][4])
+        model.train()
 
-        curr_grads = None
-        if not spectral_signature_args or spectral_signature_args['local_search']:
-            curr_grads = local_clip_and_accum_grads(model, 
-                                                    X, 
-                                                    y, 
-                                                    optimizer, 
-                                                    criterion, 
-                                                    max_grad_norm, 
-                                                    block_size=block_size, 
-                                                    use_defense=use_defense, 
-                                                    spectral_signature_args=spectral_signature_args)
-        else:
-            curr_grads = global_clip_and_accum_grads(model, 
-                                                    X, 
-                                                    y, 
-                                                    optimizer, 
-                                                    criterion, 
-                                                    max_grad_norm, 
-                                                    block_size=block_size,
-                                                    use_defense=use_defense,
-                                                    spectral_signature_args=spectral_signature_args)
+        curr_accumulated_gradients, drop_mask = clip_and_accum_grads(model, 
+                                                X, 
+                                                y, 
+                                                optimizer, 
+                                                criterion, 
+                                                max_grad_norm, 
+                                                block_size=block_size,
+                                                drop_mask=drop_mask)
         
-        
-        # accumulate per-sample gradients and add noise
         with torch.no_grad():   
-            # accumulate per-sample gradients and add noise
             for name, param in model.named_parameters():
-                curr_grad = curr_grads[name]
+                curr_param_gradient = curr_accumulated_gradients[name]
 
                 if noise_multiplier > 0 and max_grad_norm is not None:
                         # add noise
-                        curr_grad = curr_grad + noise_multiplier * max_grad_norm * torch.randn_like(curr_grad)
+                        curr_param_gradient = curr_param_gradient + noise_multiplier * max_grad_norm * torch.randn_like(curr_param_gradient)
 
                 # update gradient of parameter
-                param.grad = curr_grad
+                param.grad = curr_param_gradient
                 
         # update parameter
         optimizer.step()
@@ -195,26 +181,6 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     
     return outputs, losses, all_losses, train_set_accs, test_set_accs
 
-def validate_args(args):
-    if args.defense != '':
-        args.find_outliers = True
-
-    assert args.search_space in ['embedding', 'gradient']
-    assert args.scoring_fn in ['pca', 'norm', 'whitened_norm', 'full_model_norm', 'walign']
-
-    if args.scoring_fn in ['full_model_norm', 'walign']:
-        assert args.search_space == 'gradient'
-
-    if args.shortcut_audit:
-        assert args.fit_world_only is None
-    
-    if args.target_type == 'badnets':
-        assert args.badnets_label > -1
-        if args.data_name in ['mnist', 'cifar10']:
-            assert args.badnets_label < 10
-        if args.data_name == 'cifar100':
-            assert args.badnets_label < 100
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
@@ -239,32 +205,18 @@ if __name__ == '__main__':
 
     # Options for Debugging
     parser.add_argument('--view_badnets', action='store_true')
-    parser.add_argument('--shortcut_audit', action='store_true')
     parser.add_argument('--store_canary_rank', action='store_true')
-    parser.add_argument('--save_embeddings', action='store_true')
-    parser.add_argument('--save_models', action='store_true')
     parser.add_argument('--holdout_audit', action='store_true')
-    parser.add_argument('--backdoor_audit', action='store_true')
-    parser.add_argument('--early_stop_audit', type=int, default=-1)
-    parser.add_argument('--all_audit', action='store_true')
 
     # Options for Spectral Signature Search
     parser.add_argument('--find_outliers', action='store_true')
     parser.add_argument('--search_space', type=str, default='gradient')
-    parser.add_argument('--local_search', action='store_true')
     parser.add_argument('--scoring_fn', type=str, default='norm')
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
 
-    # Options for Early Stopping
-    parser.add_argument('--early_stop_defense', type=int, default=-1, help='stop running defense after epoch K')
-
-
     args = parser.parse_args()
-    # validate_args(args)
-
-    print(args.out)
 
     if args.max_grad_norm == -1: args.max_grad_norm = None
 
@@ -280,7 +232,6 @@ if __name__ == '__main__':
     spectral_signature_args = None
     if args.find_outliers:
         spectral_signature_args = {'search_space': args.search_space, 
-                                'local_search': args.local_search,
                                 'scoring_fn': args.scoring_fn,
                                 'store_canary_rank': [] if args.store_canary_rank else None, 
                                 'out': out_folder,
@@ -290,9 +241,10 @@ if __name__ == '__main__':
 
     # load data (define D-)
     if args.n_df == 1:
-        # load single data point for type safety
+        # load single data point
         X_out, y_out, out_dim = load_data(args.data_name, 1, device=device)
     else:
+        # since n_df is 0 by default, loads full dataset
         X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1, device=device)
 
     init_model = None
@@ -347,15 +299,6 @@ if __name__ == '__main__':
 
     # define D = D- U {(x_T, y_T)}
     X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
-
-    X_all, y_all = torch.vstack((X_out, target_X)), torch.cat((y_out, target_y))
-
-    # print(y_all[46731])
-    # plt.imshow(X_all[46731].squeeze().numpy(), cmap='gray')
-    # plt.savefig(f'largest_epsilon.png')
-    # exit()
-
-    # load test dataset
     X_test, y_test, _ = load_data(args.data_name, None, split='test', device=device)
     
     # train M on D and D-
@@ -363,8 +306,6 @@ if __name__ == '__main__':
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
     models = {'in': [], 'out': []}
     outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
-
-    all_drop_idx = {'in': [], 'out': []}
 
     for world in worlds:
         # set dataset according to "world"
@@ -374,9 +315,6 @@ if __name__ == '__main__':
         reps_completed = len(losses[world])
 
         for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
-
-            if spectral_signature_args:
-                spectral_signature_args['drop_mask'] = torch.zeros_like(curr_y).to(device) if spectral_signature_args['local_search'] else np.zeros(len(curr_y))
         
             # train model
             model = train_model(args.model_name, 
@@ -395,13 +333,8 @@ if __name__ == '__main__':
                                             block_size=args.block_size, 
                                             out_dim=out_dim, 
                                             use_defense=args.defense, 
-                                            store_canary_rank=args.store_canary_rank, 
-                                            save_embeddings=args.save_embeddings,
-                                            early_stop_audit=args.early_stop_audit,
-                                            early_stop_defense=args.early_stop_defense)
+                                            store_canary_rank=args.store_canary_rank)
             
-            if spectral_signature_args:
-                all_drop_idx[world].append(spectral_signature_args['drop_mask'].cpu().numpy())
                         
             # get loss of model on target sample
             model.eval()
@@ -410,14 +343,14 @@ if __name__ == '__main__':
                 outputs[world].append(output[0].cpu().numpy())
                 losses[world].append(-nn.CrossEntropyLoss()(output, target_y).cpu().item())
 
-                if args.all_audit:
-                    all_losses[world].append(-nn.CrossEntropyLoss(reduction='none')(model(X_all), y_all).cpu().numpy())
                 
             # get test set accuracy from first 5 reps
             if rep < 5 and world == 'in':
                 if len(X_out) > 0:
                     train_set_accs.append(test_model(model, X_in, y_in))
+                    print('Train set acc:', train_set_accs[-1])
                 test_set_accs.append(test_model(model, X_test, y_test))
+                print('Test set acc:', test_set_accs[-1])
 
             if rep < 1 and world == 'in':
                 if spectral_signature_args and spectral_signature_args['store_canary_rank'] is not None:
@@ -430,31 +363,14 @@ if __name__ == '__main__':
                     plt.gca().invert_yaxis()
                     plt.grid(True)
                     plt.savefig(f'{out_folder}/canary_ranks.png')
-            
-            # free CUDA memory
-            if args.save_models:
-                torch.save(model, f"{out_folder}/models/{world}_{rep}.pth")
-
-            if args.backdoor_audit:
-                model.eval()
-                models[world].append(model)
-            else:
-                del model
 
             torch.cuda.empty_cache()
 
             # save checkpoint
             save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
         outputs[world] = np.array(outputs[world])
-    
-    if args.all_audit:
-        if len(all_drop_idx['in']) > 0:
-            np.save(f'{out_folder}/drop_mask_in.npy', np.concatenate(all_drop_idx['in']))
-        if len(all_drop_idx['out']) > 0:
-            np.save(f'{out_folder}/drop_mask_out.npy', np.concatenate(all_drop_idx['out']))
 
     if not args.fit_world_only:
-
         def audit_canary(losses, args):        
             k = len(losses['in'])
             t_losses = {'in': None, 'out': None}
@@ -467,16 +383,6 @@ if __name__ == '__main__':
             t_losses['out'] = losses['out'][:k]
             holdout_losses['in'] = losses['in'][k:]
             holdout_losses['out'] = losses['out'][k:]
-
-            if args.shortcut_audit:
-                tile_factor = 100 // len(t_losses['in'])
-                t_losses['in'] = np.tile(t_losses['in'], tile_factor)
-                t_losses['out'] = np.tile(t_losses['out'], tile_factor)
-
-                if args.holdout_audit:
-                    tile_factor = 100 // len(holdout_losses['in'])
-                    holdout_losses['in'] = np.tile(holdout_losses['in'])
-                    holdout_losses['out'] = np.tile(holdout_losses['out'])
 
             # calculate empirical epsilon using GDP
             mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
@@ -494,58 +400,8 @@ if __name__ == '__main__':
                     'GDP')
             
             return emp_eps_loss, mia_scores, mia_labels
-
-        if args.all_audit:
-            def run_audit(s, in_row, out_row, args):
-                losses = {
-                    'in': in_row,
-                    'out': out_row,
-                }
-                curr_emp_eps_loss, curr_mia_scores, curr_mia_labels = audit_canary(losses, args)
-                return s, curr_emp_eps_loss, curr_mia_scores, curr_mia_labels
-
-            emp_eps_loss, mia_scores, mia_labels, max_id, tot_emp_eps_loss = 0, None, None, 0, 0
-            all_losses['in'] = np.stack(all_losses['in']).T
-            all_losses['out'] = np.stack(all_losses['out']).T
-
-            in_losses = all_losses['in']
-            out_losses = all_losses['out']
-            num_workers = 16  # or however many cores you want to use
-
-            non_zero_eps = {}
-
-            st = time.time()
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {}
-                for s in range(in_losses.shape[0]):
-                    future = executor.submit(run_audit, s, in_losses[s], out_losses[s], args)
-                    futures[future] = s
-
-                # Final gather
-                for f in as_completed(futures):
-                    s, curr_emp_eps_loss, curr_mia_scores, curr_mia_labels = f.result()
-                    tot_emp_eps_loss += curr_emp_eps_loss
-                    if curr_emp_eps_loss > 0:
-                        if curr_emp_eps_loss not in non_zero_eps: 
-                            non_zero_eps[curr_emp_eps_loss] = []
-                        non_zero_eps[curr_emp_eps_loss] += [s]
-                    if curr_emp_eps_loss >= emp_eps_loss:
-                        emp_eps_loss = curr_emp_eps_loss
-                        mia_scores = curr_mia_scores
-                        mia_labels = curr_mia_labels
-                        max_id = s
-            e = time.time()
-
-            print('Time:', e - st)
-            print(non_zero_eps)
-            print('Avg Emp Eps Loss:', tot_emp_eps_loss / len(futures))
-            print('Id for Max Eps:', max_id)
-
-        else:
-            # all_losses['in'] = np.stack(all_losses['in']).T
-            # all_losses['out'] = np.stack(all_losses['out']).T
-            # losses = {'in': all_losses['in'][19937], 'out': all_losses['out'][19937]}
-            emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
+        
+        emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
 
         np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
         np.save(f'{out_folder}/mia_scores.npy', mia_scores)
@@ -556,63 +412,3 @@ if __name__ == '__main__':
 
     print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
     print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
-
-    if args.backdoor_audit:
-        t_models = {'in': [], 'out': []}
-        holdout_models = {'in': None, 'out': None}
-        t_losses = {'in': [], 'out': []}
-        holdout_losses = {'in': [], 'out': []}
-
-        k = len(models['in'])
-        if args.holdout_audit:
-            k = len(models['in']) // 2
-            
-        t_models['in'] = models['in'][:k]
-        t_models['out'] = models['out'][:k]
-        holdout_models['in'] = models['in'][k:]
-        holdout_models['out'] = models['out'][k:]
-
-        # Randomly sample k images in test set
-        sample_idxs = torch.randperm(len(X_test))[:10]
-        X_test_sample = X_test[sample_idxs]
-
-        criterion = nn.CrossEntropyLoss()
-
-        # For each image, install backdoor, evaluate clean/dirty loss
-        with torch.no_grad():
-            for sample in X_test_sample:
-                sample, label = sample.unsqueeze(0).to(device), torch.tensor(args.badnets_label).unsqueeze(0).to(device)
-                
-                for in_model, out_model in zip(t_models['in'], t_models['out']):
-                    t_losses['in'].append(-criterion(in_model(sample), label).cpu().item())
-                    t_losses['out'].append(-criterion(out_model(sample), label).cpu().item())
-
-                for in_model, out_model in zip(holdout_models['in'], holdout_models['out']):
-                    holdout_losses['in'].append(-criterion(in_model(sample), label).cpu().item())
-                    holdout_losses['out'].append(-criterion(out_model(sample), label).cpu().item())
-
-        if args.shortcut_audit:
-            tile_factor = 100 // len(t_losses['in'])
-            t_losses['in'] = np.tile(t_losses['in'], tile_factor)
-            t_losses['out'] = np.tile(t_losses['out'], tile_factor)
-
-            if args.holdout_audit:
-                tile_factor = 100 // len(holdout_losses['in'])
-                holdout_losses['in'] = np.tile(holdout_losses['in'])
-                holdout_losses['out'] = np.tile(holdout_losses['out'])
-
-        mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
-        mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
-
-        max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
-
-        if args.holdout_audit:
-            emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
-                [holdout_losses['in'], holdout_losses['out']]), 
-                np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
-                args.alpha, 
-                args.delta, 
-                max_t, 
-                'GDP')
-            
-        print('Badnets Empirical Epsilon:', emp_eps_loss)

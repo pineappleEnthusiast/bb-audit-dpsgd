@@ -6,10 +6,6 @@ import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
 
-from opacus.accountants.utils import get_noise_multiplier
-
-# NOTE: potentially get rid of this
-from defense_utils import *
 
 def get_per_sample_grads(model, X, y, criterion):
     """Compute per-sample gradients"""
@@ -33,16 +29,6 @@ def get_per_sample_grads(model, X, y, criterion):
 
     return ps_grads
 
-
-def _get_per_sample_grads(model, X, y, criterion):
-    model.zero_grad()
-    output = model(X)
-    loss = criterion(output, y)
-    loss.backward()
-    ps_grads = {name: param.grad_sample for name, param in model.named_parameters()}
-    embeddings = model._module.embeddings
-    return ps_grads, embeddings
-    
 
 def get_per_sample_grad_norms(per_sample_grads):
     """Compute L2 norms of per-sample gradients"""
@@ -69,7 +55,7 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     ps_grad_norms_clipped = get_per_sample_grad_norms(ps_grads_clipped)
 
-    return ps_grads_clipped, { 'before': ps_grad_norms, 'after': ps_grad_norms_clipped.cpu().numpy() }
+    return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
 
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm):
@@ -80,15 +66,12 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm)
         # empty dataset
         ps_grads = { name: torch.zeros_like(param).unsqueeze(dim=0) for name, param in model.named_parameters() }
     else:
-        # calculate per-sample gradients
-        # ps_grads = get_per_sample_grads(model, X, y, criterion)
-        # embeddings = torch.tensor(np.array([])).to(X.device)
-
-        ps_grads, embeddings = _get_per_sample_grads(model, X, y, criterion)
+        ps_grads = get_per_sample_grads(model, X, y, criterion)
 
     ps_grad_norms_data = { 'before': np.array([]), 'after': np.array([]) }
     if max_grad_norm is not None:
         # clip per-sample gradients
+        # ps_grads_clipped, ps_grad_norms_data = ps_grads, ps_grad_norms_data
         ps_grads_clipped, ps_grad_norms_data = clip_per_sample_grads(ps_grads, max_grad_norm)
     else:
         ps_grads_clipped = ps_grads
@@ -96,59 +79,79 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm)
     with torch.no_grad():
         accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
 
-    return embeddings, accum_grad_block, ps_grads, ps_grad_norms_data
+    last_layer_name = list(model.net.named_modules())[-1][0]
+    last_w_name = 'net.' + last_layer_name + '.weight'
+    last_b_name = 'net.' + last_layer_name + '.bias'
+
+    # Compute flattened norm across all param grads
+    per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+    all_norms = torch.zeros_like(y, dtype=torch.float32)
+    for k in range(10):
+        k_last_layer_grads = per_sample_flat_grads[y == k]
+        centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+        # take norm of each class
+        centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
+        all_norms[y == k] = centered_k_last_layer_norms
+
+    # all_norms = (per_sample_flat_grads - per_sample_flat_grads.mean(dim=0, keepdim=True)).norm(float('inf'), dim=1)
+    
+    # Compute last layer norms at true class
 
 
-def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, use_defense=False, spectral_signature_args=None):
-    """Clip and return per-sample gradients"""
+    # # Compute flattened last layer norms
+    # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
+    # last_biases = ps_grads[last_b_name]
+    # last_layer_grads = torch.cat((flat_last_weights, last_biases), dim=1)
+    
+    # all_norms = torch.zeros_like(y, dtype=torch.float32)
+    # for k in range(10):
+    #     # center each class
+    #     k_last_layer_grads = last_layer_grads[y == k]
+    #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+    #     # take norm of each class
+    #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
+    #     all_norms[y == k] = centered_k_last_layer_norms
 
-    N_drop = int(0.05 * len(y) // 100)
+    last_layer_norms = all_norms.cpu().numpy()
 
-    find_outliers = False
-    canary_dropped = False
-    out = ''
-    drop_mask = np.zeros(len(y))
+    # Compute embedding norms
+    # Cosine similarity with PC1
+    # per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+    # X = per_sample_flat_grads
+    # X_norm = X / (X.norm(dim=1, keepdim=True))
+    # X_centered = X_norm - X_norm.mean(dim=0, keepdim=True)
+    # U, S, Vh = torch.linalg.svd(X_centered, full_matrices=False)
+    # PC1 = Vh[0] # .reshape(1, -1)
+    # cosine_sims = X_centered @ PC1
+    # cosine_sims = None
+    # Cosine similarity with whitened PC1
+    
+    return accum_grad_block, ps_grad_norms_data, last_layer_norms, None
 
-    if spectral_signature_args:
-        drop_mask = spectral_signature_args['drop_mask']
-        out = spectral_signature_args['out']
-        find_outliers = True
+
+def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, drop_mask=None):
+    """Clip and accumulate gradients in blocks of samples to conserve gpu space"""
+    # exclude things we've already dropped
+    X = X[drop_mask == 0]
+    y = y[drop_mask == 0]
 
     # split samples into blocks by index
     idx_blocks = torch.split(torch.from_numpy(np.arange(len(X))), block_size)
 
     accum_grad = None
+    scores = []
 
-    last_w_name, last_b_name = '', ''
-    if spectral_signature_args['search_space'] == 'gradient':
-        last_layer_name = list(model.net.named_modules())[-1][0]
-        last_w_name = 'net.' + last_layer_name + '.weight'
-        last_b_name = 'net.' + last_layer_name + '.bias'
-
-    all_embeddings = []
-    all_ps_grads = {name: [] for name, _ in model.named_parameters()}
-    all_ps_grad_norms_data_before = []
-
-    for i, idx_block in enumerate(idx_blocks):
+    for idx_block in idx_blocks:
         # get a single block of samples
-        block_drop_mask = drop_mask[idx_block]
-        idx_block = idx_block[block_drop_mask == 0].to(y.device)
         curr_X, curr_y = X[idx_block], y[idx_block]
+    
+        # accum grads for this single block
+        accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm)
 
-        optimizer.zero_grad()
-
-        if spectral_signature_args['search_space'] == 'embedding':
-            ps_grads, curr_embeddings = _get_per_sample_grads(model, curr_X, curr_y, criterion)
-        else:
-            ps_grads = get_per_sample_grads(model, curr_X, curr_y, criterion)
-        ps_grads_clipped, ps_grad_norms_data = clip_per_sample_grads(ps_grads, max_grad_norm)
-
-        with torch.no_grad():
-            accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-
-        # if find_outliers:
-        #     del ps_grads_clipped
-        #     torch.cuda.empty_cache()
+        # Store before norms in scores
+        # scores.append(curr_ps_grad_norms_data['before'])
+        scores.append(curr_last_layer_norms)
+        # scores.append(curr_cosine_sims)
 
         # accum grads for all blocks
         if accum_grad is None:
@@ -158,129 +161,52 @@ def global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm
                 for name, curr_grad in accum_grad_block.items():
                     accum_grad[name] = accum_grad[name] + curr_grad
 
-
-        if spectral_signature_args['search_space'] == 'embedding':
-            all_embeddings.append(curr_embeddings.cpu().numpy())
-        else:
-            for name, _ in model.named_parameters():
-                all_ps_grads[name].append(ps_grads[name].cpu().numpy())
-
-            all_ps_grad_norms_data_before.append(ps_grad_norms_data['before'].cpu().numpy())
-
-    if spectral_signature_args['search_space'] == 'embedding':
-        all_embeddings = np.concatenate(all_embeddings)
-
-    for name, grads in all_ps_grads.items():
-        all_ps_grads[name] = np.concatenate(grads)
-
-    all_ps_grad_norms_data_before = np.concatenate(all_ps_grad_norms_data_before)
+    scores = np.concatenate(scores)
+    # Print indices of top 5 scores
+    # k = 5
+    # topk_idx = np.argpartition(-scores, k)[:k]
+    # print('Top Across D:', topk_idx)
+    # print('Max vs Canary Score Across D', max(scores), scores[-1], min(scores))
+    # if len(scores) - 1 in topk_idx:
+    #     print('CANARY GETS THROWN OUT full')
+    # canary_class_scores = scores[y.cpu().numpy() == y[-1].cpu().numpy()]
+    # print('Canary index in D[k]', len(canary_class_scores) - 1)
+    # topk_idx_class = np.argpartition(-canary_class_scores, k)[:k]
+    # print('Top Across D[k]', topk_idx_class)
+    # if len(canary_class_scores) - 1 in topk_idx_class:
+    #     print('CANARY GETS THROWN OUT')
+    # print('Max vs Canary Score Across D[k]', max(canary_class_scores), canary_class_scores[-1], min(canary_class_scores))
     
-    if find_outliers:
-        cpu_y = y.cpu().numpy()[drop_mask == 0]
-        all_scores = np.zeros_like(cpu_y, dtype=float)
+    # Privatize scores
+    # Per-class:
+        # Clip the per-sample gradients
+        # Take the mean of the clipped gradients
+        # Recenter the unclipped gradients with this clipped mean
+        # Take the norm of the unclipped but centered gradients
+        # Add Laplace noise
+        # Choose top-k
+    # Print indices of top 5 scores
 
-        with torch.no_grad():
-            for k in range(0, 10):
-                if spectral_signature_args['search_space'] == 'embeddings':
-                    k_spectral_space = all_embeddings[cpu_y == k]
-                else:
-                    mask = cpu_y == k
-                    grads_w = all_ps_grads[last_w_name][mask]
-                    grads_b = all_ps_grads[last_b_name][mask]
-                    w = np.vstack([g[k] for g in grads_w])
-                    b = np.vstack([g[k] for g in grads_b])
+    # global_indices = torch.arange(start=0, end=len(drop_mask), step=1, device=y.device)
+    # active_global_indices = global_indices[drop_mask == 0]
+    # global_indices_to_filter = active_global_indices[topk_idx]
+    # drop_mask[global_indices_to_filter] = 1
 
-                    k_spectral_space = np.concatenate((w, b), axis=1)
-                
-                # Center spectral space
-                k_spectral_space = k_spectral_space - k_spectral_space.mean(axis=0, keepdims=True)
-                
-                if spectral_signature_args['scoring_fn'] == 'whitened_norm':
-                    W = whiten_np(k_spectral_space)
-                    k_spectral_space = k_spectral_space @ W
-                    scores = np.linalg.norm(k_spectral_space, axis=1)
+    # Recompute gradients for top 5 indices
+    # X_filter, y_filter = X[topk_idx], y[topk_idx]
+    # filter_accum_grad_block, _, _, _ = clip_and_accum_grads_block(model, X_filter, y_filter, optimizer, criterion, max_grad_norm)
 
-                elif spectral_signature_args['scoring_fn'] == 'norm':
-                    scores = np.linalg.norm(k_spectral_space, axis=1)
+    # subtract from accum grad
+    # with torch.no_grad():
+    #     for name, curr_grad in filter_accum_grad_block.items():
+    #         accum_grad[name] = accum_grad[name] - curr_grad
+    
+    return accum_grad, drop_mask
 
-                elif spectral_signature_args['scoring_fn'] == 'scaled_norm':
-                    k_std = np.std(k_spectral_space, axis=0, keepdims=True, ddof=0)
-                    k_spectral_space = k_spectral_space / k_std
-                    scores = torch.linalg.norm(k_spectral_space, axis=1)
-
-                elif spectral_signature_args['scoring_fn'] == 'pca':
-                    _, _, vt = np.linalg.svd(k_spectral_space, full_matrices=False)
-                    pc1 = vt[0].reshape(1, -1)
-                    projections = pc1 @ k_spectral_space.T
-                    scores = np.linalg.norm(projections, axis=0)
-
-                elif spectral_signature_args['scoring_fn'] == 'scaled_pca':
-                    k_std = np.std(k_spectral_space, axis=0, keepdims=True, ddof=0)
-                    k_spectral_space = k_spectral_space / k_std
-                    _, _, vt = np.linalg.svd(k_spectral_space, full_matrices=False)
-                    pc1 = vt[0].reshape(1, -1)
-                    projections = pc1 @ k_spectral_space.T
-                    scores = np.linalg.norm(projections, axis=0)
-
-                else:
-                    raise NotImplementedError
-
-                all_scores[cpu_y == k] = scores
-            
-            all_scores_idx = np.flip(np.argsort(all_scores))
-
-            canary_rank = np.where(all_scores_idx == (len(all_scores_idx) - 1))[0]
-
-            if spectral_signature_args['store_canary_rank'] is not None:
-                print('Canary Rank:', canary_rank)
-                if not canary_dropped and canary_rank < N_drop:
-                    _, _, vt = np.linalg.svd(k_spectral_space, full_matrices=False)
-                    projections = k_spectral_space @ vt[:2].T
-                    plt.clf()
-                    plt.figure()
-                    plt.scatter(projections[:, 0], projections[:, 1], alpha=0.6, color='blue')
-                    plt.scatter(projections[-1, 0], projections[-1, 1], color='red', label='Canary')               
-                    plt.xlabel('PC1')
-                    plt.ylabel('PC2')
-                    plt.title('Projection onto First 2 Components of Spectral Space')
-                    plt.legend()
-                    plt.grid(True)
-                    plt.savefig(f'{out}/spectral_sig_viz.png')
-                    # Plot the score distribution on the iteration where the canary is dropped
-                    plt.clf()
-                    plt.figure()
-                    plt.plot(sorted(all_scores), color='blue')
-                    plt.plot(len(all_scores) - N_drop - 1, sorted(all_scores)[-1 * N_drop - 1].item(), marker='o', color='green', markersize=10, label='Smallest Dropped Score')
-                    plt.plot(len(all_scores) - 1, all_scores[-1].item(), marker='o', color='red', markersize=10, label='Canary Score')
-
-                    plt.title("Sorted Scores (Outliers will pop)")
-                    plt.yscale('log')
-                    plt.ylabel("Score")
-                    plt.legend()
-                    plt.grid(True)
-                    plt.savefig(f'{out}/score_dist.png')
-
-                    canary_dropped = True
-
-                spectral_signature_args['store_canary_rank'].append(canary_rank)
-
-            if use_defense != '':
-                abs_score_idx = np.flatnonzero(~drop_mask)[all_scores_idx[:N_drop]]
-                drop_mask[abs_score_idx] = 1
-                for idx in all_scores_idx[:N_drop]:
-                    for name, _ in model.named_parameters():
-                        clipping_factor = 1 / max(1, all_ps_grad_norms_data_before[idx] / max_grad_norm)
-
-                        if use_defense['drop']:
-                            accum_grad[name] -= clipping_factor * torch.tensor(ps_grads[name][idx], dtype=torch.float32).to(y.device)
-                        elif use_defense == 'grad_ascent':
-                            accum_grad[name] -= 2 * clipping_factor * torch.tensor(ps_grads[name][idx], dtype=torch.float32).to(y.device)
-
-    return accum_grad
 
 
 # TODO: switch back from ps_grads_clipped, get rid of noised gradients
-def local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, use_defense=False, spectral_signature_args=None):
+def ___local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, use_defense=False, spectral_signature_args=None):
     """Clip and accumulate gradients in blocks of samples to conserve gpu space"""
     
     n_epochs = 100 if spectral_signature_args is None else spectral_signature_args['n_epochs']
@@ -459,103 +385,3 @@ def local_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
     return accum_grad
 
-
-
-
-def _global_clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, use_defense=False, spectral_signature_args=None):
-    """Clip and accumulate gradients in blocks of samples to conserve gpu space"""
-
-    N_drop = int(0.05 * len(y) // (100 * (len(y) // block_size)))
-
-    find_outliers = False
-    drop_mask = torch.zeros_like(y)
-
-    if spectral_signature_args:
-        drop_mask = spectral_signature_args['drop_mask']
-        find_outliers = True
-
-
-    accum_grad = None
-
-    for k in range(0, 10):
-        curr_X, curr_y = X[(y == k) & (drop_mask == 0)], y[(y == k) & (drop_mask == 0)]
-        optimizer.zero_grad()
-
-        ps_grads = get_per_sample_grads(model, curr_X, curr_y, criterion)
-        ps_grads_clipped, ps_grad_norms_data = clip_per_sample_grads(ps_grads, max_grad_norm)
-
-        with torch.no_grad():
-            accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-        
-        del ps_grads_clipped
-        torch.cuda.empty_cache()
-
-        # accum grads for all blocks
-        if accum_grad is None:
-            accum_grad = accum_grad_block
-        else:
-            with torch.no_grad():
-                for name, curr_grad in accum_grad_block.items():
-                    accum_grad[name] = accum_grad[name] + curr_grad
-        ###################################################
-
-    #     if find_outliers:
-    #         with torch.no_grad():
-
-    #             k_spectral_space = None
-    #             last_layer_name = list(model.net.named_modules())[-1][0]
-    #             last_w_name = 'net.' + last_layer_name + '.weight'
-    #             last_b_name = 'net.' + last_layer_name + '.bias'
-
-    #             w = torch.vstack([
-    #                 curr_grad[k] for curr_grad in ps_grads[last_w_name]
-    #             ])
-
-    #             b = torch.vstack([
-    #                 curr_grad[k] for curr_grad in ps_grads[last_b_name]
-    #             ])
-
-    #             k_spectral_space = torch.cat((w, b), dim=1)
-     
-    #             # Center last layer gradients
-    #             k_spectral_space = k_spectral_space - k_spectral_space.mean(dim=0, keepdim=True)
-                        
-    #             if spectral_signature_args['scoring_fn'] == 'whitened_norm':
-    #                 W = whiten(k_spectral_space)
-    #                 k_spectral_space = k_spectral_space @ W
-
-    #             if spectral_signature_args['scoring_fn'] == 'pca':
-    #                 _, _, vt = torch.linalg.svd(k_spectral_space, full_matrices=False)
-    #                 pc1 = vt[0].reshape(1, -1)
-    #                 projections = pc1 @ k_spectral_space.T
-    #                 scores = torch.linalg.norm(projections, dim=0)
-
-    #             elif spectral_signature_args['scoring_fn'] in ['norm', 'whitened_norm']:
-    #                 # # TODO: remove this
-    #                 # k_std = k_spectral_space.std(dim=0, keepdim=True, unbiased=False)
-    #                 # k_spectral_space = k_spectral_space / k_std
-
-    #                 scores = torch.linalg.norm(k_spectral_space, dim=1)
-
-    #             all_scores_in_block_idx = torch.argsort(scores, descending=True)
-
-    #             if drop_mask[-1] == 0 and k == y[-1]:
-    #                 canary_rank = torch.where(all_scores_in_block_idx == (len(all_scores_in_block_idx) - 1))[0]
-
-    #                 if spectral_signature_args['store_canary_rank'] is not None:
-    #                     print('Canary Rank:', canary_rank)
-    #                     spectral_signature_args['store_canary_rank'].append(canary_rank.item())
-
-    #             if use_defense != '':
-    #                 drop_mask[torch.where((y == k) & (drop_mask == 0))[0][all_scores_in_block_idx[:N_drop]]] = 1
-    #                 for idx in all_scores_in_block_idx[:5]:
-    #                     for name, _ in model.named_parameters():
-    #                         clipping_factor = 1 / max(1, ps_grad_norms_data['before'][idx].item() / max_grad_norm)
-    #                         if use_defense == 'drop':
-    #                             accum_grad[name] -= clipping_factor * ps_grads[name][idx]
-    #                         elif use_defense == 'grad_ascent':
-    #                             accum_grad[name] -= 2 * clipping_factor * ps_grads[name][idx]
-    #                         elif use_defense == 'adaptive_clipping':
-    #                             pass
-
-    return accum_grad
