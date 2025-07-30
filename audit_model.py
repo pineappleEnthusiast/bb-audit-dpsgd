@@ -32,7 +32,8 @@ def xavier_init_model(model):
     def init_weights(m):
         if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
             torch.nn.init.xavier_normal_(m.weight)
-            m.bias.data.fill_(0.01)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
 
     model.apply(init_weights)
 
