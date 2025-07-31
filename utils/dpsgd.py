@@ -6,6 +6,7 @@ import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
 import threading
+import copy
 
 
 def get_per_sample_grads(model, X, y, criterion):
@@ -15,7 +16,7 @@ def get_per_sample_grads(model, X, y, criterion):
     params = {k: v.detach() for k, v in model.named_parameters()}
     # map of buffer names : buffer balues
     buffers = {k: v.detach() for k, v in model.named_buffers()}
-    
+
     def compute_loss(params, buffers, sample, target):
         batch = sample.unsqueeze(0)
         targets = target.unsqueeze(0)
@@ -92,12 +93,12 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     # Compute flattened norm across all param grads
     per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
     all_norms = torch.zeros_like(y, dtype=torch.float32)
-    for k in range(10):
-        k_last_layer_grads = per_sample_flat_grads[y == k]
-        centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
-        # take norm of each class
-        centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
-        all_norms[y == k] = centered_k_last_layer_norms
+    # for k in range(10):
+    #     k_last_layer_grads = per_sample_flat_grads[y == k]
+    #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+    #     # take norm of each class
+    #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
+    #     all_norms[y == k] = centered_k_last_layer_norms
 
     # all_norms = (per_sample_flat_grads - per_sample_flat_grads.mean(dim=0, keepdim=True)).norm(float('inf'), dim=1)
     
@@ -145,28 +146,32 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
     idx_blocks = torch.split(torch.from_numpy(np.arange(len(X))), block_size)
 
     # Split blocks between two GPUs if available
-    if torch.cuda.device_count() >= 2:
-        # Split blocks into two equal parts
-        mid_point = len(idx_blocks) // 2
-        gpu1_blocks = idx_blocks[:mid_point]
-        gpu2_blocks = idx_blocks[mid_point:]
-        
-        # Process blocks in parallel using two GPUs
+    if torch.cuda.device_count() >= 3:
+        # Split blocks into three roughly equal parts
+        n_blocks = len(idx_blocks)
+        split1 = n_blocks // 3
+        split2 = 2 * n_blocks // 3
+
+        gpu0_blocks = idx_blocks[:split1]
+        gpu1_blocks = idx_blocks[split1:split2]
+        gpu2_blocks = idx_blocks[split2:]
+
         # Create models for each GPU
-        model_gpu1 = model.to('cuda:0')
-        model_gpu2 = model.to('cuda:1')
-        
+        model_gpu0 = copy.deepcopy(model).to('cuda:0')
+        model_gpu1 = copy.deepcopy(model).to('cuda:1')
+        model_gpu2 = copy.deepcopy(model).to('cuda:2')
+
         # Create separate optimizers for each GPU
-        optimizer_gpu1 = optim.SGD(model_gpu1.parameters(), lr=lr)
-        optimizer_gpu2 = optim.SGD(model_gpu2.parameters(), lr=lr)
-        
-        # Process blocks in parallel
+        optimizer_gpu0 = torch.optim.SGD(model_gpu0.parameters(), lr=optimizer.param_groups[0]['lr'])
+        optimizer_gpu1 = torch.optim.SGD(model_gpu1.parameters(), lr=optimizer.param_groups[0]['lr'])
+        optimizer_gpu2 = torch.optim.SGD(model_gpu2.parameters(), lr=optimizer.param_groups[0]['lr'])
+
         def process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu):
             accum_grad = None
             scores = []
             for idx_block in blocks:
                 curr_X, curr_y = X[idx_block].to(f'cuda:{gpu_id}'), y[idx_block].to(f'cuda:{gpu_id}')
-                accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = clip_and_accum_grads_block(
+                accum_grad_block, _, curr_last_layer_norms, _ = clip_and_accum_grads_block(
                     model_gpu, curr_X, curr_y, optimizer_gpu, criterion, max_grad_norm, device=f'cuda:{gpu_id}'
                 )
                 if accum_grad is None:
@@ -175,24 +180,44 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
                     accum_grad = {name: accum_grad[name] + accum_grad_block[name] for name in accum_grad}
                 scores.extend(curr_last_layer_norms)
             return accum_grad, scores
-        
-        # Process blocks in parallel using threading
-        thread1 = threading.Thread(target=process_blocks, args=(0, gpu1_blocks, model_gpu1, optimizer_gpu1))
-        thread2 = threading.Thread(target=process_blocks, args=(1, gpu2_blocks, model_gpu2, optimizer_gpu2))
-        
-        thread1.start()
-        thread2.start()
-        
-        results1 = thread1.join()
-        results2 = thread2.join()
-        
-        # Combine results from both GPUs
-        accum_grad = {name: results1[0][name] + results2[0][name] for name in results1[0]}
-        scores = results1[1] + results2[1]
-        
+
+        def thread_func(gpu_id, blocks, model_gpu, optimizer_gpu, results):
+            accum_grad, scores = process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu)
+            results[gpu_id] = (accum_grad, scores)
+
+        results = {}
+        threads = []
+        for gpu_id, gpu_blocks, model_gpu, optimizer_gpu in [
+            (0, gpu0_blocks, model_gpu0, optimizer_gpu0),
+            (1, gpu1_blocks, model_gpu1, optimizer_gpu1),
+            (2, gpu2_blocks, model_gpu2, optimizer_gpu2)
+        ]:
+            thread = threading.Thread(target=thread_func, args=(gpu_id, gpu_blocks, model_gpu, optimizer_gpu, results))
+            thread.start()
+            threads.append(thread)
+
+        for thread in threads:
+            thread.join()
+
+        device = 'cuda:0'
+        # Combine results from all GPUs
+        accum_grad = {}
+        scores = []
+        for gpu_id in range(3):
+            gpu_accum_grad, gpu_scores = results[gpu_id]
+            if not accum_grad:
+                accum_grad = {name: gpu_accum_grad[name].to(device) for name in gpu_accum_grad}
+            else:
+                for name in accum_grad:
+                    accum_grad[name] = accum_grad[name] + gpu_accum_grad[name].to(device)
+            scores.extend(gpu_scores)
+
+        scores = np.array(scores)
+
         # Copy gradients back to original model
         for name, param in model.named_parameters():
             param.grad = accum_grad[name].to(device)
+
     else:
         # Process blocks in parallel
         accum_grad = None
@@ -218,7 +243,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
                     for name, curr_grad in accum_grad_block.items():
                         accum_grad[name] = accum_grad[name] + curr_grad
 
-    scores = np.concatenate(scores)
+        scores = np.concatenate(scores)
     # Print indices of top 5 scores
     # k = 5
     # topk_idx = np.argpartition(-scores, k)[:k]

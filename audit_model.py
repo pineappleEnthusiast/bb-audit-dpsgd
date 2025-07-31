@@ -37,13 +37,27 @@ def xavier_init_model(model):
 
     model.apply(init_weights)
 
+
+def kaiming_init_model(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    def init_weights(m):
+        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                m.bias.data.zero_()
+    model.apply(init_weights)
+
+
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False):
     """Train model w/ DP-SGD (no sub-sampling + gradients are summed instead of averaged)"""
     
     # initialize model, loss function, and optimizer
     if init_model is None:
         model = Models[model_name](X.shape, out_dim=out_dim, model_name=model_name).to(device)
-        xavier_init_model(model)
+        if model_name == 'cnn':
+            xavier_init_model(model)
+        else:
+            kaiming_init_model(model)
     else:
         model = copy.deepcopy(init_model)
 
@@ -251,11 +265,14 @@ if __name__ == '__main__':
 
     init_model = None
     if args.fixed_init is not None:
-        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim, model_name=args.model_name).to(device)
 
         if args.fixed_init == '':
             # initialize model (average-case)
-            xavier_init_model(init_model)
+            if args.model_name == 'cnn':
+                xavier_init_model(init_model)
+            else:
+                kaiming_init_model(init_model)
         else:
             # load weights from path (worst-case)
             init_model.load_state_dict(torch.load(args.fixed_init))
@@ -317,7 +334,6 @@ if __name__ == '__main__':
         reps_completed = len(losses[world])
 
         for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
-        
             # train model
             model = train_model(args.model_name, 
                                             curr_X, 
