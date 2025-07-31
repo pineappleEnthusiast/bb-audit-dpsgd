@@ -53,7 +53,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     
     # initialize model, loss function, and optimizer
     if init_model is None:
-        model = Models[model_name](X.shape, out_dim=out_dim, model_name=model_name).to(device)
+        model = Models[model_name](X.shape, out_dim=out_dim).to(device)
         if model_name == 'cnn':
             xavier_init_model(model)
         else:
@@ -63,6 +63,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
+    
+    # Add learning rate scheduler
+    if model_name == 'cnn':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr/100)
+    else:
+        scheduler = None
     
     # set noise level
     if epsilon is not None:
@@ -97,6 +103,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                                                 block_size=block_size,
                                                 drop_mask=drop_mask,
                                                 device=device)
+        
+        # Step the learning rate scheduler for CNN
+        if scheduler is not None:
+            scheduler.step()
         
         with torch.no_grad():   
             for name, param in model.named_parameters():
@@ -265,7 +275,7 @@ if __name__ == '__main__':
 
     init_model = None
     if args.fixed_init is not None:
-        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim, model_name=args.model_name).to(device)
+        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
 
         if args.fixed_init == '':
             # initialize model (average-case)
