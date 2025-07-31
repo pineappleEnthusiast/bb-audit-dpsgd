@@ -5,6 +5,7 @@ import torch
 import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
+import threading
 
 
 def get_per_sample_grads(model, X, y, criterion):
@@ -58,14 +59,19 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
     return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
 
 
-def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm):
-    """Clip and accumulate gradients of a single block of samples"""
+def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda'):
+    """Clip and accumulate gradients of a single block of samples using multiple GPUs"""
     optimizer.zero_grad()
 
     if len(X) == 0:
         # empty dataset
         ps_grads = { name: torch.zeros_like(param).unsqueeze(dim=0) for name, param in model.named_parameters() }
     else:
+        # Move data to appropriate device
+        X = X.to(device)
+        y = y.to(device)
+        
+        # Get per-sample gradients
         ps_grads = get_per_sample_grads(model, X, y, criterion)
 
     ps_grad_norms_data = { 'before': np.array([]), 'after': np.array([]) }
@@ -129,8 +135,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm)
     return accum_grad_block, ps_grad_norms_data, last_layer_norms, None
 
 
-def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, drop_mask=None):
-    """Clip and accumulate gradients in blocks of samples to conserve gpu space"""
+def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, drop_mask=None, device='cuda'):
+    """Clip and accumulate gradients in blocks of samples using multiple GPUs"""
     # exclude things we've already dropped
     X = X[drop_mask == 0]
     y = y[drop_mask == 0]
@@ -138,28 +144,79 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
     # split samples into blocks by index
     idx_blocks = torch.split(torch.from_numpy(np.arange(len(X))), block_size)
 
-    accum_grad = None
-    scores = []
+    # Split blocks between two GPUs if available
+    if torch.cuda.device_count() >= 2:
+        # Split blocks into two equal parts
+        mid_point = len(idx_blocks) // 2
+        gpu1_blocks = idx_blocks[:mid_point]
+        gpu2_blocks = idx_blocks[mid_point:]
+        
+        # Process blocks in parallel using two GPUs
+        # Create models for each GPU
+        model_gpu1 = model.to('cuda:0')
+        model_gpu2 = model.to('cuda:1')
+        
+        # Create separate optimizers for each GPU
+        optimizer_gpu1 = optim.SGD(model_gpu1.parameters(), lr=lr)
+        optimizer_gpu2 = optim.SGD(model_gpu2.parameters(), lr=lr)
+        
+        # Process blocks in parallel
+        def process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu):
+            accum_grad = None
+            scores = []
+            for idx_block in blocks:
+                curr_X, curr_y = X[idx_block].to(f'cuda:{gpu_id}'), y[idx_block].to(f'cuda:{gpu_id}')
+                accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = clip_and_accum_grads_block(
+                    model_gpu, curr_X, curr_y, optimizer_gpu, criterion, max_grad_norm, device=f'cuda:{gpu_id}'
+                )
+                if accum_grad is None:
+                    accum_grad = accum_grad_block
+                else:
+                    accum_grad = {name: accum_grad[name] + accum_grad_block[name] for name in accum_grad}
+                scores.extend(curr_last_layer_norms)
+            return accum_grad, scores
+        
+        # Process blocks in parallel using threading
+        thread1 = threading.Thread(target=process_blocks, args=(0, gpu1_blocks, model_gpu1, optimizer_gpu1))
+        thread2 = threading.Thread(target=process_blocks, args=(1, gpu2_blocks, model_gpu2, optimizer_gpu2))
+        
+        thread1.start()
+        thread2.start()
+        
+        results1 = thread1.join()
+        results2 = thread2.join()
+        
+        # Combine results from both GPUs
+        accum_grad = {name: results1[0][name] + results2[0][name] for name in results1[0]}
+        scores = results1[1] + results2[1]
+        
+        # Copy gradients back to original model
+        for name, param in model.named_parameters():
+            param.grad = accum_grad[name].to(device)
+    else:
+        # Process blocks in parallel
+        accum_grad = None
+        scores = []
 
-    for idx_block in idx_blocks:
-        # get a single block of samples
-        curr_X, curr_y = X[idx_block], y[idx_block]
-    
-        # accum grads for this single block
-        accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm)
+        for idx_block in idx_blocks:
+            # get a single block of samples
+            curr_X, curr_y = X[idx_block], y[idx_block]
+        
+            # accum grads for this single block
+            accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm, device=device)
 
-        # Store before norms in scores
-        # scores.append(curr_ps_grad_norms_data['before'])
-        scores.append(curr_last_layer_norms)
-        # scores.append(curr_cosine_sims)
+            # Store before norms in scores
+            # scores.append(curr_ps_grad_norms_data['before'])
+            scores.append(curr_last_layer_norms)
+            # scores.append(curr_cosine_sims)
 
-        # accum grads for all blocks
-        if accum_grad is None:
-            accum_grad = accum_grad_block
-        else:
-            with torch.no_grad():
-                for name, curr_grad in accum_grad_block.items():
-                    accum_grad[name] = accum_grad[name] + curr_grad
+            # accum grads for all blocks
+            if accum_grad is None:
+                accum_grad = accum_grad_block
+            else:
+                with torch.no_grad():
+                    for name, curr_grad in accum_grad_block.items():
+                        accum_grad[name] = accum_grad[name] + curr_grad
 
     scores = np.concatenate(scores)
     # Print indices of top 5 scores

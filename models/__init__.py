@@ -3,5 +3,6 @@ from .cnn import CNN
 
 Models = {
     'lr': LR,
-    'cnn': CNN
+    'cnn': CNN,
+    'wideresnet': CNN
 }

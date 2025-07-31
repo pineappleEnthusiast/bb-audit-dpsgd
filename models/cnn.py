@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.nn import BatchNorm2d, Conv2d, Linear
 
 class CNN(nn.Module):
-    def __init__(self, in_shape=None, out_dim=10, dropout_rate=0, model_type='wideresnet'):
+    def __init__(self, in_shape=None, out_dim=10, dropout_rate=0, model_name='cnn'):
         super().__init__()
         self.embeddings = None
         if in_shape[1] == 1:
@@ -14,9 +14,9 @@ class CNN(nn.Module):
             self.net = SmallNetwork(out_dim=out_dim, dropout_rate=dropout_rate)
         elif in_shape[1] == 3:
             # CIFAR-10
-            if model_type == 'cnn':
+            if model_name == 'cnn':
                 self.net = BigNetwork(out_dim=out_dim, dropout_rate=dropout_rate)
-            elif model_type == 'wideresnet':
+            elif model_name == 'wideresnet':
                 self.net = WideResNet(depth=16, widen_factor=4, num_classes=out_dim)
 
     def forward(self, x):

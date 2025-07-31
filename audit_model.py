@@ -42,7 +42,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     
     # initialize model, loss function, and optimizer
     if init_model is None:
-        model = Models[model_name](X.shape, out_dim=out_dim).to(device)
+        model = Models[model_name](X.shape, out_dim=out_dim, model_name=model_name).to(device)
         xavier_init_model(model)
     else:
         model = copy.deepcopy(init_model)
@@ -81,7 +81,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                                                 criterion, 
                                                 max_grad_norm, 
                                                 block_size=block_size,
-                                                drop_mask=drop_mask)
+                                                drop_mask=drop_mask,
+                                                device=device)
         
         with torch.no_grad():   
             for name, param in model.named_parameters():
