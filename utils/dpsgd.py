@@ -86,9 +86,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     with torch.no_grad():
         accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
 
-    last_layer_name = list(model.net.named_modules())[-1][0]
-    last_w_name = 'net.' + last_layer_name + '.weight'
-    last_b_name = 'net.' + last_layer_name + '.bias'
+    # last_layer_name = list(model.net.named_modules())[-1][0]
+    # last_w_name = 'net.' + last_layer_name + '.weight'
+    # last_b_name = 'net.' + last_layer_name + '.bias'
 
     # Compute flattened norm across all param grads
     per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)

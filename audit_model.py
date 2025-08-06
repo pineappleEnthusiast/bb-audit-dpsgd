@@ -48,7 +48,7 @@ def kaiming_init_model(model):
     model.apply(init_weights)
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, batch_size=4096):
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, block_size, batch_size, device='cpu', init_model=None, out_dim=10, use_defense=False, store_canary_rank=False):
     """Train model w/ DP-SGD using pseudo-mini batches"""
     
     # initialize model, loss function, and optimizer
@@ -74,6 +74,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     # TODO: only use when defense
     drop_mask = torch.zeros_like(y)
+    
+    # Validate block_size and batch_size relationship
+    assert block_size < batch_size, "block_size must be smaller than batch_size"
     
     # train model for n_epochs
     for epoch in tqdm(range(n_epochs), leave=False):
@@ -240,7 +243,8 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
     parser.add_argument('--device', type=str, default='cuda:0', help='cuda device to use (cpu, cuda:X)')
     parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
-    parser.add_argument('--block_size', type=int, default=1000, help='process samples within a batch in blocks to conserve GPU space')
+    parser.add_argument('--block_size', type=int, help='process samples within a batch in blocks to conserve GPU space')
+    parser.add_argument('--batch_size', type=int, help='batch size for training')
     parser.add_argument('--resume', action='store_true', help='skip experiment if results are present')
     parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
     parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
@@ -373,9 +377,10 @@ if __name__ == '__main__':
                                             args.n_epochs, 
                                             args.lr, 
                                             spectral_signature_args, 
+                                            block_size=args.block_size, 
+                                            batch_size=args.batch_size,
                                             device=device, 
                                             init_model=init_model,
-                                            block_size=args.block_size, 
                                             out_dim=out_dim, 
                                             use_defense=args.defense, 
                                             store_canary_rank=args.store_canary_rank)
