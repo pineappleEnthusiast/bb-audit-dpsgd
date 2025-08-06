@@ -136,35 +136,36 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     return accum_grad_block, ps_grad_norms_data, last_layer_norms, None
 
 
-def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, drop_mask=None, device='cuda'):
+def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, drop_mask=None, device='cuda', target_in_batch=False, target_idx_in_batch=None, original_indices=None):
     """Clip and accumulate gradients in blocks of samples using multiple GPUs"""
-    # exclude things we've already dropped
-    X = X[drop_mask == 0]
-    y = y[drop_mask == 0]
+    # X and y already contain only non-dropped indices
+    # original_indices contains the original indices of these samples
 
     # split samples into blocks by index
     idx_blocks = torch.split(torch.from_numpy(np.arange(len(X))), block_size)
 
-    # Split blocks between two GPUs if available
-    if torch.cuda.device_count() >= 3:
-        # Split blocks into three roughly equal parts
+    # Split blocks among available GPUs
+    if torch.cuda.device_count() > 1:
+        # Get number of GPUs and blocks
+        n_gpus = torch.cuda.device_count()
         n_blocks = len(idx_blocks)
-        split1 = n_blocks // 3
-        split2 = 2 * n_blocks // 3
-
-        gpu0_blocks = idx_blocks[:split1]
-        gpu1_blocks = idx_blocks[split1:split2]
-        gpu2_blocks = idx_blocks[split2:]
-
-        # Create models for each GPU
-        model_gpu0 = copy.deepcopy(model).to('cuda:0')
-        model_gpu1 = copy.deepcopy(model).to('cuda:1')
-        model_gpu2 = copy.deepcopy(model).to('cuda:2')
-
-        # Create separate optimizers for each GPU
-        optimizer_gpu0 = torch.optim.SGD(model_gpu0.parameters(), lr=optimizer.param_groups[0]['lr'])
-        optimizer_gpu1 = torch.optim.SGD(model_gpu1.parameters(), lr=optimizer.param_groups[0]['lr'])
-        optimizer_gpu2 = torch.optim.SGD(model_gpu2.parameters(), lr=optimizer.param_groups[0]['lr'])
+        
+        # Split blocks evenly among GPUs
+        blocks_per_gpu = n_blocks // n_gpus
+        gpu_blocks = []
+        gpu_models = []
+        gpu_optimizers = []
+        
+        # Create models and optimizers for each GPU
+        for gpu_id in range(n_gpus):
+            start_idx = gpu_id * blocks_per_gpu
+            end_idx = (gpu_id + 1) * blocks_per_gpu if gpu_id < n_gpus - 1 else n_blocks
+            gpu_blocks.append(idx_blocks[start_idx:end_idx])
+            
+            # Create model and optimizer for this GPU
+            model_gpu = copy.deepcopy(model).to(f'cuda:{gpu_id}')
+            gpu_models.append(model_gpu)
+            gpu_optimizers.append(torch.optim.SGD(model_gpu.parameters(), lr=optimizer.param_groups[0]['lr']))
 
         def process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu):
             accum_grad = None
@@ -187,12 +188,12 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
 
         results = {}
         threads = []
-        for gpu_id, gpu_blocks, model_gpu, optimizer_gpu in [
-            (0, gpu0_blocks, model_gpu0, optimizer_gpu0),
-            (1, gpu1_blocks, model_gpu1, optimizer_gpu1),
-            (2, gpu2_blocks, model_gpu2, optimizer_gpu2)
-        ]:
-            thread = threading.Thread(target=thread_func, args=(gpu_id, gpu_blocks, model_gpu, optimizer_gpu, results))
+        # Create threads for each GPU
+        for gpu_id in range(n_gpus):
+            thread = threading.Thread(
+                target=thread_func, 
+                args=(gpu_id, gpu_blocks[gpu_id], gpu_models[gpu_id], gpu_optimizers[gpu_id], results)
+            )
             thread.start()
             threads.append(thread)
 
@@ -203,7 +204,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
         # Combine results from all GPUs
         accum_grad = {}
         scores = []
-        for gpu_id in range(3):
+        for gpu_id in range(n_gpus):
             gpu_accum_grad, gpu_scores = results[gpu_id]
             if not accum_grad:
                 accum_grad = {name: gpu_accum_grad[name].to(device) for name in gpu_accum_grad}
@@ -219,7 +220,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
             param.grad = accum_grad[name].to(device)
 
     else:
-        # Process blocks in parallel
+        # Process blocks in serial order
         accum_grad = None
         scores = []
 
@@ -244,6 +245,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
                         accum_grad[name] = accum_grad[name] + curr_grad
 
         scores = np.concatenate(scores)
+    
+    
     # Print indices of top 5 scores
     # k = 5
     # topk_idx = np.argpartition(-scores, k)[:k]

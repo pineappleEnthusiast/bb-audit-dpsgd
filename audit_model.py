@@ -48,8 +48,8 @@ def kaiming_init_model(model):
     model.apply(init_weights)
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False):
-    """Train model w/ DP-SGD (no sub-sampling + gradients are summed instead of averaged)"""
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, batch_size=64):
+    """Train model w/ DP-SGD using pseudo-mini batches"""
     
     # initialize model, loss function, and optimizer
     if init_model is None:
@@ -63,12 +63,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
-    
-    # Add learning rate scheduler
-    if model_name == 'cnn':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr/100)
-    else:
-        scheduler = None
     
     # set noise level
     if epsilon is not None:
@@ -94,33 +88,60 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             print(probs[0][4])
         model.train()
 
-        curr_accumulated_gradients, drop_mask = clip_and_accum_grads(model, 
-                                                X, 
-                                                y, 
+        # Filter out dropped indices first
+        non_dropped_indices = torch.where(drop_mask == 0)[0]  # Get indices of non-dropped samples
+        target_idx = len(X) - 1  # Target is always the last sample in the original dataset
+        
+        # Shuffle non-dropped indices
+        shuffled_indices = torch.randperm(len(non_dropped_indices)) # Elements are the global indices in a new order
+        batch_start = 0
+        batch_idx = 0
+        while batch_start < len(non_dropped_indices):
+            batch_end = min(batch_start + batch_size, len(non_dropped_indices))
+            batch_indices = shuffled_indices[batch_start:batch_end]  # Elements are still the global indices, just a subset of them
+            curr_X = X[batch_indices]
+            curr_y = y[batch_indices]
+            
+            # Update batch tracking info
+            if target_idx in batch_indices:
+                target_batch_idx = batch_start // batch_size
+                target_idx_in_batch = torch.where(batch_indices == target_idx)[0][0]
+
+            # Process batch
+            # Check if this batch contains the target example
+            target_in_batch = False
+            if batch_idx == target_batch_idx:
+                target_in_batch = True
+            
+            curr_accumulated_gradients, drop_mask = clip_and_accum_grads(model, 
+                                                curr_X, 
+                                                curr_y, 
                                                 optimizer, 
                                                 criterion, 
                                                 max_grad_norm, 
                                                 block_size=block_size,
                                                 drop_mask=drop_mask,
-                                                device=device)
-        
-        # Step the learning rate scheduler for CNN
-        if scheduler is not None:
-            scheduler.step()
-        
-        with torch.no_grad():   
-            for name, param in model.named_parameters():
-                curr_param_gradient = curr_accumulated_gradients[name]
+                                                device=device,
+                                                target_in_batch=target_in_batch,
+                                                target_idx_in_batch=target_idx_in_batch if target_in_batch else None,
+                                                original_indices=batch_indices)
 
-                if noise_multiplier > 0 and max_grad_norm is not None:
+            # Update parameters after processing each batch
+            with torch.no_grad():   
+                for name, param in model.named_parameters():
+                    curr_param_gradient = curr_accumulated_gradients[name]
+
+                    if noise_multiplier > 0 and max_grad_norm is not None:
                         # add noise
                         curr_param_gradient = curr_param_gradient + noise_multiplier * max_grad_norm * torch.randn_like(curr_param_gradient)
 
-                # update gradient of parameter
-                param.grad = curr_param_gradient
-                
-        # update parameter
-        optimizer.step()
+                    # update gradient of parameter
+                    param.grad = curr_param_gradient
+                    
+            # update parameter
+            optimizer.step()
+
+            batch_idx += 1
 
     return model
 
