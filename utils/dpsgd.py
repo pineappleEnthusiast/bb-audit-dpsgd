@@ -149,6 +149,9 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block
         # Get number of GPUs and blocks
         n_gpus = torch.cuda.device_count()
         n_blocks = len(idx_blocks)
+
+        if n_blocks < n_gpus:
+            n_gpus = n_blocks
         
         # Split blocks evenly among GPUs
         blocks_per_gpu = n_blocks // n_gpus

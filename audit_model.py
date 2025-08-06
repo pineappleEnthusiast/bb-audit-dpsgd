@@ -48,7 +48,7 @@ def kaiming_init_model(model):
     model.apply(init_weights)
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, batch_size=64):
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, device='cpu', init_model=None, block_size=1024, out_dim=10, use_defense=False, store_canary_rank=False, batch_size=4096):
     """Train model w/ DP-SGD using pseudo-mini batches"""
     
     # initialize model, loss function, and optimizer
@@ -85,7 +85,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         with torch.no_grad():
             output = model(X_target)
             probs = torch.nn.functional.softmax(output, dim=1)
-            print(probs[0][4])
+            print(probs[0][target_y])
         model.train()
 
         # Filter out dropped indices first
@@ -102,15 +102,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             curr_X = X[batch_indices]
             curr_y = y[batch_indices]
             
+            target_in_batch = False
             # Update batch tracking info
             if target_idx in batch_indices:
-                target_batch_idx = batch_start // batch_size
                 target_idx_in_batch = torch.where(batch_indices == target_idx)[0][0]
-
-            # Process batch
-            # Check if this batch contains the target example
-            target_in_batch = False
-            if batch_idx == target_batch_idx:
                 target_in_batch = True
             
             curr_accumulated_gradients, drop_mask = clip_and_accum_grads(model, 
@@ -142,6 +137,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             optimizer.step()
 
             batch_idx += 1
+            batch_start = batch_end
 
     return model
 
