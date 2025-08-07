@@ -38,14 +38,26 @@ def xavier_init_model(model):
     model.apply(init_weights)
 
 
-def kaiming_init_model(model):
+def init_wideresnet(model):
     """Initialize model using Kaiming initialization (He init) for ReLU"""
-    def init_weights(m):
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-            torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             if m.bias is not None:
-                m.bias.data.zero_()
-    model.apply(init_weights)
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
+
+    # def init_weights(m):
+    #     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+    #         torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    #         if m.bias is not None:
+    #             m.bias.data.zero_()
+    # model.apply(init_weights)
 
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, block_size, batch_size, device='cpu', init_model=None, out_dim=10, use_defense=False, store_canary_rank=False):
@@ -57,7 +69,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         if model_name == 'cnn':
             xavier_init_model(model)
         else:
-            kaiming_init_model(model)
+            init_wideresnet(model)
     else:
         model = copy.deepcopy(init_model)
 
@@ -303,7 +315,7 @@ if __name__ == '__main__':
             if args.model_name == 'cnn':
                 xavier_init_model(init_model)
             else:
-                kaiming_init_model(init_model)
+                init_wideresnet(init_model)
         else:
             # load weights from path (worst-case)
             init_model.load_state_dict(torch.load(args.fixed_init))
