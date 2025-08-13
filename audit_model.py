@@ -23,6 +23,33 @@ from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
 import gc
 
+import torchvision.transforms.v2 as T
+
+class AugmentationFunction:
+    def __init__(self):
+        # Create the base transforms
+        self.base_transforms = T.Compose([
+            T.RandomCrop(32, padding=4),
+            T.RandomHorizontalFlip(p=0.5)
+        ])
+    
+    def __call__(self, x):
+        """
+        This ensures each call gets fresh randomness
+        """
+        # Handle both single samples and batches
+        is_single_sample = len(x.shape) == 3
+        if is_single_sample:
+            x = x.unsqueeze(0)
+        
+        # Apply transforms (Compose handles randomness properly)
+        x = self.base_transforms(x)
+        
+        if is_single_sample:
+            x = x.squeeze(0)
+        
+        return x
+
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -88,20 +115,14 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     drop_mask = torch.zeros_like(y)
     
     # Validate block_size and batch_size relationship
-    assert block_size < batch_size, "block_size must be smaller than batch_size"
+    assert block_size <= batch_size, "block_size must be smaller than batch_size"
+
+    aug_fn = AugmentationFunction()
     
     # train model for n_epochs
     for epoch in tqdm(range(n_epochs), leave=False):
         print('Epoch:', epoch)
         optimizer.zero_grad()
-
-        # Prob of predicting canary correctly
-        model.eval()
-        with torch.no_grad():
-            output = model(X_target)
-            probs = torch.nn.functional.softmax(output, dim=1)
-            print(probs[0][target_y])
-        model.train()
 
         # Filter out dropped indices first
         non_dropped_indices = torch.where(drop_mask == 0)[0]  # Get indices of non-dropped samples
@@ -134,7 +155,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                                                 device=device,
                                                 target_in_batch=target_in_batch,
                                                 target_idx_in_batch=target_idx_in_batch if target_in_batch else None,
-                                                original_indices=batch_indices)
+                                                original_indices=batch_indices,
+                                                aug_mult=16,
+                                                aug_fn=aug_fn)
 
             # Update parameters after processing each batch
             with torch.no_grad():   
@@ -426,7 +449,7 @@ if __name__ == '__main__':
                     plt.grid(True)
                     plt.savefig(f'{out_folder}/canary_ranks.png')
 
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
 
             # save checkpoint
             save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
