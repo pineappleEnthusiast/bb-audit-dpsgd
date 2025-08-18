@@ -15,6 +15,8 @@ import dill
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
+from models.wideresnet import WideResNet, WSConv2d
+
 from models import Models
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads
@@ -68,7 +70,9 @@ def xavier_init_model(model):
 def init_wideresnet(model):
     """Initialize model using Kaiming initialization (He init) for ReLU"""
     for m in model.modules():
-        if isinstance(m, nn.Conv2d):
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
@@ -178,6 +182,148 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             batch_start = batch_end
 
     return model
+
+# import torch
+# import threading
+# import concurrent.futures
+# from tqdm import tqdm
+
+# def sync_gpu_models(main_model, gpu_models):
+#     """Copy main model parameters to each GPU replica."""
+#     for gpu_model in gpu_models:
+#         for param_main, param_gpu in zip(main_model.parameters(), gpu_model.parameters()):
+#             param_gpu.data.copy_(param_main.data)
+
+
+
+# def train_model(
+#     model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm,
+#     n_epochs, lr, spectral_signature_args, block_size, batch_size,
+#     device='cpu', init_model=None, out_dim=10, use_defense=False,
+#     store_canary_rank=False, cpu_process_fn=None
+# ):
+#     """Train model w/ DP-SGD using pseudo-mini batches + GPU-CPU pipelining."""
+    
+#     # ---------- model init ----------
+#     if init_model is None:
+#         model = Models[model_name](X.shape, out_dim=out_dim).to(device)
+#         if model_name == 'cnn':
+#             xavier_init_model(model)
+#         else:
+#             init_wideresnet(model)
+#     else:
+#         model = copy.deepcopy(init_model).to(device)
+    
+#     criterion = torch.nn.CrossEntropyLoss()
+#     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+
+#     # DP noise
+#     if epsilon is not None:
+#         noise_multiplier = get_noise_multiplier(
+#             target_epsilon=epsilon,
+#             target_delta=delta,
+#             sample_rate=1.0,
+#             epochs=n_epochs,
+#             accountant='rdp'
+#         )
+#     else:
+#         noise_multiplier = 0.0
+#     drop_mask = torch.zeros_like(y)
+#     assert block_size <= batch_size
+#     aug_fn = AugmentationFunction()
+
+#     # Initialize GPU replicas if multi-GPU
+#     gpu_models, gpu_optimizers = [], []
+#     if torch.cuda.device_count() > 1:
+#         for gpu_id in range(torch.cuda.device_count()):
+#             m = copy.deepcopy(model).to(f'cuda:{gpu_id}')
+#             gpu_models.append(m)
+#             gpu_optimizers.append(torch.optim.SGD(m.parameters(), lr=lr))
+
+#     # ---------- training loop ----------
+#     for epoch in tqdm(range(n_epochs), leave=False):
+#         print("Epoch:", epoch)
+#         optimizer.zero_grad()
+
+#         non_dropped_indices = torch.where(drop_mask == 0)[0]
+#         target_idx = len(X) - 1
+#         shuffled_indices = torch.randperm(len(non_dropped_indices))
+
+#         batch_start = 0
+#         batch_idx = 0
+
+#         # ThreadPool for per-batch CPU work
+#         cpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+#         prev_cpu_future = None
+
+#         while batch_start < len(non_dropped_indices):
+#             batch_end = min(batch_start + batch_size, len(non_dropped_indices))
+#             batch_positions = shuffled_indices[batch_start:batch_end]
+#             batch_indices = non_dropped_indices[batch_positions]
+
+#             curr_X = X[batch_indices]
+#             curr_y = y[batch_indices]
+
+#             target_in_batch = target_idx in batch_indices
+#             target_idx_in_batch = (batch_indices == target_idx).nonzero(as_tuple=True)[0][0] if target_in_batch else None
+
+#             if gpu_models:
+#                 # sync all GPU replicas to current main model
+#                 sync_gpu_models(model, gpu_models)
+
+
+#             # ---------- compute gradients (multi-GPU or single) ----------
+#             curr_accumulated_gradients, drop_mask = clip_and_accum_grads(
+#                 model,
+#                 X[batch_indices],
+#                 y[batch_indices],
+#                 optimizer,
+#                 criterion,
+#                 max_grad_norm,
+#                 block_size=block_size,
+#                 drop_mask=drop_mask,
+#                 device=device,
+#                 target_in_batch=(target_idx in batch_indices),
+#                 target_idx_in_batch=torch.where(batch_indices == target_idx)[0][0] if target_idx in batch_indices else None,
+#                 original_indices=batch_indices,
+#                 aug_mult=16,
+#                 aug_fn=aug_fn,
+#                 gpu_models=gpu_models,
+#                 gpu_optimizers=gpu_optimizers
+#             )
+
+#             # Apply noise for DP-SGD
+#             with torch.no_grad():
+#                 for name, param in model.named_parameters():
+#                     param.grad = curr_accumulated_gradients[name].to(param.device)
+#                     if noise_multiplier > 0 and max_grad_norm is not None:
+#                         param.grad += noise_multiplier * max_grad_norm * torch.randn_like(param.grad)
+#             optimizer.step()
+#             optimizer.zero_grad(set_to_none=True)
+
+#             # ---------- CPU per-batch postprocessing ----------
+#             if cpu_process_fn is not None:
+#                 # launch CPU work asynchronously while next batch trains
+#                 if prev_cpu_future is not None:
+#                     prev_cpu_future.result()  # wait for previous CPU task
+#                 # move grad results or scores to CPU if needed
+#                 cpu_results = {k: v.detach().cpu() for k, v in curr_accumulated_gradients.items()}
+#                 prev_cpu_future = cpu_executor.submit(cpu_process_fn, cpu_results, batch_indices)
+
+#             batch_idx += 1
+#             batch_start = batch_end
+
+#         # wait for last batch CPU work
+#         if prev_cpu_future is not None:
+#             prev_cpu_future.result()
+#         cpu_executor.shutdown(wait=True)
+
+#         # ---------- end-of-epoch CPU processing ----------
+#         if cpu_process_fn is not None:
+#             cpu_process_fn(None, None, end_of_epoch=True)
+
+#     return model
+
 
 def test_model(model, X, y, batch_size=128):
     """Test trained model on test set"""

@@ -559,23 +559,84 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
 
 
+# def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
+#                          block_size=1024, drop_mask=None, device='cpu',
+#                          target_in_batch=False, target_idx_in_batch=None,
+#                          original_indices=None, aug_mult=1, aug_fn=None,
+#                          gpu_models=None, gpu_optimizers=None):
+#     """
+#     Clip and accumulate gradients in blocks. Supports augmentation multiplicity and multi-GPU.
+#     """
+#     idx_blocks = torch.split(torch.arange(len(X)), block_size)
+#     n_gpus = len(gpu_models) if gpu_models else 1
 
+#     # Prepare results dict for threads
+#     results, threads = {}, []
 
+#     def process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu, results_dict):
+#         accum_grad = None
+#         for idx_block in blocks:
+#             # Ensure CPU tensor
+#             curr_X = X[idx_block]
+#             curr_y = y[idx_block]
+#             if not curr_X.is_cuda:
+#                 curr_X = curr_X.pin_memory().to(f'cuda:{gpu_id}', non_blocking=True)
+#                 curr_y = curr_y.pin_memory().to(f'cuda:{gpu_id}', non_blocking=True)
+#             else:
+#                 curr_X = curr_X.to(f'cuda:{gpu_id}', non_blocking=True)
+#                 curr_y = curr_y.to(f'cuda:{gpu_id}', non_blocking=True)
 
+#             # Compute gradients for this block
+#             accum_grad_block, _, _, _ = clip_and_accum_grads_block(
+#                 model_gpu, curr_X, curr_y, optimizer_gpu, criterion, max_grad_norm,
+#                 device=f'cuda:{gpu_id}', aug_mult=aug_mult, aug_fn=aug_fn
+#             )
 
+#             # Accumulate
+#             if accum_grad is None:
+#                 accum_grad = {k: v.detach().cpu() for k, v in accum_grad_block.items()}
+#             else:
+#                 for k in accum_grad:
+#                     accum_grad[k] += accum_grad_block[k].detach().cpu()
+#         results_dict[gpu_id] = accum_grad
 
+#     # Launch threads if multi-GPU
+#     if gpu_models and n_gpus > 1:
+#         # Split blocks roughly evenly
+#         split_blocks = [list() for _ in range(n_gpus)]
+#         for i, blk in enumerate(idx_blocks):
+#             split_blocks[i % n_gpus].append(blk)
 
+#         # Start threads
+#         for gpu_id in range(n_gpus):
+#             thread = threading.Thread(
+#                 target=process_blocks,
+#                 args=(gpu_id, split_blocks[gpu_id], gpu_models[gpu_id], gpu_optimizers[gpu_id], results)
+#             )
+#             thread.start()
+#             threads.append(thread)
+#         for thread in threads:
+#             thread.join()
 
+#         # Aggregate results
+#         accum_grad_total = None
+#         for gpu_id in range(n_gpus):
+#             grad = results[gpu_id]
+#             if accum_grad_total is None:
+#                 accum_grad_total = grad
+#             else:
+#                 for k in accum_grad_total:
+#                     accum_grad_total[k] += grad[k]
 
+#     else:
+#         # Single GPU or CPU
+#         accum_grad_total = None
+#         gpu_model = gpu_models[0] if gpu_models else model
+#         optimizer_gpu = gpu_optimizers[0] if gpu_optimizers else optimizer
+#         process_blocks(0, idx_blocks, gpu_model, optimizer_gpu, results)
+#         accum_grad_total = results[0]
 
-
-
-
-
-
-
-
-
+#     return accum_grad_total, drop_mask
 
 
 
