@@ -214,8 +214,8 @@ class WSConv2d(nn.Module):
         # Gain parameter for weight standardization
         self.gain = nn.Parameter(torch.ones(out_channels))
         
-        # Initialize weights with fan-in variance scaling
-        self._initialize_weights()
+        # # Initialize weights with fan-in variance scaling
+        # self._initialize_weights()
     
     def _initialize_weights(self):
         """Initialize weights using fan-in variance scaling."""
