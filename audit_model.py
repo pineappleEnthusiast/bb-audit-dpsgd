@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from models import Models
+from models.wideresnet import WSConv2d
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
@@ -68,7 +69,9 @@ def xavier_init_model(model):
 def init_wideresnet(model):
     """Initialize model using Kaiming initialization (He init) for ReLU"""
     for m in model.modules():
-        if isinstance(m, nn.Conv2d):
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)

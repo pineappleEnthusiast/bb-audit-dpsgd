@@ -371,18 +371,18 @@ class ResidualBlock(nn.Module):
             self.skip_projection = nn.Sequential(
                 nn.ReLU(inplace=True),
                 nn.GroupNorm(16, in_channels),
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False)
+                WSConv2d(in_channels, out_channels, kernel_size=1, stride=stride)
             )
         
         # Main residual path - first conv
         self.norm1 = nn.GroupNorm(16, in_channels)
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, 
-                              stride=stride, padding=1, bias=False)
+        self.conv1 = WSConv2d(in_channels, out_channels, kernel_size=3, 
+                              stride=stride, padding=1)
         
         # Main residual path - second conv  
         self.norm2 = nn.GroupNorm(16, out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
-                              stride=1, padding=1, bias=False)
+        self.conv2 = WSConv2d(out_channels, out_channels, kernel_size=3,
+                              stride=1, padding=1)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the residual block."""
