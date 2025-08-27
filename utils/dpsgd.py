@@ -7,6 +7,7 @@ from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
 import threading
 import copy
+import pdb
 
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     """
@@ -27,61 +28,25 @@ def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
         return aug_fn(X), y
     
-    B, C, H, W = X.shape
-    device = X.device
+    # B, C, H, W = X.shape
+    # device = X.device
     
-    # BUG FIX: Instead of repeat(), we need to create separate augmentations
-    # The old approach created identical copies, then applied augmentation once
-    # This meant all "augmentations" of a sample were actually identical!
+    # augmented_samples = []
     
-    augmented_samples = []
+    # # Apply aug_mult different augmentations to each sample
+    # for mult_idx in range(aug_mult):
+    #     # Each iteration applies different random augmentations
+    #     X_aug_round = aug_fn(X)  # Different augmentation each time due to randomness
+    #     augmented_samples.append(X_aug_round)
     
-    # Apply aug_mult different augmentations to each sample
-    for mult_idx in range(aug_mult):
-        # Each iteration applies different random augmentations
-        X_aug_round = aug_fn(X)  # Different augmentation each time due to randomness
-        augmented_samples.append(X_aug_round)
-    
-    # Stack along new dimension, then flatten
-    X_aug = torch.stack(augmented_samples, dim=1)  # [B, aug_mult, C, H, W]
-    X_aug = X_aug.view(B * aug_mult, C, H, W)      # [B * aug_mult, C, H, W]
+    # # Stack along new dimension, then flatten
+    # X_aug = torch.stack(augmented_samples, dim=1)  # [B, aug_mult, C, H, W]
+    # X_aug = X_aug.view(B * aug_mult, C, H, W)      # [B * aug_mult, C, H, W]
+
+    X_rep = X.repeat_interleave(aug_mult, dim=0)
+    X_aug = aug_fn(X_rep)
     
     # Repeat labels: [B] -> [B * aug_mult]
-    y_aug = y.repeat_interleave(aug_mult)
-    
-    return X_aug, y_aug
-
-
-def preaugment_batch_optimized(X, y, aug_fn, aug_mult):
-    """
-    FIXED: Memory-optimized version that applies different augmentations.
-    """
-    if aug_mult == 1:
-        return aug_fn(X), y
-    
-    B = len(X)
-    device = X.device
-    
-    # BUG FIX: Apply different augmentations, not identical copies
-    augmented_batches = []
-    
-    # Process in memory-efficient chunks while ensuring different augmentations
-    chunk_size = max(1, min(64, B))
-    
-    for mult_idx in range(aug_mult):
-        # Each iteration creates different augmentations
-        for i in range(0, B, chunk_size):
-            end_idx = min(i + chunk_size, B)
-            batch_X = X[i:end_idx]
-            
-            # Apply augmentation (different each time due to randomness)
-            X_aug_chunk = aug_fn(batch_X)
-            augmented_batches.append(X_aug_chunk)
-    
-    # Concatenate all augmented chunks
-    X_aug = torch.cat(augmented_batches, dim=0)
-    
-    # Create labels: repeat each label aug_mult times
     y_aug = y.repeat_interleave(aug_mult)
     
     return X_aug, y_aug
@@ -97,10 +62,10 @@ def average_grads_over_augmentations_optimized(ps_grads, batch_size, aug_mult):
         param_dims = grad.shape[1:]
         
         # CORRECT: Reshape to [aug_mult, batch_size, ...param_dims...]
-        grad_reshaped = grad.view(aug_mult, batch_size, *param_dims)
+        grad_reshaped = grad.reshape(batch_size, aug_mult, *param_dims)
         
         # Average over augmentations (dim=0), resulting in [batch_size, ...param_dims...]
-        ps_grads_avg[name] = grad_reshaped.mean(dim=0)
+        ps_grads_avg[name] = grad_reshaped.mean(dim=1)
         
     return ps_grads_avg
 
@@ -166,80 +131,6 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
     return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
 
 
-# def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda'):
-#     """Clip and accumulate gradients of a single block of samples using multiple GPUs"""
-#     optimizer.zero_grad()
-
-#     if len(X) == 0:
-#         # empty dataset
-#         ps_grads = { name: torch.zeros_like(param).unsqueeze(dim=0) for name, param in model.named_parameters() }
-#     else:
-#         # Move data to appropriate device
-#         X = X.to(device)
-#         y = y.to(device)
-        
-#         # Get per-sample gradients
-#         ps_grads = get_per_sample_grads(model, X, y, criterion)
-
-#     ps_grad_norms_data = { 'before': np.array([]), 'after': np.array([]) }
-#     if max_grad_norm is not None:
-#         # clip per-sample gradients
-#         # ps_grads_clipped, ps_grad_norms_data = ps_grads, ps_grad_norms_data
-#         ps_grads_clipped, ps_grad_norms_data = clip_per_sample_grads(ps_grads, max_grad_norm)
-#     else:
-#         ps_grads_clipped = ps_grads
-
-#     with torch.no_grad():
-#         accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-
-#     # last_layer_name = list(model.net.named_modules())[-1][0]
-#     # last_w_name = 'net.' + last_layer_name + '.weight'
-#     # last_b_name = 'net.' + last_layer_name + '.bias'
-
-#     # Compute flattened norm across all param grads
-#     per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
-#     all_norms = torch.zeros_like(y, dtype=torch.float32)
-#     # for k in range(10):
-#     #     k_last_layer_grads = per_sample_flat_grads[y == k]
-#     #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
-#     #     # take norm of each class
-#     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
-#     #     all_norms[y == k] = centered_k_last_layer_norms
-
-#     # all_norms = (per_sample_flat_grads - per_sample_flat_grads.mean(dim=0, keepdim=True)).norm(float('inf'), dim=1)
-    
-#     # Compute last layer norms at true class
-
-
-#     # # Compute flattened last layer norms
-#     # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
-#     # last_biases = ps_grads[last_b_name]
-#     # last_layer_grads = torch.cat((flat_last_weights, last_biases), dim=1)
-    
-#     # all_norms = torch.zeros_like(y, dtype=torch.float32)
-#     # for k in range(10):
-#     #     # center each class
-#     #     k_last_layer_grads = last_layer_grads[y == k]
-#     #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
-#     #     # take norm of each class
-#     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
-#     #     all_norms[y == k] = centered_k_last_layer_norms
-
-#     last_layer_norms = all_norms.cpu().numpy()
-
-#     # Compute embedding norms
-#     # Cosine similarity with PC1
-#     # per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
-#     # X = per_sample_flat_grads
-#     # X_norm = X / (X.norm(dim=1, keepdim=True))
-#     # X_centered = X_norm - X_norm.mean(dim=0, keepdim=True)
-#     # U, S, Vh = torch.linalg.svd(X_centered, full_matrices=False)
-#     # PC1 = Vh[0] # .reshape(1, -1)
-#     # cosine_sims = X_centered @ PC1
-#     # cosine_sims = None
-#     # Cosine similarity with whitened PC1
-    
-#     return accum_grad_block, ps_grad_norms_data, last_layer_norms, None
 
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1):
@@ -275,12 +166,172 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     with torch.no_grad():
         accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
 
-    # (your diagnostics retained)
+    # last_layer_name = list(model.net.named_modules())[-1][0]
+    # last_w_name = 'net.' + last_layer_name + '.weight'
+    # last_b_name = 'net.' + last_layer_name + '.bias'
+
     per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
     all_norms = torch.zeros_like(y, dtype=torch.float32)
-    last_layer_norms = all_norms.cpu().numpy()
+    for k in range(10):
+        k_last_layer_grads = per_sample_flat_grads[y == k]
+        centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+        # take norm of each class
+        centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
+        all_norms[y == k] = centered_k_last_layer_norms
 
-    return accum_grad_block, _, last_layer_norms, None
+    # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
+    # last_biases = ps_grads[last_b_name]
+    # last_layer_grads = torch.cat((flat_last_weights, last_biases), dim=1)
+    
+    # all_norms = torch.zeros_like(y, dtype=torch.float32)
+    # for k in range(10):
+    #     # center each class
+    #     k_last_layer_grads = last_layer_grads[y == k]
+    #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+    #     # take norm of each class
+    #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
+    #     all_norms[y == k] = centered_k_last_layer_norms
+
+    return accum_grad_block, _, all_norms.cpu().numpy(), None
+
+
+
+
+
+def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
+                         block_size=1024, drop_mask=None, scores=None, device='cuda',
+                         original_indices=None, aug_mult: int = 1, aug_fn=None):
+    """Clip and accumulate gradients in blocks. Supports augmentation multiplicity."""
+    
+    # Filter out the dropped indices
+    batch_drop_mask = drop_mask[original_indices]
+    X_active = X[batch_drop_mask == 0]
+    y_active = y[batch_drop_mask == 0]
+
+    # Get corresponding batch indices
+    active_global_indices = original_indices[batch_drop_mask == 0]
+
+    scores = np.zeros(len(X_active))
+    idx_blocks = torch.split(torch.from_numpy(np.arange(len(X_active))), block_size)
+
+    if torch.cuda.device_count() > 1:
+        n_gpus = torch.cuda.device_count()
+        n_blocks = len(idx_blocks)
+        if n_blocks < n_gpus:
+            n_gpus = n_blocks
+
+        def split_list(lst, n):
+            """Split list lst into n roughly equal parts."""
+            k, m = divmod(len(lst), n)
+            return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n)]
+
+        idx_blocks_list = list(idx_blocks)  # ensure it's a list
+
+        gpu_blocks_split = split_list(idx_blocks_list, n_gpus)
+
+
+        # gpu_blocks_split is a list of n_gpus lists of blocks
+        gpu_blocks = []
+        gpu_models = []
+        gpu_optimizers = []
+        for gpu_id, split in enumerate(gpu_blocks_split):
+            # Optionally convert blocks to tensors if needed:
+            gpu_blocks.append([block if isinstance(block, torch.Tensor) else torch.tensor(block) for block in split])
+
+            model_gpu = copy.deepcopy(model).to(f'cuda:{gpu_id}')
+            gpu_models.append(model_gpu)
+            gpu_optimizers.append(torch.optim.SGD(model_gpu.parameters(),
+                                                lr=optimizer.param_groups[0]['lr']))
+
+        def process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu):
+            accum_grad = None
+            for idx_block in blocks:
+                curr_X, curr_y = X_active[idx_block].to(f'cuda:{gpu_id}'), y_active[idx_block].to(f'cuda:{gpu_id}')
+
+                accum_grad_block, _, curr_last_layer_norms, _ = clip_and_accum_grads_block(
+                    model_gpu, curr_X, curr_y, optimizer_gpu, criterion, max_grad_norm,
+                    device=f'cuda:{gpu_id}', aug_mult=aug_mult, aug_fn=aug_fn
+                )
+
+                if accum_grad is None:
+                    accum_grad = accum_grad_block
+                else:
+                    accum_grad = {name: accum_grad[name] + accum_grad_block[name] for name in accum_grad}
+
+                scores[idx_block] = curr_last_layer_norms
+
+            return accum_grad
+
+        def thread_func(gpu_id, blocks, model_gpu, optimizer_gpu, results):
+            accum_grad = process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu)
+            results[gpu_id] = accum_grad
+
+        results, threads = {}, []
+        for gpu_id in range(n_gpus):
+            thread = threading.Thread(target=thread_func,
+                                      args=(gpu_id, gpu_blocks[gpu_id],
+                                            gpu_models[gpu_id], gpu_optimizers[gpu_id], results))
+            thread.start()
+            threads.append(thread)
+
+        for thread in threads:
+            thread.join()
+
+        device = 'cuda:0'
+        accum_grad = {}
+        for gpu_id in range(n_gpus):
+            gpu_accum_grad = results[gpu_id]
+            if not accum_grad:
+                accum_grad = {name: gpu_accum_grad[name].to(device) for name in gpu_accum_grad}
+            else:
+                for name in accum_grad:
+                    accum_grad[name] = accum_grad[name] + gpu_accum_grad[name].to(device)
+
+    else:
+        # TODO: fix to handle ghosts
+        exit()
+        # accum_grad, scores = None, []
+        # for idx_block in idx_blocks:
+        #     curr_X, curr_y = X[idx_block], y[idx_block]
+        #     accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = \
+        #         clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
+        #                                    device=device, aug_mult=aug_mult, aug_fn=aug_fn)
+
+        #     scores.append(curr_last_layer_norms)
+        #     if accum_grad is None:
+        #         accum_grad = accum_grad_block
+        #     else:
+        #         with torch.no_grad():
+        #             for name, curr_grad in accum_grad_block.items():
+        #                 accum_grad[name] = accum_grad[name] + curr_grad
+
+
+    if len(drop_mask) - 1 in active_global_indices:
+        print('Canary in this minibatch')
+        print(scores[np.where(active_global_indices.cpu().numpy() == (len(drop_mask) - 1))[0][0]], sorted(scores)[-5:])
+        # pdb.set_trace()
+
+    k = 5
+
+    # gets top k indices in scores
+    topk_idx = np.argpartition(-scores, k)[:k]
+
+    # scores is local
+
+    topk_global_idx = active_global_indices[topk_idx]
+
+    if len(drop_mask) - 1 in topk_global_idx:
+        print('Canary is getting dumped')
+        exit()
+
+    return accum_grad, drop_mask
+
+
+
+
+
+
+
 
 
 # def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm, block_size=1024, drop_mask=None, device='cuda', target_in_batch=False, target_idx_in_batch=None, original_indices=None):
@@ -441,139 +492,86 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 #     return accum_grad, drop_mask
 
 
-def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
-                         block_size=1024, drop_mask=None, device='cuda',
-                         target_in_batch=False, target_idx_in_batch=None,
-                         original_indices=None, aug_mult: int = 1, aug_fn=None):
-    """Clip and accumulate gradients in blocks. Supports augmentation multiplicity."""
+
+
+
+
+
+
+# def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda'):
+#     """Clip and accumulate gradients of a single block of samples using multiple GPUs"""
+#     optimizer.zero_grad()
+
+#     if len(X) == 0:
+#         # empty dataset
+#         ps_grads = { name: torch.zeros_like(param).unsqueeze(dim=0) for name, param in model.named_parameters() }
+#     else:
+#         # Move data to appropriate device
+#         X = X.to(device)
+#         y = y.to(device)
+        
+#         # Get per-sample gradients
+#         ps_grads = get_per_sample_grads(model, X, y, criterion)
+
+#     ps_grad_norms_data = { 'before': np.array([]), 'after': np.array([]) }
+#     if max_grad_norm is not None:
+#         # clip per-sample gradients
+#         # ps_grads_clipped, ps_grad_norms_data = ps_grads, ps_grad_norms_data
+#         ps_grads_clipped, ps_grad_norms_data = clip_per_sample_grads(ps_grads, max_grad_norm)
+#     else:
+#         ps_grads_clipped = ps_grads
+
+#     with torch.no_grad():
+#         accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
+
+#     # last_layer_name = list(model.net.named_modules())[-1][0]
+#     # last_w_name = 'net.' + last_layer_name + '.weight'
+#     # last_b_name = 'net.' + last_layer_name + '.bias'
+
+#     # Compute flattened norm across all param grads
+#     per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+#     all_norms = torch.zeros_like(y, dtype=torch.float32)
+#     # for k in range(10):
+#     #     k_last_layer_grads = per_sample_flat_grads[y == k]
+#     #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+#     #     # take norm of each class
+#     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
+#     #     all_norms[y == k] = centered_k_last_layer_norms
+
+#     # all_norms = (per_sample_flat_grads - per_sample_flat_grads.mean(dim=0, keepdim=True)).norm(float('inf'), dim=1)
     
-    idx_blocks = torch.split(torch.from_numpy(np.arange(len(X))), block_size)
-
-    if torch.cuda.device_count() > 1:
-        n_gpus = torch.cuda.device_count()
-        n_blocks = len(idx_blocks)
-        if n_blocks < n_gpus:
-            n_gpus = n_blocks
-
-        # blocks_per_gpu = n_blocks // n_gpus
-        # gpu_blocks, gpu_models, gpu_optimizers = [], [], []
-        # for gpu_id in range(n_gpus):
-        #     start_idx = gpu_id * blocks_per_gpu
-        #     end_idx = (gpu_id + 1) * blocks_per_gpu if gpu_id < n_gpus - 1 else n_blocks
-        #     gpu_blocks.append(idx_blocks[start_idx:end_idx])
-
-        #     model_gpu = copy.deepcopy(model).to(f'cuda:{gpu_id}')
-        #     gpu_models.append(model_gpu)
-        #     gpu_optimizers.append(torch.optim.SGD(model_gpu.parameters(),
-        #                                           lr=optimizer.param_groups[0]['lr']))
+#     # Compute last layer norms at true class
 
 
-        def split_list(lst, n):
-            """Split list lst into n roughly equal parts."""
-            k, m = divmod(len(lst), n)
-            return [lst[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(n)]
+#     # # Compute flattened last layer norms
+#     # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
+#     # last_biases = ps_grads[last_b_name]
+#     # last_layer_grads = torch.cat((flat_last_weights, last_biases), dim=1)
+    
+#     # all_norms = torch.zeros_like(y, dtype=torch.float32)
+#     # for k in range(10):
+#     #     # center each class
+#     #     k_last_layer_grads = last_layer_grads[y == k]
+#     #     centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+#     #     # take norm of each class
+#     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
+#     #     all_norms[y == k] = centered_k_last_layer_norms
 
-        idx_blocks_list = list(idx_blocks)  # ensure it's a list
+#     last_layer_norms = all_norms.cpu().numpy()
 
-        gpu_blocks_split = split_list(idx_blocks_list, n_gpus)
-
-        # gpu_blocks_split is a list of n_gpus lists of blocks
-        gpu_blocks = []
-        gpu_models = []
-        gpu_optimizers = []
-        for gpu_id, split in enumerate(gpu_blocks_split):
-            # Optionally convert blocks to tensors if needed:
-            gpu_blocks.append([block if isinstance(block, torch.Tensor) else torch.tensor(block) for block in split])
-
-            model_gpu = copy.deepcopy(model).to(f'cuda:{gpu_id}')
-            gpu_models.append(model_gpu)
-            gpu_optimizers.append(torch.optim.SGD(model_gpu.parameters(),
-                                                lr=optimizer.param_groups[0]['lr']))
-
-        def process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu):
-            accum_grad = None
-            scores = []
-            for idx_block in blocks:
-                curr_X, curr_y = X[idx_block].to(f'cuda:{gpu_id}'), y[idx_block].to(f'cuda:{gpu_id}')
-
-                accum_grad_block, _, curr_last_layer_norms, _ = clip_and_accum_grads_block(
-                    model_gpu, curr_X, curr_y, optimizer_gpu, criterion, max_grad_norm,
-                    device=f'cuda:{gpu_id}', aug_mult=aug_mult, aug_fn=aug_fn
-                )
-
-                if accum_grad is None:
-                    accum_grad = accum_grad_block
-                else:
-                    accum_grad = {name: accum_grad[name] + accum_grad_block[name] for name in accum_grad}
-                scores.extend(curr_last_layer_norms)
-            return accum_grad, scores
-
-        def thread_func(gpu_id, blocks, model_gpu, optimizer_gpu, results):
-            accum_grad, scores = process_blocks(gpu_id, blocks, model_gpu, optimizer_gpu)
-            results[gpu_id] = (accum_grad, scores)
-
-        results, threads = {}, []
-        for gpu_id in range(n_gpus):
-            thread = threading.Thread(target=thread_func,
-                                      args=(gpu_id, gpu_blocks[gpu_id],
-                                            gpu_models[gpu_id], gpu_optimizers[gpu_id], results))
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
-
-        device = 'cuda:0'
-        accum_grad, scores = {}, []
-        for gpu_id in range(n_gpus):
-            gpu_accum_grad, gpu_scores = results[gpu_id]
-            if not accum_grad:
-                accum_grad = {name: gpu_accum_grad[name].to(device) for name in gpu_accum_grad}
-            else:
-                for name in accum_grad:
-                    accum_grad[name] = accum_grad[name] + gpu_accum_grad[name].to(device)
-            scores.extend(gpu_scores)
-
-        scores = np.array(scores)
-        for name, param in model.named_parameters():
-            param.grad = accum_grad[name].to(device)
-
-    else:
-        accum_grad, scores = None, []
-        for idx_block in idx_blocks:
-            curr_X, curr_y = X[idx_block], y[idx_block]
-            accum_grad_block, curr_ps_grad_norms_data, curr_last_layer_norms, curr_cosine_sims = \
-                clip_and_accum_grads_block(model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
-                                           device=device, aug_mult=aug_mult, aug_fn=aug_fn)
-
-            scores.append(curr_last_layer_norms)
-            if accum_grad is None:
-                accum_grad = accum_grad_block
-            else:
-                with torch.no_grad():
-                    for name, curr_grad in accum_grad_block.items():
-                        accum_grad[name] = accum_grad[name] + curr_grad
-
-        scores = np.concatenate(scores)
-
-    return accum_grad, drop_mask
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+#     # Compute embedding norms
+#     # Cosine similarity with PC1
+#     # per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+#     # X = per_sample_flat_grads
+#     # X_norm = X / (X.norm(dim=1, keepdim=True))
+#     # X_centered = X_norm - X_norm.mean(dim=0, keepdim=True)
+#     # U, S, Vh = torch.linalg.svd(X_centered, full_matrices=False)
+#     # PC1 = Vh[0] # .reshape(1, -1)
+#     # cosine_sims = X_centered @ PC1
+#     # cosine_sims = None
+#     # Cosine similarity with whitened PC1
+    
+#     return accum_grad_block, ps_grad_norms_data, last_layer_norms, None
 
 
 

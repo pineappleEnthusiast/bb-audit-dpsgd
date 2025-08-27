@@ -12,6 +12,8 @@ from torch.utils.data import TensorDataset, DataLoader
 import time
 import dill
 
+import pdb
+
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
@@ -26,31 +28,83 @@ import gc
 
 import torchvision.transforms.v2 as T
 
+# class AugmentationFunction:
+#     def __init__(self):
+#         # Create the base transforms
+#         self.base_transforms = T.Compose([
+#             T.RandomCrop(32, padding=4),
+#             T.RandomHorizontalFlip(p=0.5)
+#         ])
+    
+#     def __call__(self, x):
+#         """
+#         This ensures each call gets fresh randomness
+#         """
+#         # Handle both single samples and batches
+#         is_single_sample = len(x.shape) == 3
+#         if is_single_sample:
+#             x = x.unsqueeze(0)
+        
+#         # Apply transforms (Compose handles randomness properly)
+#         x = self.base_transforms(x)
+        
+#         if is_single_sample:
+#             x = x.squeeze(0)
+        
+#         return x
+
+
+# import torch
+# import torchvision.transforms as T
+
+# class AugmentationFunction:
+#     def __init__(self, image_size=32, channels=3):
+#         """
+#         image_size: target height/width after augmentation
+#         channels: 1 for MNIST, 3 for CIFAR-10
+#         """
+#         self.image_size = image_size
+#         self.channels = channels
+        
+#         # Compose transforms
+#         self.base_transforms = T.Compose([
+#             T.Pad(4),  # pad first (works for both 28 or 32)
+#             T.RandomCrop(self.image_size),
+#             T.RandomHorizontalFlip(p=0.5)
+#         ])
+    
+#     def __call__(self, x):
+#         """
+#         x: tensor of shape (C, H, W) or (B, C, H, W)
+#         """
+#         is_single_sample = len(x.shape) == 3
+#         if is_single_sample:
+#             x = x.unsqueeze(0)  # add batch dim
+        
+#         # Apply transforms to each image individually
+#         x_aug = torch.stack([self.base_transforms(img) for img in x])
+        
+#         if is_single_sample:
+#             x_aug = x_aug.squeeze(0)
+        
+#         return x_aug
+
+
+
+
+import torchvision.transforms.v2 as v2
+
 class AugmentationFunction:
-    def __init__(self):
-        # Create the base transforms
-        self.base_transforms = T.Compose([
-            T.RandomCrop(32, padding=4),
-            T.RandomHorizontalFlip(p=0.5)
+    def __init__(self, image_size=32, channels=3):
+        self.base_transforms = v2.Compose([
+            v2.RandomCrop(image_size, padding=4),
+            v2.RandomHorizontalFlip(p=0.5),
         ])
     
     def __call__(self, x):
-        """
-        This ensures each call gets fresh randomness
-        """
-        # Handle both single samples and batches
-        is_single_sample = len(x.shape) == 3
-        if is_single_sample:
-            x = x.unsqueeze(0)
-        
-        # Apply transforms (Compose handles randomness properly)
-        x = self.base_transforms(x)
-        
-        if is_single_sample:
-            x = x.squeeze(0)
-        
-        return x
-
+        # x can be [B, C, H, W], and v2 transforms will apply randomness per sample
+        return self.base_transforms(x)
+    
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -90,6 +144,12 @@ def init_wideresnet(model):
     # model.apply(init_weights)
 
 
+# TODO: switch to dataloader
+# TODO: switch to multiprocessing, cuda streams, or DDP instead of threading
+# TODO: use all_reduce to complete gradient aggregation across GPUs
+# TODO: switch to doing gradient aggregation on cpu instead OR broadcast noise vector to all GPUs and broadcast gradient aggregation to all GPUs
+# TODO: do better block sizing that accounts for augmul
+
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, block_size, batch_size, device='cpu', init_model=None, out_dim=10, use_defense=False, store_canary_rank=False):
     """Train model w/ DP-SGD using pseudo-mini batches"""
     
@@ -109,43 +169,33 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # set noise level
     if epsilon is not None:
         # no subsampling, i.e., sample rate = 1
-        noise_multiplier = get_noise_multiplier(target_epsilon=epsilon, target_delta=delta, sample_rate=1.0,
+        noise_multiplier = get_noise_multiplier(target_epsilon=epsilon, target_delta=delta, sample_rate=batch_size/len(X),
             epochs=n_epochs, accountant='rdp')
     else:
         noise_multiplier = 0
 
     # TODO: only use when defense
-    drop_mask = torch.zeros_like(y)
+    drop_mask = torch.zeros_like(y, device=device)
     
     # Validate block_size and batch_size relationship
     assert block_size <= batch_size, "block_size must be smaller than batch_size"
 
-    aug_fn = AugmentationFunction()
+    aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
     
     # train model for n_epochs
     for epoch in tqdm(range(n_epochs), leave=False):
         print('Epoch:', epoch)
         optimizer.zero_grad()
-
-        # Filter out dropped indices first
-        non_dropped_indices = torch.where(drop_mask == 0)[0]  # Get indices of non-dropped samples
-        target_idx = len(X) - 1  # Target is always the last sample in the original dataset
         
         # Shuffle non-dropped indices
-        shuffled_indices = torch.randperm(len(non_dropped_indices)) # Elements are the global indices in a new order
+        shuffled_indices = torch.randperm(len(X)).to(device) # Elements are the global indices in a new order
         batch_start = 0
         batch_idx = 0
-        while batch_start < len(non_dropped_indices):
-            batch_end = min(batch_start + batch_size, len(non_dropped_indices))
+        while batch_start < len(X):
+            batch_end = min(batch_start + batch_size, len(X))
             batch_indices = shuffled_indices[batch_start:batch_end]  # Elements are still the global indices, just a subset of them
             curr_X = X[batch_indices]
             curr_y = y[batch_indices]
-            
-            target_in_batch = False
-            # Update batch tracking info
-            if target_idx in batch_indices:
-                target_idx_in_batch = torch.where(batch_indices == target_idx)[0][0]
-                target_in_batch = True
             
             curr_accumulated_gradients, drop_mask = clip_and_accum_grads(model, 
                                                 curr_X, 
@@ -156,10 +206,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                                                 block_size=block_size,
                                                 drop_mask=drop_mask,
                                                 device=device,
-                                                target_in_batch=target_in_batch,
-                                                target_idx_in_batch=target_idx_in_batch if target_in_batch else None,
                                                 original_indices=batch_indices,
-                                                aug_mult=16,
+                                                aug_mult=1,
                                                 aug_fn=aug_fn)
 
             # Update parameters after processing each batch
@@ -179,7 +227,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
             batch_idx += 1
             batch_start = batch_end
-
+        
     return model
 
 def test_model(model, X, y, batch_size=128):
