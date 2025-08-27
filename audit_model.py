@@ -325,6 +325,7 @@ if __name__ == '__main__':
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
     parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
+    parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
     parser.add_argument('--device', type=str, default='cuda:0', help='cuda device to use (cpu, cuda:X)')
@@ -400,8 +401,19 @@ if __name__ == '__main__':
     
     # craft target data point (x_T, y_T)
     if args.target_type == 'blank':
-        # blank sample
-        target_X = torch.zeros_like(X_out[[0]])
+        # blank sample with optional interpolation
+        blank_img = torch.zeros_like(X_out[[0]])
+        if args.blank_alpha > 0:
+            # Find first image with label 9 for interpolation
+            label_9_indices = (y_out == 9).nonzero(as_tuple=True)[0]
+            if len(label_9_indices) > 0:
+                label_9_img = X_out[label_9_indices[0]].unsqueeze(0)
+                target_X = (1 - args.blank_alpha) * blank_img + args.blank_alpha * label_9_img
+            else:
+                print("Warning: No label 9 image found for interpolation, using pure blank image")
+                target_X = blank_img
+        else:
+            target_X = blank_img
         target_y = torch.from_numpy(np.array([9])).to(device)
     elif args.target_type == 'badnets':
         target_X = X_out[-1]
