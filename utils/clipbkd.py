@@ -11,7 +11,8 @@ def choose_worstcase_label(model, target_X):
     
     return target_y
     
-def craft_clipbkd(X, model, device='cpu'):
+def craft_clipbkd(X, model):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     # calculate PCA of X
     flat_X = torch.flatten(X, start_dim=1) # N X 1 x D1 x D2 => N x (D1 * D2)
     trn_x = flat_X.cpu().numpy()

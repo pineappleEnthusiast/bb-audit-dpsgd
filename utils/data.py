@@ -8,7 +8,7 @@ from torch.utils.data import TensorDataset
 import os
 import numpy as np
 
-def load_data(data_name, n_df, root='./', device='cpu', split='train'):
+def load_data(data_name, n_df, root='./', split='train'):
     os.makedirs(f'{root}/data', exist_ok=True)
     DATA_ROOT = f'{root}/data/{data_name}'
 
@@ -57,7 +57,7 @@ def load_data(data_name, n_df, root='./', device='cpu', split='train'):
     elif os.path.exists(f'{DATA_ROOT}'):
         # load pre-processed local data
         X, y = np.load(f'{DATA_ROOT}/X_{split}.npy'), np.load(f'{DATA_ROOT}/y_{split}.npy')
-        X, y = torch.from_numpy(X).to(device), torch.from_numpy(y).to(device)
+        X, y = torch.from_numpy(X), torch.from_numpy(y)
 
         dataset = TensorDataset(X, y)
         out_dim = len(y.unique())
@@ -70,6 +70,6 @@ def load_data(data_name, n_df, root='./', device='cpu', split='train'):
     tmp_loader = torch.utils.data.DataLoader(dataset, batch_size=n_df, shuffle=shuffle)
 
     X, y = next(iter(tmp_loader))
-    X, y = X.to(device), y.to(device)
+    X, y = X, y
 
     return X, y, out_dim
