@@ -146,7 +146,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 model, curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, block_size=block_size,
                 drop_mask=drop_mask, device=device,
-                aug_mult=1, aug_fn=aug_fn
+                aug_mult=aug_mult, aug_fn=aug_fn
             )
 
             # Add synchronized DP noise
@@ -296,6 +296,7 @@ if __name__ == '__main__':
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
+    parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
 
     args = parser.parse_args()
 
@@ -397,13 +398,9 @@ if __name__ == '__main__':
         # check how many reps initially completed
         reps_completed = len(losses[world])
 
-        # Simple tqdm configuration for better compatibility
-        for rep in tqdm(range(reps_completed, args.n_reps // 2), 
-                      initial=reps_completed, 
-                      total=args.n_reps // 2,
-                      mininterval=1.0,  # Update at least once per second
-                      file=sys.stdout,  # Force output to stdout
-                      disable=None):
+        # Simple loop with print for progress
+        for rep in range(reps_completed, args.n_reps // 2):
+            print(f"Rep {rep + 1}/{(args.n_reps // 2)}")
             # train model
             model = train_model(args.model_name, 
                                             curr_X, 
@@ -415,11 +412,12 @@ if __name__ == '__main__':
                                             args.max_grad_norm, 
                                             args.n_epochs, 
                                             args.lr, 
-                                            block_size=args.block_size, 
-                                            batch_size=args.batch_size,
+                                            args.block_size, 
+                                            args.batch_size,
                                             init_model=init_model,
                                             out_dim=out_dim, 
-                                            use_defense=args.defense)
+                                            use_defense=args.defense,
+                                            aug_mult=args.aug_mult)
             
                         
             # get loss of model on target sample
