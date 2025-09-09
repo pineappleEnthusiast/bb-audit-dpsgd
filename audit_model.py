@@ -293,8 +293,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
 
-    cleanup()
-
     return model
     
 
@@ -602,10 +600,6 @@ def main():
                               rank=rank,
                               world_size=world_size)
             
-            # Synchronize all processes before next rep
-            if world_size > 1:
-                torch.distributed.barrier()
-            
             # Only rank 0 processes the rest
             if rank == 0:
                 model.eval()
@@ -618,6 +612,10 @@ def main():
                     output = model(target_X_device)
                     outputs[world].append(output[0].cpu().numpy())
                     losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
+            
+            # Synchronize all processes after processing
+            if world_size > 1:
+                torch.distributed.barrier()
                         
                     # Save checkpoint after each rep
                     save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
