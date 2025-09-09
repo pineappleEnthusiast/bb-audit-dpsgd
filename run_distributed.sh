@@ -23,13 +23,13 @@ for ((i=0; i<NNODES; i++)); do
         --rdzv_backend=c10d \
         --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
         audit_model.py \
-        --data_name mnist \
-        --model_name cnn \
+        --data_name cifar10 \
+        --model_name wideresnet \
         --lr 1.33e-4 \
         --epsilon 10 \
         --fixed_init \
         --out debug \
-        --block_size 4096 \
+        --block_size 1000 \
         --target_type blank \
         --fit_world_only in \
         --n_reps 2 \
