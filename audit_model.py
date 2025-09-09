@@ -260,32 +260,30 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 aug_mult=aug_mult, aug_fn=aug_fn
             )
 
-            # Get gradients
-            curr_accumulated_gradients = {}
-            for name, param in model.named_parameters():
-                if param.grad is not None:
-                    # Remove 'module.' prefix for DDP compatibility
-                    clean_name = name.replace('module.', '') if world_size > 1 else name
-                    curr_accumulated_gradients[clean_name] = param.grad.detach().clone()
-
-            # Add synchronized DP noise
+            # Get gradients and add noise in a single pass
             with torch.no_grad():
                 for name, param in model.named_parameters():
-                    grad = curr_accumulated_gradients[name]
-
+                    if param.grad is None:
+                        continue
+                        
+                    grad = param.grad.detach().clone()
+                    
+                    # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
                         # Generate noise directly
-                        # Calculate noise on 1 GPU and broadcast it to the rest
                         if world_size > 1:
                             if rank == 0:
                                 noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                                # Broadcast the noise from rank 0 to all other processes
+                                dist.broadcast(noise, src=0)
                             else:
-                                noise = None
-                            noise = torch.broadcast_to(noise, grad.shape)
+                                noise = torch.zeros_like(grad)
+                                dist.broadcast(noise, src=0)
                         else:
                             noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
-                        grad = grad + noise
-
+                        
+                        grad.add_(noise)
+                    
                     param.grad = grad
 
             optimizer.step()
