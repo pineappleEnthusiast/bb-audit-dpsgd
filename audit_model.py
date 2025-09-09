@@ -92,22 +92,42 @@ def setup_device():
 
 def setup(rank, world_size, local_rank, master_addr='localhost', master_port='12355'):
     """Initialize the distributed environment."""
+    print(f'[Rank {rank}] Starting setup with master={master_addr}:{master_port}, world_size={world_size}, local_rank={local_rank}')
+    
+    # Set environment variables
     os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = str(master_port)
     os.environ['RANK'] = str(rank)
     os.environ['WORLD_SIZE'] = str(world_size)
     os.environ['LOCAL_RANK'] = str(local_rank)
     
-    # Initialize the process group
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        rank=rank,
-        world_size=world_size
-    )
+    # Print NCCL debug info
+    os.environ['NCCL_DEBUG'] = 'INFO'
+    os.environ['NCCL_DEBUG_SUBSYS'] = 'INIT,ENV,NET'
+    
+    print(f'[Rank {rank}] Environment set, initializing process group...')
+    
+    try:
+        # Initialize the process group
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            rank=rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(seconds=60)  # Add timeout to prevent hanging
+        )
+        print(f'[Rank {rank}] Process group initialized successfully')
+    except Exception as e:
+        print(f'[Rank {rank}] Error initializing process group: {str(e)}')
+        raise
     
     # Set device for this process
-    torch.cuda.set_device(local_rank)
+    try:
+        torch.cuda.set_device(local_rank)
+        print(f'[Rank {rank}] CUDA device set to {torch.cuda.get_device_name(local_rank)}')
+    except Exception as e:
+        print(f'[Rank {rank}] Error setting CUDA device: {str(e)}')
+        raise
 
 def cleanup():
     if dist.is_initialized():
@@ -353,20 +373,29 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
 def main():
     # Parse command line arguments first
     parser = argparse.ArgumentParser()
-    # ... (keep existing argument parsing code)
     
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     rank = int(os.environ.get('RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     
-    # Only print on the first process to avoid clutter
-    if rank == 0:
-        print(f"World size: {world_size}, Rank: {rank}, Local rank: {local_rank}")
+    print(f'[Rank {rank}] Starting main process with world_size={world_size}, local_rank={local_rank}')
+    
+    # Print process info for all ranks
+    print(f"[Rank {rank}] World size: {world_size}, Local rank: {local_rank}")
+    print(f"[Rank {rank}] CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"[Rank {rank}] CUDA device count: {torch.cuda.device_count()}")
     
     # Initialize distributed training if needed
     if world_size > 1:
-        setup(rank, world_size, local_rank)
+        print(f'[Rank {rank}] Initializing distributed training...')
+        try:
+            setup(rank, world_size, local_rank)
+            print(f'[Rank {rank}] Distributed training initialized successfully')
+        except Exception as e:
+            print(f'[Rank {rank}] Failed to initialize distributed training: {str(e)}')
+            raise
     
     # Set device for this process
     device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
