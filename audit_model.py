@@ -616,11 +616,11 @@ def main():
             # Synchronize all processes after processing
             if world_size > 1:
                 torch.distributed.barrier()
-                        
-                    # Save checkpoint after each rep
-                    save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
-
-                    
+            
+            # Save checkpoint after each rep (only rank 0)
+            if rank == 0:
+                save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
+                
                 # get test set accuracy from first 5 reps
                 if rep < 5 and world == 'in':
                     if len(X_out) > 0:
