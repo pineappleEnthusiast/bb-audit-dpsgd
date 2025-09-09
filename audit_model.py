@@ -194,6 +194,17 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model).to(device)
 
+    # Debug: Print model parameter requires_grad status
+    if rank == 0:
+        print("\n=== Model Parameter Status ===")
+        for name, param in model.named_parameters():
+            print(f"{name}: requires_grad={param.requires_grad}, device={param.device}")
+    
+    # Verify model is in training mode
+    model.train()
+    if rank == 0:
+        print(f"Model training mode: {model.training}")
+
     # Wrap model with DDP if using multiple processes
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -326,6 +337,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     if 'weight' in name and 'conv' in name:  # Print conv layer params
                         print(f"{name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
             
+            # Clear gradients for next iteration
             optimizer.zero_grad()
         
         # Print epoch time
