@@ -90,10 +90,24 @@ def setup_device():
     return device, 1  # Return device and world_size=1 for compatibility
 
 
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+def setup(rank, world_size, local_rank, master_addr='localhost', master_port='12355'):
+    """Initialize the distributed environment."""
+    os.environ['MASTER_ADDR'] = master_addr
+    os.environ['MASTER_PORT'] = str(master_port)
+    os.environ['RANK'] = str(rank)
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['LOCAL_RANK'] = str(local_rank)
+    
+    # Initialize the process group
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        rank=rank,
+        world_size=world_size
+    )
+    
+    # Set device for this process
+    torch.cuda.set_device(local_rank)
 
 def cleanup():
     if dist.is_initialized():
@@ -109,9 +123,23 @@ class DDPModel(nn.Module):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, 
-               use_defense=False, aug_mult=1, rank=0, world_size=1):    
-    device, world_size = setup_device()
-    rank = 0  # Single process, so rank is always 0
+               use_defense=False, aug_mult=1, rank=0, world_size=1):
+    
+    # Initialize distributed training
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    rank = int(os.environ.get('RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    
+    # Setup the process groups
+    if world_size > 1:
+        setup(rank, world_size, local_rank)
+    
+    # Set device for this process
+    device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
+    torch.cuda.set_device(device)
+    
+    if rank == 0:
+        print(f"Training on {world_size} GPUs across {world_size // torch.cuda.device_count()} nodes")
 
     # Initialize model
     if init_model is None:
@@ -323,12 +351,26 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
 
 
 def main():
-    # Initialize distributed training if needed
+    # Parse command line arguments first
+    parser = argparse.ArgumentParser()
+    # ... (keep existing argument parsing code)
+    
+    # Initialize distributed training
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
     rank = int(os.environ.get('RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     
+    # Only print on the first process to avoid clutter
+    if rank == 0:
+        print(f"World size: {world_size}, Rank: {rank}, Local rank: {local_rank}")
+    
+    # Initialize distributed training if needed
     if world_size > 1:
-        setup(rank, world_size)
+        setup(rank, world_size, local_rank)
+    
+    # Set device for this process
+    device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
+    torch.cuda.set_device(device)
     
     try:
         if rank == 0:
