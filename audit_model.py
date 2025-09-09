@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 import os
+import sys
 import numpy as np
 import argparse
 from opacus.accountants.utils import get_noise_multiplier
@@ -396,17 +397,13 @@ if __name__ == '__main__':
         # check how many reps initially completed
         reps_completed = len(losses[world])
 
-        # Configure tqdm for better progress bar display
-        pbar = tqdm(
-            range(reps_completed, args.n_reps // 2), 
-            initial=reps_completed, 
-            total=args.n_reps // 2,
-            ascii=' █',
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-            dynamic_ncols=True
-        )
-        
-        for rep in pbar:
+        # Simple tqdm configuration for better compatibility
+        for rep in tqdm(range(reps_completed, args.n_reps // 2), 
+                      initial=reps_completed, 
+                      total=args.n_reps // 2,
+                      mininterval=1.0,  # Update at least once per second
+                      file=sys.stdout,  # Force output to stdout
+                      disable=None):
             # train model
             model = train_model(args.model_name, 
                                             curr_X, 
