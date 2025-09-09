@@ -396,7 +396,17 @@ if __name__ == '__main__':
         # check how many reps initially completed
         reps_completed = len(losses[world])
 
-        for rep in tqdm(range(reps_completed, args.n_reps // 2), initial=reps_completed, total=args.n_reps // 2):
+        # Configure tqdm for better progress bar display
+        pbar = tqdm(
+            range(reps_completed, args.n_reps // 2), 
+            initial=reps_completed, 
+            total=args.n_reps // 2,
+            ascii=' █',
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+            dynamic_ncols=True
+        )
+        
+        for rep in pbar:
             # train model
             model = train_model(args.model_name, 
                                             curr_X, 
