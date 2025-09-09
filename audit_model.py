@@ -303,8 +303,29 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     # Update the parameter's gradient
                     param.grad = grad.to(device)
             
+            # Debug: Print gradient statistics before step
+            if rank == 0 and batch_idx % 10 == 0:  # Print every 10 batches
+                print("\n=== Gradient Statistics ===")
+                total_norm = 0.0
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_norm += param_norm ** 2
+                        if 'weight' in name and 'conv' in name:  # Print conv layer grads
+                            print(f"{name}: grad_norm={param_norm:.6f}")
+                total_norm = total_norm ** 0.5
+                print(f"Total gradient norm: {total_norm:.6f}")
+
             # Take an optimization step
             optimizer.step()
+            
+            # Debug: Print parameter updates
+            if rank == 0 and batch_idx % 10 == 0:  # Print every 10 batches
+                print("\n=== Parameter Updates ===")
+                for name, param in model.named_parameters():
+                    if 'weight' in name and 'conv' in name:  # Print conv layer params
+                        print(f"{name}: mean={param.data.mean().item():.6f}, std={param.data.std().item():.6f}")
+            
             optimizer.zero_grad()
         
         # Print epoch time
