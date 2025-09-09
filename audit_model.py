@@ -298,8 +298,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                         grad.add_(noise)
                     
-                    param.grad = grad
-
+                    # Update the parameter's gradient
+                    param.grad = grad.to(device)
+            
+            # Take an optimization step
             optimizer.step()
             optimizer.zero_grad()
         
