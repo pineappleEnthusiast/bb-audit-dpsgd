@@ -5,7 +5,7 @@ NODES=$(scontrol show hostnames $SLURM_JOB_NODELIST)
 NODES=($NODES)  # Convert to array
 MASTER_ADDR=${NODES[0]}  # First node is the master
 MASTER_PORT=12345
-GPUS_PER_NODE=4  # Adjust based on your nodes
+GPUS_PER_NODE=1  # Adjust based on your nodes
 NNODES=${#NODES[@]}  # Number of nodes
 
 # For each node, launch the training script
