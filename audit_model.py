@@ -190,8 +190,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, block_size=block_size,
                 drop_mask=drop_mask, device=device,
-                aug_mult=aug_mult, aug_fn=aug_fn,
-                rank=rank, world_size=world_size
+                aug_mult=aug_mult, aug_fn=aug_fn
             )
 
             # Add synchronized DP noise
