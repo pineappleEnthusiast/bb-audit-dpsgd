@@ -415,9 +415,14 @@ if __name__ == '__main__':
             # get loss of model on target sample
             model.eval()
             with torch.no_grad():
-                output = model(target_X)
+                # Ensure target data is on the same device as the model
+                device = next(model.parameters()).device
+                target_X_device = target_X.to(device)
+                target_y_device = target_y.to(device)
+                
+                output = model(target_X_device)
                 outputs[world].append(output[0].cpu().numpy())
-                losses[world].append(-nn.CrossEntropyLoss()(output, target_y).cpu().item())
+                losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
 
                 
             # get test set accuracy from first 5 reps
