@@ -128,9 +128,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         persistent_workers=True  # Maintains workers between epochs
     )
     
-    # Move target data to device once
-    target_X = target_X.to(device)
-    target_y = target_y.to(device)
+    # # Move target data to device once
+    # target_X = target_X.to(device)
+    # target_y = target_y.to(device)
 
     for epoch in range(n_epochs):
         optimizer.zero_grad()
