@@ -186,11 +186,14 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model).to(device)
 
-    # Wrap model with DDP
+    # Wrap model with DDP if using multiple processes
     if world_size > 1:
-        model = DDP(DDPModel(model).to(device), device_ids=[rank], output_device=rank)
-    else:
-        model = model.to(device)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        print(f"Training on {world_size} GPUs across {world_size // torch.cuda.device_count()} nodes")
+        
+        # Function to strip 'module.' prefix from parameter names for DDP
+        def strip_module_prefix(state_dict):
+            return {k.replace('module.', ''): v for k, v in state_dict.items()}
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -256,6 +259,14 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 drop_mask=drop_mask, device=device,
                 aug_mult=aug_mult, aug_fn=aug_fn
             )
+
+            # Get gradients
+            curr_accumulated_gradients = {}
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    # Remove 'module.' prefix for DDP compatibility
+                    clean_name = name.replace('module.', '') if world_size > 1 else name
+                    curr_accumulated_gradients[clean_name] = param.grad.detach().clone()
 
             # Add synchronized DP noise
             with torch.no_grad():
