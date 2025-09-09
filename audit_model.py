@@ -97,6 +97,11 @@ def setup_device():
 
 def setup(rank, world_size, local_rank, master_addr=None, master_port='12355'):
     """Initialize the distributed environment."""
+    # Check if already initialized
+    if dist.is_initialized():
+        print(f'[Rank {rank}] Process group already initialized')
+        return
+        
     # Get master address from environment if not provided
     if master_addr is None:
         master_addr = os.environ.get('MASTER_ADDR', 'localhost')
