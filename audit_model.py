@@ -317,7 +317,7 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     else:
         # create folder and dump initial values in
         os.makedirs(out_folder, exist_ok=True)
-        save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
+        save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only)
     
     return outputs, losses, all_losses, train_set_accs, test_set_accs
 
