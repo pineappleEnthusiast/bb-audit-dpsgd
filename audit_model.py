@@ -235,7 +235,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     
     per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
     if rank == 0:
-        print(f"Effective batch size: {effective_batch_size} (per GPU: {per_gpu_batch_size})")
+        print(f"per GPU: {per_gpu_batch_size}")
     
     loader = DataLoader(
         dataset,
@@ -270,7 +270,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 max_grad_norm, block_size=block_size,
                 drop_mask=drop_mask, device=device,
                 aug_mult=aug_mult, aug_fn=aug_fn,
-                world_size=world_size, rank=rank
+                world_size=world_size, rank=rank,
+                batch_size=batch_size  # Pass batch_size for proper gradient sync
             )
 
             # Get gradients and add noise in a single pass

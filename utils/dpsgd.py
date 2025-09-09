@@ -2,6 +2,7 @@
 Utility functions to execute DP-SGD
 """
 import torch
+import torch.distributed as dist
 import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
@@ -166,7 +167,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          block_size=1024, drop_mask=None, scores=None, device='cuda',
                          original_indices=None, aug_mult: int = 1, aug_fn=None,
-                         world_size=1, rank=0):
+                         world_size=1, rank=0, batch_size=None):
     """
     Clip and accumulate gradients in blocks with support for distributed training.
     
@@ -225,12 +226,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     #     print('Canary is getting dumped')
     #     exit()
 
-    # Synchronize accumulated gradients across processes
+    # Sum gradients across all processes
     if world_size > 1 and accum_grad is not None:
         with torch.no_grad():
             for name in accum_grad:
                 dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
-                accum_grad[name] = accum_grad[name] / world_size
     
     return accum_grad, drop_mask
 
