@@ -287,32 +287,30 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 batch_size=batch_size  # Pass batch_size for proper gradient sync
             )
 
-            # Get gradients and add noise in a single pass
+            # Apply the accumulated gradients to the model parameters
             with torch.no_grad():
                 for name, param in model.named_parameters():
-                    if param.grad is None:
-                        continue
-                        
-                    grad = param.grad.detach().clone()
+                    # Get the accumulated gradient and move to device
+                    grad = curr_accumulated_gradients[name].to(device)
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
-                        # Generate noise directly
                         if world_size > 1:
                             if rank == 0:
                                 noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
-                                # Broadcast the noise from rank 0 to all other processes
                                 dist.broadcast(noise, src=0)
                             else:
                                 noise = torch.zeros_like(grad)
                                 dist.broadcast(noise, src=0)
                         else:
                             noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
-                        
                         grad.add_(noise)
                     
                     # Update the parameter's gradient
-                    param.grad = grad.to(device)
+                    if param.grad is None:
+                        param.grad = grad
+                    else:
+                        param.grad.copy_(grad)
             
             # Debug: Print gradient statistics before step
             if rank == 0 and batch_idx % 10 == 0:  # Print every 10 batches
