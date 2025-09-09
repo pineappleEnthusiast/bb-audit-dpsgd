@@ -334,8 +334,16 @@ def main():
         if rank == 0:
             print(f"Training with {world_size} GPUs")
             
-        parser = argparse.ArgumentParser()
-        # Add local_rank argument for compatibility with torch.distributed.launch
+        # Create parser with allow_abbrev=False to avoid conflicts with custom argument handling
+        parser = argparse.ArgumentParser(allow_abbrev=False)
+        
+        # Handle both --local_rank and --local-rank for compatibility
+        for arg in sys.argv[1:]:
+            if arg.startswith('--local-rank'):
+                # Convert --local-rank to --local_rank for consistency
+                sys.argv[sys.argv.index(arg)] = '--local_rank' + arg[12:]
+        
+        # Add local_rank argument
         parser.add_argument('--local_rank', type=int, default=0,
                          help='Local rank for distributed training')
         parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
