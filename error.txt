@@ -1,0 +1,49 @@
+/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/launch.py:208: FutureWarning: The module torch.distributed.launch is deprecated
+and will be removed in future. Use torchrun.
+Note that --use-env is set by default in torchrun.
+If your script expects `--local-rank` argument to be set, please
+change it to read from `os.environ['LOCAL_RANK']` instead. See 
+https://pytorch.org/docs/stable/distributed.html#launch-utility for 
+further instructions
+
+  main()
+  File "/scratch/09717/saloni/bb-audit-dpsgd/audit_model.py", line 332
+    parser = argparse.ArgumentParser()
+    ^^^^^^
+SyntaxError: expected 'except' or 'finally' block
+E0908 21:15:30.134000 1493942 site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 0 (pid: 1493950) of binary: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python
+Traceback (most recent call last):
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/launch.py", line 208, in <module>
+    main()
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/typing_extensions.py", line 3004, in wrapper
+    return arg(*args, **kwargs)
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/launch.py", line 204, in main
+    launch(args)
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/launch.py", line 189, in launch
+    run(args)
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/run.py", line 910, in run
+    elastic_launch(
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+audit_model.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-09-08_21:15:30
+  host      : c608-141.vista.tacc.utexas.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1493950)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
