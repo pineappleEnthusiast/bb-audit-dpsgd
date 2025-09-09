@@ -2,6 +2,10 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 import os
 import sys
@@ -82,7 +86,25 @@ def setup_device():
     return device, 1  # Return device and world_size=1 for compatibility
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, use_defense=False, aug_mult=1):    
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def cleanup():
+    dist.destroy_process_group()
+
+class DDPModel(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        
+    def forward(self, x):
+        return self.model(x)
+
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
+               n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, 
+               use_defense=False, aug_mult=1, rank=0, world_size=1):    
     device, world_size = setup_device()
     rank = 0  # Single process, so rank is always 0
 
@@ -96,7 +118,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model).to(device)
 
-    # No DDP wrapper needed
+    # Wrap model with DDP
+    if world_size > 1:
+        model = DDP(DDPModel(model).to(device), device_ids=[rank], output_device=rank)
+    else:
+        model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -118,15 +144,25 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
 
-    # Create Dataset + DataLoader with optimized GPU transfer
+    # Create Dataset + DataLoader with DDP support
     dataset = TensorDataset(X, y)
+    
+    if world_size > 1:
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        shuffle = False
+    else:
+        sampler = None
+        shuffle = True
+    
     loader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=True,
-        pin_memory=True,  # Faster data transfer to CUDA devices
-        num_workers=4,    # Parallel data loading
-        persistent_workers=True  # Maintains workers between epochs
+        dataset,
+        batch_size=batch_size // world_size if world_size > 1 else batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        pin_memory=True,
+        num_workers=4,
+        persistent_workers=True,
+        drop_last=True
     )
     
     # # Move target data to device once
@@ -146,10 +182,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, drop_mask = clip_and_accum_grads(
-                model, curr_X, curr_y, optimizer, criterion,
+                model.module if world_size > 1 else model,  # Unwrap DDP model
+                curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, block_size=block_size,
                 drop_mask=drop_mask, device=device,
-                aug_mult=aug_mult, aug_fn=aug_fn
+                aug_mult=aug_mult, aug_fn=aug_fn,
+                rank=rank, world_size=world_size
             )
 
             # Add synchronized DP noise
@@ -159,7 +197,15 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
                     if noise_multiplier > 0 and max_grad_norm is not None:
                         # Generate noise directly
-                        noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                        # Calculate noise on 1 GPU and broadcast it to the rest
+                        if world_size > 1:
+                            if rank == 0:
+                                noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                            else:
+                                noise = None
+                            noise = torch.broadcast_to(noise, grad.shape)
+                        else:
+                            noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
                         grad = grad + noise
 
                     param.grad = grad
@@ -171,7 +217,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
 
-    # No process group to destroy
+    cleanup()
 
     return model
     
@@ -272,7 +318,17 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     return outputs, losses, all_losses, train_set_accs, test_set_accs
 
 
-if __name__ == '__main__':
+def main():
+    # Initialize distributed training if needed
+    rank = int(os.environ.get('RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    
+    if world_size > 1:
+        setup(rank, world_size)
+    
+    try:
+        if rank == 0:
+            print(f"Training with {world_size} GPUs")
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
     parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()), help='model to audit')
@@ -407,8 +463,10 @@ if __name__ == '__main__':
 
         # Simple loop with print for progress
         for rep in range(reps_completed, args.n_reps // 2):
-            print(f"Rep {rep + 1}/{(args.n_reps // 2)}")
-            # train model
+            if rank == 0:
+                print(f"Rep {rep + 1}/{(args.n_reps // 2)}")
+            
+            # Train model on all ranks
             model = train_model(args.model_name, 
                                             curr_X, 
                                             curr_y, 
@@ -424,78 +482,85 @@ if __name__ == '__main__':
                                             init_model=init_model,
                                             out_dim=out_dim, 
                                             use_defense=args.defense,
-                                            aug_mult=args.aug_mult)
+                              aug_mult=args.aug_mult,
+                              rank=rank,
+                              world_size=world_size)
             
+            # Synchronize all processes before next rep
+            if world_size > 1:
+                torch.distributed.barrier()
+            
+            # Only rank 0 processes the rest
+            if rank == 0:
+                model.eval()
+                with torch.no_grad():
+                    # Ensure target data is on the same device as the model
+                    device = next(model.parameters()).device
+                    target_X_device = target_X.to(device)
+                    target_y_device = target_y.to(device)
+                    
+                    output = model(target_X_device)
+                    outputs[world].append(output[0].cpu().numpy())
+                    losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
                         
-            # get loss of model on target sample
-            model.eval()
-            with torch.no_grad():
-                # Ensure target data is on the same device as the model
-                device = next(model.parameters()).device
-                target_X_device = target_X.to(device)
-                target_y_device = target_y.to(device)
-                
-                output = model(target_X_device)
-                outputs[world].append(output[0].cpu().numpy())
-                losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
+                    # Save checkpoint after each rep
+                    save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
 
-                
-            # get test set accuracy from first 5 reps
-            if rep < 5 and world == 'in':
-                if len(X_out) > 0:
-                    train_set_accs.append(test_model(model, X_in, y_in))
-                    print('Train set acc:', train_set_accs[-1])
-                test_set_accs.append(test_model(model, X_test, y_test))
-                print('Test set acc:', test_set_accs[-1])
+                    
+                # get test set accuracy from first 5 reps
+                if rep < 5 and world == 'in':
+                    if len(X_out) > 0:
+                        train_set_accs.append(test_model(model, X_in, y_in))
+                        print('Train set acc:', train_set_accs[-1])
+                    test_set_accs.append(test_model(model, X_test, y_test))
+                    print('Test set acc:', test_set_accs[-1])
 
-            if rep < 1 and world == 'in':
-                pass
-
-            # torch.cuda.empty_cache()
-
-            # save checkpoint
-            save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
-        outputs[world] = np.array(outputs[world])
-
-    if not args.fit_world_only:
-        def audit_canary(losses, args):        
-            k = len(losses['in'])
-            t_losses = {'in': None, 'out': None}
-            holdout_losses = {'in': None, 'out': None}
-
-            if args.holdout_audit:
-                k = len(losses['in']) // 2
-            
-            t_losses['in'] = losses['in'][:k]
-            t_losses['out'] = losses['out'][:k]
-            holdout_losses['in'] = losses['in'][k:]
-            holdout_losses['out'] = losses['out'][k:]
-
-            # calculate empirical epsilon using GDP
-            mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
-            mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
-
-            max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
-
-            if args.holdout_audit:
-                emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
-                    [holdout_losses['in'], holdout_losses['out']]), 
-                    np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
-                    args.alpha, 
-                    args.delta, 
-                    max_t, 
-                    'GDP')
-            
-            return emp_eps_loss, mia_scores, mia_labels
+                # save checkpoint
+                save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
         
-        emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
+        if rank == 0:
+            outputs[world] = np.array(outputs[world])
 
-        np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
-        np.save(f'{out_folder}/mia_scores.npy', mia_scores)
-        np.save(f'{out_folder}/mia_labels.npy', mia_labels)
-    
-        print(f'Theoretical eps: {args.epsilon}')
-        print(f'Empirical eps: {emp_eps_loss}')
+    if rank == 0:
+        if not args.fit_world_only:
+            def audit_canary(losses, args):        
+                k = len(losses['in'])
+                t_losses = {'in': None, 'out': None}
+                holdout_losses = {'in': None, 'out': None}
 
-    print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
-    print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
+                if args.holdout_audit:
+                    k = len(losses['in']) // 2
+                
+                t_losses['in'] = losses['in'][:k]
+                t_losses['out'] = losses['out'][:k]
+                holdout_losses['in'] = losses['in'][k:]
+                holdout_losses['out'] = losses['out'][k:]
+
+                # calculate empirical epsilon using GDP
+                mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
+                mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
+
+                max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
+
+                if args.holdout_audit:
+                    emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
+                        [holdout_losses['in'], holdout_losses['out']]), 
+                        np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
+                        args.alpha, 
+                        args.delta, 
+                        max_t, 
+                        'GDP')
+                
+                return emp_eps_loss, mia_scores, mia_labels
+            
+            emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
+
+            np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
+            np.save(f'{out_folder}/mia_scores.npy', mia_scores)
+            np.save(f'{out_folder}/mia_labels.npy', mia_labels)
+        
+            print(f'Theoretical eps: {args.epsilon}')
+            print(f'Empirical eps: {emp_eps_loss}')
+
+        print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
+        print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
