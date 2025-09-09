@@ -76,23 +76,14 @@ def init_wideresnet(model):
     # model.apply(init_weights)
 
 
-import torch.distributed as dist
-import os
-
-def setup_ddp(backend='nccl'):
-    rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
-    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
-    return rank, world_size
+def setup_device():
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    return device, 1  # Return device and world_size=1 for compatibility
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, spectral_signature_args, block_size, batch_size, init_model=None, out_dim=10, use_defense=False, store_canary_rank=False):
-    rank, world_size = setup_ddp()
-    torch.cuda.set_device(rank % torch.cuda.device_count())
-    device = f'cuda:{rank % torch.cuda.device_count()}'
-
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, use_defense=False):
+    device, world_size = setup_device()
+    rank = 0  # Single process, so rank is always 0
 
     # Initialize model
     if init_model is None:
@@ -104,8 +95,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model).to(device)
 
-    # Wrap in DDP
-    model = DDP(model, device_ids=[device])
+    # No DDP wrapper needed
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -127,16 +117,13 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
 
-    # Create Dataset + DistributedSampler + DataLoader
+    # Create Dataset + DataLoader
     dataset = TensorDataset(X, y)
-    sampler = DistributedSampler(dataset, shuffle=True)
-    loader = DataLoader(dataset, batch_size=batch_size // world_size, sampler=sampler)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     for epoch in range(n_epochs):
-        sampler.set_epoch(epoch)  # important for shuffling per epoch
         optimizer.zero_grad()
-        if rank == 0:
-            print(f"Epoch: {epoch}")
+        print(f"Epoch: {epoch}")
 
         for batch_idx, (curr_X, curr_y) in enumerate(loader):
             # Clip & accumulate gradients in memory-safe blocks
@@ -153,13 +140,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     grad = curr_accumulated_gradients[name]
 
                     if noise_multiplier > 0 and max_grad_norm is not None:
-                        # Generate noise on rank 0
-                        if rank == 0:
-                            noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
-                        else:
-                            noise = torch.empty_like(grad, device=device)
-                        # Broadcast to all GPUs
-                        dist.broadcast(noise, src=0)
+                        # Generate noise directly
+                        noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
                         grad = grad + noise
 
                     param.grad = grad
@@ -167,7 +149,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             optimizer.step()
             optimizer.zero_grad()
 
-    dist.destroy_process_group()
+    # No process group to destroy
 
     return model
     
@@ -225,6 +207,7 @@ def save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, tes
         np.save(f'{out_folder}/all_losses_in.npy', all_losses['in'])
         np.save(f'{out_folder}/all_losses_out.npy', all_losses['out'])
 
+
 def resume_checkpoint(out_folder, fit_world_only, resume):
     """Load checkpoint if resume is set to True and previous checkpoint exists, else create new empty checkpoint"""
     outputs = {'out': [], 'in': []}
@@ -263,6 +246,7 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     
     return outputs, losses, all_losses, train_set_accs, test_set_accs
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
@@ -291,10 +275,6 @@ if __name__ == '__main__':
     parser.add_argument('--store_canary_rank', action='store_true')
     parser.add_argument('--holdout_audit', action='store_true')
 
-    # Options for Spectral Signature Search
-    parser.add_argument('--find_outliers', action='store_true')
-    parser.add_argument('--search_space', type=str, default='gradient')
-    parser.add_argument('--scoring_fn', type=str, default='norm')
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
@@ -411,13 +391,11 @@ if __name__ == '__main__':
                                             args.max_grad_norm, 
                                             args.n_epochs, 
                                             args.lr, 
-                                            spectral_signature_args, 
                                             block_size=args.block_size, 
                                             batch_size=args.batch_size,
                                             init_model=init_model,
                                             out_dim=out_dim, 
-                                            use_defense=args.defense, 
-                                            store_canary_rank=args.store_canary_rank)
+                                            use_defense=args.defense)
             
                         
             # get loss of model on target sample
@@ -437,16 +415,7 @@ if __name__ == '__main__':
                 print('Test set acc:', test_set_accs[-1])
 
             if rep < 1 and world == 'in':
-                if spectral_signature_args and spectral_signature_args['store_canary_rank'] is not None:
-                    canary_ranks = np.array(spectral_signature_args['store_canary_rank'])
-                    np.save(f'{out_folder}/canary_ranks.npy', canary_ranks)
-
-                    plt.plot(np.arange(len(canary_ranks))[canary_ranks > -1], canary_ranks[canary_ranks > -1])
-                    plt.xlabel('Epoch #')
-                    plt.ylabel('Canary Outlier Score Rank')
-                    plt.gca().invert_yaxis()
-                    plt.grid(True)
-                    plt.savefig(f'{out_folder}/canary_ranks.png')
+                pass
 
             # torch.cuda.empty_cache()
 

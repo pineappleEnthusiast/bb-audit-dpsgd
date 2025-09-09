@@ -182,8 +182,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     accum_grad = None
 
     for idx_block in idx_blocks:
-        curr_X = X_active[idx_block].to(device)
-        curr_y = y_active[idx_block].to(device)
+        curr_X = X_active[idx_block]
+        curr_y = y_active[idx_block]
 
         # Compute per-block gradients with clipping
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
