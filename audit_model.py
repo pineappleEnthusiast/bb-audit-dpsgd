@@ -335,6 +335,9 @@ def main():
             print(f"Training with {world_size} GPUs")
             
         parser = argparse.ArgumentParser()
+        # Add local_rank argument for compatibility with torch.distributed.launch
+        parser.add_argument('--local_rank', type=int, default=0,
+                         help='Local rank for distributed training')
         parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
         parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()), help='model to audit')
         parser.add_argument('--n_reps', type=int, default=200, help='number of models')
