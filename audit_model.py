@@ -6,6 +6,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 import os
 import sys
@@ -351,19 +355,24 @@ def main():
     parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
     parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
 
-    # Options for Debugging
-    parser.add_argument('--view_badnets', action='store_true')
-    parser.add_argument('--store_canary_rank', action='store_true')
-    parser.add_argument('--holdout_audit', action='store_true')
+        # Options for Debugging
+        parser.add_argument('--view_badnets', action='store_true')
+        parser.add_argument('--store_canary_rank', action='store_true')
+        parser.add_argument('--holdout_audit', action='store_true')
 
+        # Options for Forgetting Canary Candidates
+        parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
+        parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
 
-    # Options for Forgetting Canary Candidates
-    parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
-    parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
-
-    args = parser.parse_args()
-
-    if args.max_grad_norm == -1: args.max_grad_norm = None
+        args = parser.parse_args()
+        if args.max_grad_norm == -1: 
+            args.max_grad_norm = None
+            
+    except Exception as e:
+        print(f"Error in main: {str(e)}")
+        if world_size > 1:
+            cleanup()
+        raise
 
     # reproducibility
     np.random.seed(args.seed)
