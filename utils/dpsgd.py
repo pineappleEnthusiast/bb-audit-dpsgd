@@ -202,22 +202,22 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         scores[idx_block] = last_layer_norms
 
 
-    if len(drop_mask) - 1 in active_global_indices:
-        print('Canary in this minibatch')
-        print(scores[np.where(active_global_indices.cpu().numpy() == (len(drop_mask) - 1))[0][0]], sorted(scores)[-5:])
+    # if len(drop_mask) - 1 in active_global_indices:
+    #     print('Canary in this minibatch')
+    #     print(scores[np.where(active_global_indices.cpu().numpy() == (len(drop_mask) - 1))[0][0]], sorted(scores)[-5:])
 
-    k = 5
+    # k = 5
 
-    # gets top k indices in scores
-    topk_idx = np.argpartition(-scores, k)[:k]
+    # # gets top k indices in scores
+    # topk_idx = np.argpartition(-scores, k)[:k]
 
-    # scores is local
+    # # scores is local
 
-    topk_global_idx = active_global_indices[topk_idx]
+    # topk_global_idx = active_global_indices[topk_idx]
 
-    if len(drop_mask) - 1 in topk_global_idx:
-        print('Canary is getting dumped')
-        exit()
+    # if len(drop_mask) - 1 in topk_global_idx:
+    #     print('Canary is getting dumped')
+    #     exit()
 
     return accum_grad, drop_mask
 
