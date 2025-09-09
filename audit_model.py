@@ -289,12 +289,22 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
             # Apply the accumulated gradients to the model parameters
             with torch.no_grad():
+                # Get parameter names without 'module.' prefix
+                param_names = [name.replace('module.', '') for name, _ in model.named_parameters()]
+                
                 for name, param in model.named_parameters():
+                    # Remove 'module.' prefix for DDP models
+                    clean_name = name.replace('module.', '')
+                    if clean_name not in curr_accumulated_gradients:
+                        print(f"Warning: Parameter {clean_name} not found in accumulated gradients")
+                        continue
+                        
                     # Get the accumulated gradient and move to device
-                    grad = curr_accumulated_gradients[name].to(device)
+                    grad = curr_accumulated_gradients[clean_name].to(device)
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
+                        # Generate noise on rank 0 and broadcast to other processes
                         if world_size > 1:
                             if rank == 0:
                                 noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
@@ -308,7 +318,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                     # Update the parameter's gradient
                     if param.grad is None:
-                        param.grad = grad
+                        param.grad = grad.clone()
                     else:
                         param.grad.copy_(grad)
             
