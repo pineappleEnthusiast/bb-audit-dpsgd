@@ -95,8 +95,13 @@ def setup_device():
     return device, 1  # Return device and world_size=1 for compatibility
 
 
-def setup(rank, world_size, local_rank, master_addr='localhost', master_port='12355'):
+def setup(rank, world_size, local_rank, master_addr=None, master_port='12355'):
     """Initialize the distributed environment."""
+    # Get master address from environment if not provided
+    if master_addr is None:
+        master_addr = os.environ.get('MASTER_ADDR', 'localhost')
+    master_port = os.environ.get('MASTER_PORT', master_port)
+    
     print(f'[Rank {rank}] Starting setup with master={master_addr}:{master_port}, world_size={world_size}, local_rank={local_rank}')
     
     # Set environment variables
