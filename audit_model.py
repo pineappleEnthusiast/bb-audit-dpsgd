@@ -282,21 +282,21 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                     grad = param.grad.detach().clone()
                     
-                    # Add DP noise if needed
-                    if noise_multiplier > 0 and max_grad_norm is not None:
-                        # Generate noise directly
-                        if world_size > 1:
-                            if rank == 0:
-                                noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
-                                # Broadcast the noise from rank 0 to all other processes
-                                dist.broadcast(noise, src=0)
-                            else:
-                                noise = torch.zeros_like(grad)
-                                dist.broadcast(noise, src=0)
-                        else:
-                            noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                    # # Add DP noise if needed
+                    # if noise_multiplier > 0 and max_grad_norm is not None:
+                    #     # Generate noise directly
+                    #     if world_size > 1:
+                    #         if rank == 0:
+                    #             noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                    #             # Broadcast the noise from rank 0 to all other processes
+                    #             dist.broadcast(noise, src=0)
+                    #         else:
+                    #             noise = torch.zeros_like(grad)
+                    #             dist.broadcast(noise, src=0)
+                    #     else:
+                    #         noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
                         
-                        grad.add_(noise)
+                    #     grad.add_(noise)
                     
                     # Update the parameter's gradient
                     param.grad = grad.to(device)
