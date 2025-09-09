@@ -1,26 +1,12 @@
 #!/bin/bash
 
-# Enable verbose output for debugging
-set -x
-
 # Get the list of nodes
 NODES=$(scontrol show hostnames $SLURM_JOB_NODELIST)
 NODES=($NODES)  # Convert to array
-MASTER_ADDR=${NODES[0]}  # First node's hostname as master
+MASTER_ADDR=${NODES[0]}  # First node is the master
 MASTER_PORT=12345
-GPUS_PER_NODE=1  # Using 1 GPU per node
+GPUS_PER_NODE=1  # Adjust based on your nodes
 NNODES=${#NODES[@]}  # Number of nodes
-
-# Print debug info
-echo "Master address: $MASTER_ADDR"
-echo "All nodes: ${NODES[@]}"
-
-# Set NCCL environment variables for better performance
-export NCCL_DEBUG=INFO
-export NCCL_SOCKET_IFNAME=^docker0,lo
-export NCCL_IB_DISABLE=1  # Disable InfiniBand if not available
-
-echo "Starting distributed training across $NNODES nodes"
 
 # For each node, launch the training script
 for ((i=0; i<NNODES; i++)); do

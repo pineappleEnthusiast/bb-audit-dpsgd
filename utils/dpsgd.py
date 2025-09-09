@@ -165,9 +165,15 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
 def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          block_size=1024, drop_mask=None, scores=None, device='cuda',
-                         original_indices=None, aug_mult: int = 1, aug_fn=None):
-    """Clip and accumulate gradients in blocks. Supports augmentation multiplicity."""
+                         original_indices=None, aug_mult: int = 1, aug_fn=None,
+                         world_size=1, rank=0):
+    """
+    Clip and accumulate gradients in blocks with support for distributed training.
     
+    Args:
+        world_size: Number of processes in distributed training
+        rank: Rank of the current process
+    """
     if drop_mask is not None:
         batch_drop_mask = drop_mask[:len(X)]
         X_active = X[batch_drop_mask == 0]
@@ -219,6 +225,13 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     #     print('Canary is getting dumped')
     #     exit()
 
+    # Synchronize accumulated gradients across processes
+    if world_size > 1 and accum_grad is not None:
+        with torch.no_grad():
+            for name in accum_grad:
+                dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
+                accum_grad[name] = accum_grad[name] / world_size
+    
     return accum_grad, drop_mask
 
 

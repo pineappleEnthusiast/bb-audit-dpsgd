@@ -145,8 +145,16 @@ def setup(rank, world_size, local_rank, master_addr=None, master_port='12355'):
         raise
 
 def cleanup():
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    try:
+        if dist.is_initialized():
+            # Ensure all processes have completed before destroying the process group
+            if dist.get_world_size() > 1:
+                torch.cuda.synchronize()
+                dist.barrier()
+            dist.destroy_process_group()
+            print(f'[Rank {dist.get_rank() if dist.is_initialized() else 0}] Successfully cleaned up process group')
+    except Exception as e:
+        print(f'[Rank {dist.get_rank() if dist.is_initialized() else 0}] Error during cleanup: {str(e)}')
 
 class DDPModel(nn.Module):
     def __init__(self, model):
@@ -225,9 +233,13 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         sampler = None
         shuffle = True
     
+    per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
+    if rank == 0:
+        print(f"Effective batch size: {effective_batch_size} (per GPU: {per_gpu_batch_size})")
+    
     loader = DataLoader(
         dataset,
-        batch_size=batch_size // world_size if world_size > 1 else batch_size,
+        batch_size=per_gpu_batch_size,
         shuffle=shuffle,
         sampler=sampler,
         pin_memory=True,
@@ -257,7 +269,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, block_size=block_size,
                 drop_mask=drop_mask, device=device,
-                aug_mult=aug_mult, aug_fn=aug_fn
+                aug_mult=aug_mult, aug_fn=aug_fn,
+                world_size=world_size, rank=rank
             )
 
             # Get gradients and add noise in a single pass
@@ -680,4 +693,13 @@ def main():
         print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('\nInterrupted by user')
+    except Exception as e:
+        print(f'\nError in main: {str(e)}')
+    finally:
+        # Ensure cleanup is always called, even if there's an error
+        if 'dist' in globals() and dist.is_initialized():
+            cleanup()
