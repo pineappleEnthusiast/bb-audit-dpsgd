@@ -228,22 +228,9 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
     # Sum gradients across all processes
     if world_size > 1 and accum_grad is not None:
-        with torch.no_grad():
-            # Log gradient norms before sync
-            if rank == 0:
-                print("\nGradient norms before sync:")
-                for name in accum_grad:
-                    print(f"{name}: {torch.norm(accum_grad[name]).item():.6f}")
-            
             # Synchronize gradients
             for name in accum_grad:
                 dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
-            
-            # Log gradient norms after sync
-            if rank == 0:
-                print("\nGradient norms after sync:")
-                for name in accum_grad:
-                    print(f"{name}: {torch.norm(accum_grad[name]).item():.6f}")
     
     return accum_grad, drop_mask
 
