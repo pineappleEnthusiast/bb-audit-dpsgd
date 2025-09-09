@@ -82,7 +82,7 @@ def setup_device():
     return device, 1  # Return device and world_size=1 for compatibility
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, use_defense=False):
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, use_defense=False, aug_mult=1):    
     device, world_size = setup_device()
     rank = 0  # Single process, so rank is always 0
 
