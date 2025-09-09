@@ -112,20 +112,34 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         noise_multiplier = 0
 
-    drop_mask = torch.zeros(len(y), device=device)
+    drop_mask = None # torch.zeros(len(y), device=device)
     assert block_size <= batch_size, "block_size must be smaller than batch_size"
 
     aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
 
-    # Create Dataset + DataLoader
+    # Create Dataset + DataLoader with optimized GPU transfer
     dataset = TensorDataset(X, y)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        pin_memory=True,  # Faster data transfer to CUDA devices
+        num_workers=4,    # Parallel data loading
+        persistent_workers=True  # Maintains workers between epochs
+    )
+    
+    # Move target data to device once
+    target_X = target_X.to(device)
+    target_y = target_y.to(device)
 
     for epoch in range(n_epochs):
         optimizer.zero_grad()
         print(f"Epoch: {epoch}")
 
         for batch_idx, (curr_X, curr_y) in enumerate(loader):
+            # Move batch to device asynchronously
+            curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
+            
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, drop_mask = clip_and_accum_grads(
                 model, curr_X, curr_y, optimizer, criterion,
