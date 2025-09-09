@@ -133,9 +133,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # target_X = target_X.to(device)
     # target_y = target_y.to(device)
 
+    import time
+    
     for epoch in range(n_epochs):
+        epoch_start = time.time()
         optimizer.zero_grad()
-        print(f"Epoch: {epoch}")
+        print(f"Epoch: {epoch}", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y) in enumerate(loader):
             # Move batch to device asynchronously
@@ -163,6 +166,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
             optimizer.step()
             optimizer.zero_grad()
+        
+        # Print epoch time
+        epoch_time = time.time() - epoch_start
+        print(f" | Time: {epoch_time:.2f}s")
 
     # No process group to destroy
 
