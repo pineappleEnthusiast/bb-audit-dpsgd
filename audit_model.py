@@ -96,7 +96,8 @@ def setup(rank, world_size):
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 def cleanup():
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 class DDPModel(nn.Module):
     def __init__(self, model):
