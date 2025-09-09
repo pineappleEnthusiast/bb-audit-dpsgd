@@ -329,41 +329,47 @@ def main():
     try:
         if rank == 0:
             print(f"Training with {world_size} GPUs")
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
-    parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()), help='model to audit')
-    parser.add_argument('--n_reps', type=int, default=200, help='number of models')
-    parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
-    parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs to train for')
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
-    parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
-    parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
-    parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
-    parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
-    parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
-    parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
-    parser.add_argument('--block_size', type=int, help='process samples within a batch in blocks to conserve GPU space')
-    parser.add_argument('--batch_size', type=int, help='batch size for training')
-    parser.add_argument('--resume', action='store_true', help='skip experiment if results are present')
-    parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
-    parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
-    parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
+        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
+        parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()), help='model to audit')
+        parser.add_argument('--n_reps', type=int, default=200, help='number of models')
+        parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
+        parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs to train for')
+        parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+        parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
+        parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
+        parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
+        parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
+        parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
+        parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
+        parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
+        parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
+        parser.add_argument('--block_size', type=int, help='process samples within a batch in blocks to conserve GPU space')
+        parser.add_argument('--batch_size', type=int, help='batch size for training')
+        parser.add_argument('--resume', action='store_true', help='skip experiment if results are present')
+        parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
+        parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
+        parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
 
-    # Options for Debugging
-    parser.add_argument('--view_badnets', action='store_true')
-    parser.add_argument('--store_canary_rank', action='store_true')
-    parser.add_argument('--holdout_audit', action='store_true')
+        # Options for Debugging
+        parser.add_argument('--view_badnets', action='store_true')
+        parser.add_argument('--store_canary_rank', action='store_true')
+        parser.add_argument('--holdout_audit', action='store_true')
 
+        # Options for Forgetting Canary Candidates
+        parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
+        parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
 
-    # Options for Forgetting Canary Candidates
-    parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
-    parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
-
-    args = parser.parse_args()
-
-    if args.max_grad_norm == -1: args.max_grad_norm = None
+        args = parser.parse_args()
+        if args.max_grad_norm == -1: 
+            args.max_grad_norm = None
+            
+    except Exception as e:
+        print(f"Error in main: {str(e)}")
+        if world_size > 1:
+            cleanup()
+        raise
 
     # reproducibility
     np.random.seed(args.seed)
