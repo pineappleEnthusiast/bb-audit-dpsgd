@@ -574,3 +574,6 @@ def main():
 
         print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
         print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
+
+if __name__ == '__main__':
+    main()
