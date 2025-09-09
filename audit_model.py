@@ -179,6 +179,7 @@ def test_model(model, X, y, batch_size=128):
 
     model.eval()
     acc = 0
+    total = 0
     with torch.no_grad():
         for curr_X, curr_y in test_loader:
             curr_X = curr_X.to(device)
@@ -186,8 +187,10 @@ def test_model(model, X, y, batch_size=128):
 
             curr_y_hat = torch.argmax(model(curr_X), dim=1)
             acc += torch.sum(curr_y_hat == curr_y).cpu().item()
+            total += len(curr_y)
 
     model.train()
+    return acc / total if total > 0 else 0.0
 
 
 def save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only):
