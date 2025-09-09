@@ -49,24 +49,40 @@ def average_grads_over_augmentations(ps_grads, batch_size, aug_mult):
 
 def get_per_sample_grads(model, X, y, criterion):
     """Compute per-sample gradients"""
-
-    # map of parameter names : parameter values
-    params = {k: v.detach() for k, v in model.named_parameters()}
-    # map of buffer names : buffer balues
-    buffers = {k: v.detach() for k, v in model.named_buffers()}
+    # Check if model is DDP-wrapped
+    is_ddp = hasattr(model, 'module')
+    
+    # Get model parameters, handling DDP case
+    if is_ddp:
+        # For DDP, we need to use the module's parameters but with the original names
+        model_to_use = model.module
+        # Create a mapping from original names to parameters
+        param_mapping = {name.replace('module.', ''): param for name, param in model.named_parameters()}
+    else:
+        model_to_use = model
+        param_mapping = dict(model.named_parameters())
+    
+    # map of parameter names : parameter values (without module prefix)
+    params = {k: v.detach() for k, v in model_to_use.named_parameters()}
+    # map of buffer names : buffer values (without module prefix)
+    buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
 
     def compute_loss(params, buffers, sample, target):
         batch = sample.unsqueeze(0)
         targets = target.unsqueeze(0)
-
-        predictions = functional_call(model, (params, buffers), (batch,))
+        
+        # Forward pass - no no_grad() here to allow gradient computation
+        predictions = functional_call(model_to_use, (params, buffers), (batch,))
         loss = criterion(predictions, targets)
         return loss
     
+    # Compute gradients
     ft_compute_grad = grad(compute_loss)
     ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
+    
+    # Get gradients with consistent naming (without module prefix)
     ps_grads = ft_compute_sample_grad(params, buffers, X, y)
-
+    
     return ps_grads
 
 def get_per_sample_grad_norms(per_sample_grads):
@@ -106,9 +122,21 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     If aug_mult > 1, apply augmentation multiplicity outside, then average grads.
     """
     optimizer.zero_grad()
-
+    
+    # Check if model is DDP-wrapped
+    is_ddp = hasattr(model, 'module')
+    
+    # Get the actual model (unwrapped if DDP)
+    model_to_use = model.module if is_ddp else model
+    
+    # Get parameter names without 'module.' prefix
+    param_names = [name.replace('module.', '') for name in model.state_dict().keys() 
+                  if not name.startswith('_forward_hooks') and not name.startswith('_backward_hooks')]
+    
     if len(X) == 0:
-        ps_grads = {name: torch.zeros_like(param).unsqueeze(dim=0) for name, param in model.named_parameters()}
+        # Initialize zero gradients with correct names
+        ps_grads = {name: torch.zeros_like(param).unsqueeze(dim=0) 
+                   for name, param in model_to_use.named_parameters()}
     else:
         # Pre-augment outside vmap if aug_mult > 1
         if aug_mult > 1 and aug_fn is not None:
@@ -118,7 +146,6 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
             ps_grads_aug = get_per_sample_grads(model, X_aug, y_aug, criterion)
             ps_grads = average_grads_over_augmentations(ps_grads_aug, batch_size=len(X), aug_mult=aug_mult)
-
         else:
             X = X.to(device)
             y = y.to(device)
