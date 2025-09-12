@@ -54,6 +54,28 @@ def load_data(data_name, n_df, root='./', split='train'):
             root=DATA_ROOT, train=split=='train', download=True, transform=transform)
         
         out_dim = 100
+    elif data_name == 'purchase':
+        npz_path = f'{DATA_ROOT}/purchase100.npz'
+
+        data = np.load(npz_path)
+        X, y = data['features'], data['labels']
+
+        # one hot -> int class id
+        if len(y.shape) > 1 and y.shape[1] > 1:
+            y = np.argmax(y, axis=1)
+
+        X, y = torch.from_numpy(X), torch.from_numpy(y)
+
+        # train/test split
+        n = len(y)
+        split_idx = int(0.8 * n)
+        if split == 'train':
+            X, y = X[:split_idx], y[:split_idx]
+        else: # test
+            X, y = X[split_idx:], y[split_idx:]
+
+        dataset = TensorDataset(X, y)
+        out_dim = len(torch.unique(y))
     elif os.path.exists(f'{DATA_ROOT}'):
         # load pre-processed local data
         X, y = np.load(f'{DATA_ROOT}/X_{split}.npy'), np.load(f'{DATA_ROOT}/y_{split}.npy')
