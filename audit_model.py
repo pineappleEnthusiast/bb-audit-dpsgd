@@ -550,7 +550,18 @@ def main():
             # don't train on the first half of the dataset
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
 
-    
+    # check for data_names + target_types that don't match
+    if args.data_name == 'mnist':
+        pass # compatible with all canaries
+    elif args.data_name == 'cifar10':
+        pass # compatible with all canaries
+    elif args.data_name == 'cifar100':
+        pass # compatible with all canaries
+    elif args.data_name == 'purchase':
+        # not compatible with badnets or clipbkd
+        if args.target_type == 'badnets' or args.target_type == 'clipbkd':
+            print("Warning: canary type does not support tabular data.")
+
     # craft target data point (x_T, y_T)
     if args.target_type == 'blank':
         # blank sample with optional interpolation
