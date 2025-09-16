@@ -178,7 +178,7 @@ class DDPModel(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-        
+
     class DDPActiveSampler(torch.utils.data.Sampler):
         def __init__(self, drop_mask, num_replicas=None, rank=None, shuffle=True):
             self.drop_mask = drop_mask  # This is a reference to the external drop_mask
@@ -411,7 +411,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
 
-            scores.fill(0)
+        scores.fill(0)
 
     return model
     
