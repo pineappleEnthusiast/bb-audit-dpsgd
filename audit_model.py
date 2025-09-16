@@ -267,12 +267,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             init_wideresnet(model)
     else:
         model = copy.deepcopy(init_model).to(device)
-
-    # Debug: Print model parameter requires_grad status
-    if rank == 0:
-        print("\n=== Model Parameter Status ===")
-        for name, param in model.named_parameters():
-            print(f"{name}: requires_grad={param.requires_grad}, device={param.device}")
     
     # Verify model is in training mode
     model.train()
@@ -326,7 +320,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             shuffle=True
         )
     else:
-        sampler = DDPActiveSampler(drop_mask=drop_mask, shuffle=True)
+        print('Single GPU Active Sampler')
+        sampler = DDPActiveSampler(drop_mask=drop_mask,shuffle=True)
 
     per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
     if rank == 0:
