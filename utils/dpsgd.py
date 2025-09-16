@@ -210,7 +210,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     if scores is None:
         raise ValueError("scores array must be provided")
 
-    idx_blocks = torch.split(torch.arange(len(X_active)), block_size)
+    idx_blocks = torch.split(torch.arange(len(X)), block_size)
 
     accum_grad = None
 

@@ -243,8 +243,13 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     
     # Setup the process groups
-    if world_size > 1:
-        setup(rank, world_size, local_rank)
+    if world_size > 1 and not dist.is_initialized():
+        try:
+            setup(rank, world_size, local_rank)
+        except Exception as e:
+            print(f"[Rank {rank}] Error initializing process group: {e}")
+            world_size = 1  # Fall back to single process
+            rank = 0
     
     # Set device for this process
     device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
@@ -354,16 +359,19 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             global_indices = global_indices.to(device, non_blocking=True)
             
             # Clip & accumulate gradients in memory-safe blocks
-            curr_accumulated_gradients, drop_mask, scores = clip_and_accum_grads(
+            curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model.module if world_size > 1 else model,  # Unwrap DDP model
                 curr_X, curr_y, optimizer, criterion,
-                max_grad_norm, block_size=block_size,
+                max_grad_norm, 
+                block_size=block_size,
+                scores=scores,
                 device=device,
-                aug_mult=aug_mult, aug_fn=aug_fn,
-                world_size=world_size, rank=rank,
-                batch_size=batch_size,
                 global_indices=global_indices,
-                scores=scores
+                aug_mult=aug_mult, 
+                aug_fn=aug_fn,
+                world_size=world_size, 
+                rank=rank, 
+                batch_size=batch_size
             )
 
             # Apply the accumulated gradients to the model parameters
