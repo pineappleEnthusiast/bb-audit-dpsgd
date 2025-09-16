@@ -192,32 +192,33 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
 
 def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
-                         block_size=1024, drop_mask=None, scores=None, device='cuda',
-                         original_indices=None, aug_mult: int = 1, aug_fn=None,
+                         block_size=1024, scores=None, device='cuda',
+                         global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None):
     """
     Clip and accumulate gradients in blocks with support for distributed training.
     
     Args:
+        X: Input tensor
+        y: Target tensor
+        global_indices: Global indices of the current batch in the full dataset
+        scores: Pre-allocated array to store scores for the entire dataset
         world_size: Number of processes in distributed training
         rank: Rank of the current process
     """
-    if drop_mask is not None:
-        batch_drop_mask = drop_mask[:len(X)]
-        X_active = X[batch_drop_mask == 0]
-        y_active = y[batch_drop_mask == 0]
-    else:
-        X_active = X
-        y_active = y
 
-    scores = np.zeros(len(X_active))
+    if scores is None:
+        raise ValueError("scores array must be provided")
+
     idx_blocks = torch.split(torch.arange(len(X_active)), block_size)
 
     accum_grad = None
 
     for idx_block in idx_blocks:
-        curr_X = X_active[idx_block]
-        curr_y = y_active[idx_block]
+        curr_X = X[idx_block]
+        curr_y = y[idx_block]
+
+        curr_global_indices = global_indices[idx_block]
 
         # Compute per-block gradients with clipping
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
@@ -233,7 +234,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                 for name in accum_grad:
                     accum_grad[name] += accum_grad_block[name]
 
-        scores[idx_block] = last_layer_norms
+        scores[curr_global_indices.cpu().numpy()] = last_layer_norms
+
+    # idx_blocks is relative to current chunk
+    # we want to map each chunk to global indices
+    # we want to store scores at global indices position
 
 
     # if len(drop_mask) - 1 in active_global_indices:
@@ -259,7 +264,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             for name in accum_grad:
                 dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
     
-    return accum_grad, drop_mask
+    return accum_grad, scores
 
 
 

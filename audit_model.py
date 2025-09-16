@@ -22,7 +22,7 @@ import numpy as np
 import argparse
 from opacus.accountants.utils import get_noise_multiplier
 import copy
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, Dataset
 import time
 import dill
 
@@ -156,6 +156,20 @@ def cleanup():
     except Exception as e:
         print(f'[Rank {dist.get_rank() if dist.is_initialized() else 0}] Error during cleanup: {str(e)}')
 
+
+class IndexedTensorDataset(Dataset):
+    """A dataset that includes the index of each sample."""
+    def __init__(self, *tensors):
+        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
+        self.tensors = tensors
+        
+    def __getitem__(self, index):
+        return tuple(tensor[index] for tensor in self.tensors) + (index,)
+        
+    def __len__(self):
+        return self.tensors[0].size(0)
+
+
 class DDPModel(nn.Module):
     def __init__(self, model):
         super().__init__()
@@ -163,6 +177,61 @@ class DDPModel(nn.Module):
         
     def forward(self, x):
         return self.model(x)
+
+        
+    class DDPActiveSampler(torch.utils.data.Sampler):
+        def __init__(self, drop_mask, num_replicas=None, rank=None, shuffle=True):
+            self.drop_mask = drop_mask  # This is a reference to the external drop_mask
+            self.num_replicas = num_replicas
+            self.rank = rank
+            self.epoch = 0
+            self.shuffle = shuffle
+            
+            if self.num_replicas is None or self.rank is None:
+                if not dist.is_available():
+                    raise RuntimeError("Requires distributed package to be available")
+                self.num_replicas = dist.get_world_size()
+                self.rank = dist.get_rank()
+            
+            # These will be computed in __iter__ to reflect current drop_mask
+            self.num_samples = 0
+            self.total_size = 0
+            
+        def __iter__(self):
+            # Get current active indices based on the latest drop_mask
+            active_indices = np.where(~self.drop_mask)[0]
+            
+            # Calculate samples per process without padding
+            self.num_samples = len(active_indices) // self.num_replicas
+            # First few processes get one extra sample if needed
+            remainder = len(active_indices) % self.num_replicas
+            
+            # Generate a deterministic seed based on epoch
+            g = torch.Generator()
+            g.manual_seed(self.epoch)
+            
+            if self.shuffle:
+                indices = torch.randperm(len(active_indices), generator=g).tolist()
+            else:
+                indices = list(range(len(active_indices)))
+            
+            # Calculate start and end indices for this process
+            start = self.rank * self.num_samples + min(self.rank, remainder)
+            end = start + self.num_samples + (1 if self.rank < remainder else 0)
+            
+            # Get the indices for this process
+            process_indices = indices[start:end]
+            
+            # Map back to original dataset indices
+            return iter([int(active_indices[i]) for i in process_indices])
+            
+        def __len__(self):
+            # This is an estimate; actual length is computed in __iter__
+            return self.num_samples
+            
+        def set_epoch(self, epoch):
+            self.epoch = epoch
+
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, 
@@ -235,56 +304,66 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
 
     # Create Dataset + DataLoader with DDP support
-    dataset = TensorDataset(X, y)
+    dataset = IndexedTensorDataset(X, y)
     
+    # Initialize scores array and drop mask for the entire dataset
+    scores = np.zeros(len(dataset))
+    drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
+    
+    # Create a custom sampler that works with DDP and respects the drop mask
+    
+    # Create the sampler once before the epoch loop
     if world_size > 1:
-        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        shuffle = False
+        sampler = DDPActiveSampler(
+            drop_mask=drop_mask,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True
+        )
     else:
-        sampler = None
-        shuffle = True
-    
+        sampler = DDPActiveSampler(drop_mask=drop_mask, shuffle=True)
+
     per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
     if rank == 0:
         print(f"per GPU: {per_gpu_batch_size}")
-    
+    # Create the DataLoader once before the epoch loop
     loader = DataLoader(
         dataset,
         batch_size=per_gpu_batch_size,
-        shuffle=shuffle,
         sampler=sampler,
         pin_memory=True,
         num_workers=4,
         persistent_workers=True,
-        drop_last=True
+        drop_last=True,
+        generator=torch.Generator().manual_seed(0)  # Initial seed
     )
-    
-    # # Move target data to device once
-    # target_X = target_X.to(device)
-    # target_y = target_y.to(device)
-
-    import time
     
     for epoch in range(n_epochs):
         epoch_start = time.time()
+        
+        # Update the sampler's epoch for shuffling
         if world_size > 1:
-            loader.sampler.set_epoch(epoch)  # Set epoch for distributed sampler
+            sampler.set_epoch(epoch)
+            
         optimizer.zero_grad()
-        print(f"Epoch: {epoch}", end='', flush=True)
+        print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for batch_idx, (curr_X, curr_y) in enumerate(loader):
+        for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             # Move batch to device asynchronously
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
+            global_indices = global_indices.to(device, non_blocking=True)
             
             # Clip & accumulate gradients in memory-safe blocks
-            curr_accumulated_gradients, drop_mask = clip_and_accum_grads(
+            curr_accumulated_gradients, drop_mask, scores = clip_and_accum_grads(
                 model.module if world_size > 1 else model,  # Unwrap DDP model
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, block_size=block_size,
-                drop_mask=drop_mask, device=device,
+                device=device,
                 aug_mult=aug_mult, aug_fn=aug_fn,
                 world_size=world_size, rank=rank,
-                batch_size=batch_size  # Pass batch_size for proper gradient sync
+                batch_size=batch_size,
+                global_indices=global_indices,
+                scores=scores
             )
 
             # Apply the accumulated gradients to the model parameters
@@ -331,6 +410,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         # Print epoch time
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
+
+            scores.fill(0)
 
     return model
     
