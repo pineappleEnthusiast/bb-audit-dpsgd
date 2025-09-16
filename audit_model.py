@@ -179,58 +179,58 @@ class DDPModel(nn.Module):
         return self.model(x)
 
 
-    class DDPActiveSampler(torch.utils.data.Sampler):
-        def __init__(self, drop_mask, num_replicas=None, rank=None, shuffle=True):
-            self.drop_mask = drop_mask  # This is a reference to the external drop_mask
-            self.num_replicas = num_replicas
-            self.rank = rank
-            self.epoch = 0
-            self.shuffle = shuffle
-            
-            if self.num_replicas is None or self.rank is None:
-                if not dist.is_available():
-                    raise RuntimeError("Requires distributed package to be available")
-                self.num_replicas = dist.get_world_size()
-                self.rank = dist.get_rank()
-            
-            # These will be computed in __iter__ to reflect current drop_mask
-            self.num_samples = 0
-            self.total_size = 0
-            
-        def __iter__(self):
-            # Get current active indices based on the latest drop_mask
-            active_indices = np.where(~self.drop_mask)[0]
-            
-            # Calculate samples per process without padding
-            self.num_samples = len(active_indices) // self.num_replicas
-            # First few processes get one extra sample if needed
-            remainder = len(active_indices) % self.num_replicas
-            
-            # Generate a deterministic seed based on epoch
-            g = torch.Generator()
-            g.manual_seed(self.epoch)
-            
-            if self.shuffle:
-                indices = torch.randperm(len(active_indices), generator=g).tolist()
-            else:
-                indices = list(range(len(active_indices)))
-            
-            # Calculate start and end indices for this process
-            start = self.rank * self.num_samples + min(self.rank, remainder)
-            end = start + self.num_samples + (1 if self.rank < remainder else 0)
-            
-            # Get the indices for this process
-            process_indices = indices[start:end]
-            
-            # Map back to original dataset indices
-            return iter([int(active_indices[i]) for i in process_indices])
-            
-        def __len__(self):
-            # This is an estimate; actual length is computed in __iter__
-            return self.num_samples
-            
-        def set_epoch(self, epoch):
-            self.epoch = epoch
+class DDPActiveSampler(torch.utils.data.Sampler):
+    def __init__(self, drop_mask, num_replicas=None, rank=None, shuffle=True):
+        self.drop_mask = drop_mask  # This is a reference to the external drop_mask
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.shuffle = shuffle
+        
+        if self.num_replicas is None or self.rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            self.num_replicas = dist.get_world_size()
+            self.rank = dist.get_rank()
+        
+        # These will be computed in __iter__ to reflect current drop_mask
+        self.num_samples = 0
+        self.total_size = 0
+        
+    def __iter__(self):
+        # Get current active indices based on the latest drop_mask
+        active_indices = np.where(~self.drop_mask)[0]
+        
+        # Calculate samples per process without padding
+        self.num_samples = len(active_indices) // self.num_replicas
+        # First few processes get one extra sample if needed
+        remainder = len(active_indices) % self.num_replicas
+        
+        # Generate a deterministic seed based on epoch
+        g = torch.Generator()
+        g.manual_seed(self.epoch)
+        
+        if self.shuffle:
+            indices = torch.randperm(len(active_indices), generator=g).tolist()
+        else:
+            indices = list(range(len(active_indices)))
+        
+        # Calculate start and end indices for this process
+        start = self.rank * self.num_samples + min(self.rank, remainder)
+        end = start + self.num_samples + (1 if self.rank < remainder else 0)
+        
+        # Get the indices for this process
+        process_indices = indices[start:end]
+        
+        # Map back to original dataset indices
+        return iter([int(active_indices[i]) for i in process_indices])
+        
+    def __len__(self):
+        # This is an estimate; actual length is computed in __iter__
+        return self.num_samples
+        
+    def set_epoch(self, epoch):
+        self.epoch = epoch
 
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
