@@ -188,10 +188,13 @@ class DDPActiveSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         
         if self.num_replicas is None or self.rank is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            self.num_replicas = dist.get_world_size()
-            self.rank = dist.get_rank()
+            # Handle single-process case
+            if not dist.is_available() or not dist.is_initialized():
+                self.num_replicas = 1
+                self.rank = 0
+            else:
+                self.num_replicas = dist.get_world_size()
+                self.rank = dist.get_rank()
         
         # These will be computed in __iter__ to reflect current drop_mask
         self.num_samples = 0
@@ -320,7 +323,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             shuffle=True
         )
     else:
-        print('Single GPU Active Sampler')
         sampler = DDPActiveSampler(drop_mask=drop_mask,shuffle=True)
 
     per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
