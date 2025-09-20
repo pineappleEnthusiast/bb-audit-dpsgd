@@ -55,27 +55,49 @@ def load_data(data_name, n_df, root='./', split='train'):
         
         out_dim = 100
     elif data_name == 'purchase':
+        # load purchase dataset
         npz_path = f'{DATA_ROOT}/purchase100.npz'
 
         data = np.load(npz_path)
         X, y = data['features'], data['labels']
 
-        # one hot -> int class id
         if len(y.shape) > 1 and y.shape[1] > 1:
             y = np.argmax(y, axis=1)
 
         X, y = torch.from_numpy(X), torch.from_numpy(y)
 
-        # train/test split
         n = len(y)
         split_idx = int(0.8 * n)
         if split == 'train':
             X, y = X[:split_idx], y[:split_idx]
-        else: # test
+        else:
             X, y = X[split_idx:], y[split_idx:]
 
         dataset = TensorDataset(X, y)
         out_dim = len(torch.unique(y))
+    elif data_name == 'tiny_shakespeare':
+        # load tiny shakespeare dataset
+        input_file_path = f'{DATA_ROOT}/input.txt'
+        with open(input_file_path, 'r', encoding='utf-8') as f:
+            text = f.read()
+
+        chars = sorted(list(set(text)))
+        str_to_int = {ch: i for i, ch in enumerate(chars)}
+        vocab_size = len(chars)
+
+        data_ids = torch.tensor([str_to_int[ch] for ch in text], dtype=torch.long)
+
+        split_idx = int(0.8 * len(data_ids))
+        if split == 'train':
+            data_ids = data_ids[:split_idx]
+        else:
+            data_ids = data_ids[split_idx:]
+
+        X = data_ids[:-1]
+        y = data_ids[1:]
+
+        dataset = TensorDataset(X, y)
+        out_dim = vocab_size
     elif os.path.exists(f'{DATA_ROOT}'):
         # load pre-processed local data
         X, y = np.load(f'{DATA_ROOT}/X_{split}.npy'), np.load(f'{DATA_ROOT}/y_{split}.npy')
