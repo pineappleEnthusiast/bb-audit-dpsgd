@@ -436,6 +436,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         
         # Only perform defense-related operations if defense flag is True
         if defense:
+            print('Defense')
             # Find top-k samples per class for gradient ascent
             k = 5  # Number of top samples per class
             top_k_grads = {}
