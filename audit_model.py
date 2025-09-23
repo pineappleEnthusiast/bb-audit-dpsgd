@@ -435,23 +435,22 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         
         # Only perform defense-related operations if defense flag is True
         if defense:
-            print('Defense')
             # Find top-k samples per class for gradient ascent
             k = 5  # Number of top samples per class
             top_k_grads = {}
             
             # Get unique classes
-            unique_classes = torch.unique(y).cpu().numpy()
+            unique_classes = torch.unique(y).cpu()
             
             # For each class, find top-k samples with highest scores
             for cls in unique_classes:
                 # Get indices of samples in this class
-                cls_indices = (y.cpu() == cls).nonzero(as_tuple=True)[0]
+                cls_indices = (y.cpu() == cls.item()).nonzero(as_tuple=True)[0]
                 if len(cls_indices) == 0:
                     continue
                     
-                # Get scores for this class
-                cls_scores = scores[cls_indices]
+                # Get scores for this class and ensure it's a PyTorch tensor
+                cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
                 
                 # Get top-k indices within this class
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
