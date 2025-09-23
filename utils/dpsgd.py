@@ -114,8 +114,8 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
 
 
-
-def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1):
+def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
+                             is_gradient_space_canary=False, target_class=None):
     """
     Add aug_fn and aug_mult params to support augmentation multiplicity outside vmap.
 
@@ -138,18 +138,28 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         ps_grads = {name: torch.zeros_like(param).unsqueeze(dim=0) 
                    for name, param in model_to_use.named_parameters()}
     else:
+        # Compute per-sample gradients
         # Pre-augment outside vmap if aug_mult > 1
         if aug_mult > 1 and aug_fn is not None:
             X_aug, y_aug = preaugment_batch(X, y, aug_fn, aug_mult)
             X_aug = X_aug.to(device)
             y_aug = y_aug.to(device)
 
-            ps_grads_aug = get_per_sample_grads(model, X_aug, y_aug, criterion)
-            ps_grads = average_grads_over_augmentations(ps_grads_aug, batch_size=len(X), aug_mult=aug_mult)
+            ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
+            ps_grads = average_grads_over_augmentations(ps_grads, batch_size=len(X), aug_mult=aug_mult)
         else:
             X = X.to(device)
             y = y.to(device)
             ps_grads = get_per_sample_grads(model, X, y, criterion)
+        
+        # Apply gradient-space audit after getting the gradients but before clipping
+        if is_gradient_space_canary:
+            # For the last sample in the block, replace its gradient with a crafted one
+            crafted_grad = craft_gradient(model_to_use, device)
+            for name, param in model_to_use.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    # Replace the last sample's gradient with the crafted one
+                    ps_grads[name][-1] = crafted_grad[name]
 
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
@@ -194,7 +204,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          block_size=1024, scores=None, device='cuda',
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
-                         world_size=1, rank=0, batch_size=None):
+                         world_size=1, rank=0, batch_size=None, drop_mask=None,
+                         is_gradient_space_canary=False, crafted_gradient=None):
     """
     Clip and accumulate gradients in blocks with support for distributed training.
     
@@ -204,28 +215,56 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         global_indices: Global indices of the current batch in the full dataset
         scores: Pre-allocated array to store scores for the entire dataset
         world_size: Number of processes in distributed training
-        rank: Rank of the current process
+        is_gradient_space_canary: Whether to apply gradient-space canary to the last sample
     """
-
     if scores is None:
         raise ValueError("scores array must be provided")
-
-    idx_blocks = torch.split(torch.arange(len(X)), block_size)
-
+    
+    if drop_mask is not None and len(drop_mask) != len(X):
+        raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
+    
+    # Check if this is the last batch and we should apply gradient space canary
+    apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
+    
+    # Get indices of non-dropped samples
+    active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
+    if drop_mask is not None:
+        active_indices = ~torch.tensor(drop_mask, device=device)
+    
+    # Filter out dropped samples
+    X = X[active_indices]
+    y = y[active_indices]
+    global_indices = global_indices[active_indices]
+    
+    if len(X) == 0:
+        return None, scores
+    
+    # Process in blocks for memory efficiency
     accum_grad = None
-
-    for idx_block in idx_blocks:
+    n_samples = len(X)
+    
+    for i in range(0, n_samples, block_size):
+        # Get current block
+        idx_block = slice(i, min(i + block_size, n_samples))
         curr_X = X[idx_block]
         curr_y = y[idx_block]
-
         curr_global_indices = global_indices[idx_block]
-
+        
+        # Skip if no samples in this block
+        if len(curr_X) == 0:
+            continue
+            
+        # Check if this block contains the last sample (canary)
+        block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
+        
         # Compute per-block gradients with clipping
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
             model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
-            device=device, aug_mult=aug_mult, aug_fn=aug_fn
+            device=device, aug_mult=aug_mult, aug_fn=aug_fn,
+            is_gradient_space_canary=block_contains_canary,
+            crafted_gradient=crafted_gradient
         )
-
+        
         # Accumulate gradients
         if accum_grad is None:
             accum_grad = accum_grad_block
@@ -233,7 +272,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             with torch.no_grad():
                 for name in accum_grad:
                     accum_grad[name] += accum_grad_block[name]
-
+        
+        # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
 
     # idx_blocks is relative to current chunk

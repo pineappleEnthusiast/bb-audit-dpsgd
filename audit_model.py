@@ -39,9 +39,74 @@ from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_g
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
 import gc
+import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+
+def craft_gradient(model, hot_index=None, device='cuda'):
+    """
+    Craft a 1-hot gradient vector that spans all parameters in the model.
+    The gradient will have a single 10000 at the specified index when all parameters are flattened.
+    If hot_index is None, defaults to the middle index of the total parameters.
+    
+    Args:
+        model: The model for which to craft the gradient
+        hot_index: Index at which to place the 1-hot value (10000.0) in the flattened parameter space.
+                  If None, uses the middle index of the total parameters.
+        device: Device on which to create the gradient tensors
+        
+    Returns:
+        Dictionary with the same structure as model parameters containing the crafted gradients
+    """
+    # Get model parameters and calculate total number of elements
+    params = {}
+    total_elements = 0
+    
+    # First pass: calculate total number of elements and store parameter info
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            num_elements = param.numel()
+            params[name] = {
+                'param': param,
+                'start_idx': total_elements,
+                'end_idx': total_elements + num_elements,
+                'shape': param.shape
+            }
+            total_elements += num_elements
+    
+    # Set default hot_index to middle if not provided
+    if hot_index is None:
+        hot_index = total_elements // 2 if total_elements > 0 else 0
+    
+    # Validate hot_index is within bounds
+    if hot_index < 0 or (total_elements > 0 and hot_index >= total_elements):
+        raise ValueError(f"hot_index {hot_index} is out of bounds for model with {total_elements} parameters")
+    
+    # Second pass: create the 1-hot gradient for each parameter
+    crafted_grad = {}
+    for name, info in params.items():
+        param = info['param']
+        if param.requires_grad:
+            # Create zero gradient for this parameter
+            grad = torch.zeros_like(param)
+            
+            # Check if the 1-hot index falls within this parameter's range
+            if info['start_idx'] <= hot_index < info['end_idx']:
+                # Calculate the local index within this parameter
+                local_idx = hot_index - info['start_idx']
+                # Flatten the gradient, set the 1-hot value, and reshape back
+                flat_grad = grad.view(-1)
+                flat_grad[local_idx] = 10000.0
+                grad = flat_grad.view(info['shape'])
+                
+            crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
+        else:
+            # For non-trainable parameters, set gradient to zero
+            crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
+    
+    return crafted_grad
 
 
 class AugmentationFunction:
@@ -81,6 +146,7 @@ def init_wideresnet(model):
         elif isinstance(m, nn.Linear):
             nn.init.kaiming_normal_(m.weight)
             nn.init.constant_(m.bias, 0)
+
 
     # def init_weights(m):
     #     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
@@ -144,6 +210,7 @@ def setup(rank, world_size, local_rank, master_addr=None, master_port='12355'):
         print(f'[Rank {rank}] Error setting CUDA device: {str(e)}')
         raise
 
+
 def cleanup():
     try:
         if dist.is_initialized():
@@ -179,66 +246,10 @@ class DDPModel(nn.Module):
         return self.model(x)
 
 
-class DDPActiveSampler(torch.utils.data.Sampler):
-    def __init__(self, drop_mask, num_replicas=None, rank=None, shuffle=True):
-        self.drop_mask = drop_mask  # This is a reference to the external drop_mask
-        self.num_replicas = num_replicas
-        self.rank = rank
-        self.epoch = 0
-        self.shuffle = shuffle
-        
-        if self.num_replicas is None or self.rank is None:
-            # Handle single-process case
-            if not dist.is_available() or not dist.is_initialized():
-                self.num_replicas = 1
-                self.rank = 0
-            else:
-                self.num_replicas = dist.get_world_size()
-                self.rank = dist.get_rank()
-        
-        # These will be computed in __iter__ to reflect current drop_mask
-        self.num_samples = 0
-        self.total_size = 0
-        
-    def __iter__(self):
-        # Get current active indices based on the latest drop_mask
-        active_indices = np.where(~self.drop_mask)[0]
-        
-        # Calculate samples per process without padding
-        self.num_samples = len(active_indices) // self.num_replicas
-        # First few processes get one extra sample if needed
-        remainder = len(active_indices) % self.num_replicas
-        
-        # Generate a deterministic seed based on epoch
-        g = torch.Generator()
-        g.manual_seed(self.epoch)
-        
-        if self.shuffle:
-            indices = torch.randperm(len(active_indices), generator=g).tolist()
-        else:
-            indices = list(range(len(active_indices)))
-        
-        # Calculate start and end indices for this process
-        start = self.rank * self.num_samples + min(self.rank, remainder)
-        end = start + self.num_samples + (1 if self.rank < remainder else 0)
-        
-        # Get the indices for this process
-        process_indices = indices[start:end]
-        
-        # Map back to original dataset indices
-        return iter([int(active_indices[i]) for i in process_indices])
-        
-    def __len__(self):
-        # This is an estimate; actual length is computed in __iter__
-        return self.num_samples
-        
-    def set_epoch(self, epoch):
-        self.epoch = epoch
-
-
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, 
-               use_defense=False, aug_mult=1, rank=0, world_size=1):
+               use_defense=False, aug_mult=1, rank=0, world_size=1,
+               gradient_space_audit=False, crafted_gradient=None, defense=False):
     
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
@@ -312,23 +323,28 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     scores = np.zeros(len(dataset))
     drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
     
-    # Create a custom sampler that works with DDP and respects the drop mask
-    
-    # Create the sampler once before the epoch loop
-    if world_size > 1:
-        sampler = DDPActiveSampler(
-            drop_mask=drop_mask,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True
-        )
-    else:
-        sampler = DDPActiveSampler(drop_mask=drop_mask,shuffle=True)
-
     per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
     if rank == 0:
         print(f"per GPU: {per_gpu_batch_size}")
-    # Create the DataLoader once before the epoch loop
+    
+    # Create a regular sampler for DDP
+    if world_size > 1:
+        sampler = torch.utils.data.DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=True
+        )
+    else:
+        sampler = torch.utils.data.RandomSampler(
+            dataset,
+            replacement=False,
+            num_samples=None,
+            generator=torch.Generator().manual_seed(0)
+        )
+    
+    # Create the DataLoader
     loader = DataLoader(
         dataset,
         batch_size=per_gpu_batch_size,
@@ -343,8 +359,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     for epoch in range(n_epochs):
         epoch_start = time.time()
         
-        # Update the sampler's epoch for shuffling
-        if world_size > 1:
+        # Update the sampler's epoch for shuffling in DDP
+        if world_size > 1 and hasattr(sampler, 'set_epoch'):
             sampler.set_epoch(epoch)
             
         optimizer.zero_grad()
@@ -360,6 +376,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 model.module if world_size > 1 else model,  # Unwrap DDP model
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, 
+                drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
                 block_size=block_size,
                 scores=scores,
                 device=device,
@@ -368,7 +385,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 aug_fn=aug_fn,
                 world_size=world_size, 
                 rank=rank, 
-                batch_size=batch_size
+                batch_size=batch_size,
+                is_gradient_space_canary=gradient_space_audit,
             )
 
             # Apply the accumulated gradients to the model parameters
@@ -415,8 +433,79 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         # Print epoch time
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
-
-        scores.fill(0)
+        
+        # Only perform defense-related operations if defense flag is True
+        if defense:
+            # Find top-k samples per class for gradient ascent
+            k = 5  # Number of top samples per class
+            top_k_grads = {}
+            
+            # Get unique classes
+            unique_classes = torch.unique(y).cpu().numpy()
+            
+            # For each class, find top-k samples with highest scores
+            for cls in unique_classes:
+                # Get indices of samples in this class
+                cls_indices = (y.cpu() == cls).nonzero(as_tuple=True)[0]
+                if len(cls_indices) == 0:
+                    continue
+                    
+                # Get scores for this class
+                cls_scores = scores[cls_indices]
+                
+                # Get top-k indices within this class
+                _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
+                topk_global_indices = cls_indices[topk_indices]
+                
+                # Compute gradients for these samples
+                model.zero_grad()
+                
+                # Get the samples and their targets
+                X_topk = X[topk_global_indices].to(device)
+                y_topk = y[topk_global_indices].to(device)
+                
+                # Get per-sample gradients using the utility function
+                ps_grads = get_per_sample_grads(model, X_topk, y_topk, criterion)
+                
+                # Store the gradients for later use
+                top_k_grads[cls] = ps_grads
+                
+                # Mark these samples as dropped
+                dropped_indices = topk_global_indices.cpu().numpy()
+                drop_mask[dropped_indices] = True
+                
+                # Check if canary (last index) was dropped
+                if X.shape[0] - 1 in dropped_indices and not hasattr(train_model, '_canary_dropped'):
+                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!")
+                    train_model._canary_dropped = True  # Mark that we've seen the canary drop
+        
+            # Perform gradient ascent step with learning rate (outside class loop)
+            if top_k_grads:
+                model.zero_grad()
+                
+                # Sum gradients across all classes
+                sum_grads = None
+                for grads in top_k_grads.values():
+                    if sum_grads is None:
+                        sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
+                    else:
+                        for k in grads:
+                            sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
+                
+                # Apply gradient ascent
+                for name, param in model.named_parameters():
+                    if name in sum_grads:
+                        if param.grad is None:
+                            param.grad = -lr * sum_grads[name]  # Negative for ascent
+                        else:
+                            param.grad.add_(-lr * sum_grads[name])
+                
+                # Take the gradient ascent step
+                optimizer.step()
+                optimizer.zero_grad()
+        
+            # Update scores for the next epoch
+            scores.fill(0)
 
     return model
     
@@ -589,6 +678,11 @@ def main():
         parser.add_argument('--view_badnets', action='store_true')
         parser.add_argument('--store_canary_rank', action='store_true')
         parser.add_argument('--holdout_audit', action='store_true')
+        
+        # Gradient-space audit options
+        parser.add_argument('--target_class', type=int, default=0,
+                          help='Target class for gradient-space audit')
+
 
         # Options for Forgetting Canary Candidates
         parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
@@ -649,7 +743,14 @@ def main():
             print("Warning: canary type does not support tabular data.")
 
     # craft target data point (x_T, y_T)
-    if args.target_type == 'blank':
+    if args.target_type == 'gradient_space_canary':
+        # For gradient space canary, we don't modify the dataset
+        # The last sample will be used as the canary
+        target_X = X_out[-1].unsqueeze(0)  # Keep the last sample as target
+        target_y = y_out[-1].unsqueeze(0)
+        if rank == 0:
+            print("Using gradient-space canary (last sample in dataset)")
+    elif args.target_type == 'blank':
         # blank sample with optional interpolation
         blank_img = torch.zeros_like(X_out[[0]])
         if args.blank_alpha > 0:
@@ -703,6 +804,18 @@ def main():
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
     models = {'in': [], 'out': []}
     outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
+    
+    # Create the crafted gradient once if doing gradient space audit
+    crafted_grad = None
+    if args.target_type == 'gradient_space_canary':
+        # Create a temporary model to generate the gradient
+        temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+        if args.model_name == 'cnn':
+            xavier_init_model(temp_model)
+        else:
+            init_wideresnet(temp_model)
+        crafted_grad = craft_gradient(model=temp_model, device=device)
+        del temp_model  # Clean up the temporary model
 
     for world in worlds:
         # set dataset according to "world"
@@ -732,9 +845,11 @@ def main():
                                             init_model=init_model,
                                             out_dim=out_dim, 
                                             use_defense=args.defense,
-                              aug_mult=args.aug_mult,
-                              rank=rank,
-                              world_size=world_size)
+                                            aug_mult=args.aug_mult,
+                                            rank=rank,
+                                            world_size=world_size,
+                                            gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
+                                            crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None)
             
             # Only rank 0 processes the rest
             if rank == 0:
@@ -747,7 +862,26 @@ def main():
                     
                     output = model(target_X_device)
                     outputs[world].append(output[0].cpu().numpy())
-                    losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
+                    
+                    if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
+                        # Calculate parameter update
+                        final_params = {n: p.detach().clone() for n, p in model.named_parameters()}
+                        init_params = {n: p.detach().clone() for n, p in init_model.named_parameters()}
+                        
+                        # Calculate cosine similarity between crafted gradient and parameter update
+                        update = {n: final_params[n] - init_params[n] for n in final_params}
+                        flat_crafted_grad = torch.cat([g.view(-1) for g in crafted_grad.values()])
+                        flat_update = torch.cat([p.view(-1) for p in update.values()])
+                        
+                        # Normalize vectors for cosine similarity
+                        flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-10)
+                        flat_update = flat_update / (flat_update.norm() + 1e-10)
+                        
+                        cos_sim = (flat_crafted_grad * flat_update).sum().item()
+                        losses[world].append(cos_sim)
+                    else:
+                        # Original loss calculation for non-gradient canary cases
+                        losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
             
             # Synchronize all processes after processing
             if world_size > 1:
