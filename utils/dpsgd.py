@@ -155,11 +155,10 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
             # For the last sample in the block, replace its gradient with a crafted one
-            crafted_grad = craft_gradient(model_to_use, device)
             for name, param in model_to_use.named_parameters():
                 if param.requires_grad and param.grad is not None:
                     # Replace the last sample's gradient with the crafted one
-                    ps_grads[name][-1] = crafted_grad[name]
+                    ps_grads[name][-1] = crafted_gradient[name]
 
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
