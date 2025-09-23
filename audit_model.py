@@ -707,6 +707,7 @@ def main():
     os.makedirs(f'{out_folder}/models', exist_ok=True)
 
     # load data (define D-)
+    print('Loading data')
     if args.n_df == 1:
         # load single data point
         X_out, y_out, out_dim = load_data(args.data_name, 1)
@@ -714,6 +715,7 @@ def main():
         # since n_df is 0 by default, loads full dataset
         X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
 
+    print('Initializing model')
     init_model = None
     if args.fixed_init is not None:
         init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
@@ -742,6 +744,7 @@ def main():
         if args.target_type == 'badnets' or args.target_type == 'clipbkd':
             print("Warning: canary type does not support tabular data.")
 
+    print('Crafting target data point')
     # craft target data point (x_T, y_T)
     if args.target_type == 'gradient_space_canary':
         # For gradient space canary, we don't modify the dataset
@@ -799,6 +802,7 @@ def main():
     X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
     
+    print('Training models')
     # train M on D and D-
     # resume from checkpoint
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
@@ -806,6 +810,7 @@ def main():
     outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
     
     # Create the crafted gradient once if doing gradient space audit
+    print('Creating crafted gradient')
     crafted_grad = None
     if args.target_type == 'gradient_space_canary':
         # Create a temporary model to generate the gradient
