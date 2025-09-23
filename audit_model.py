@@ -698,6 +698,7 @@ def main():
         raise
 
     # reproducibility
+    print('Reproducibility enabled')
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
