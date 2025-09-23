@@ -56,68 +56,68 @@ class AugmentationFunction:
         return self.base_transforms(x)
 
 
-def craft_gradient(model, hot_index=None, device='cuda'):
-    """
-    Craft a 1-hot gradient vector that spans all parameters in the model.
-    The gradient will have a single 10000 at the specified index when all parameters are flattened.
-    If hot_index is None, defaults to the middle index of the total parameters.
+# def craft_gradient(model, hot_index=None, device='cuda'):
+#     """
+#     Craft a 1-hot gradient vector that spans all parameters in the model.
+#     The gradient will have a single 10000 at the specified index when all parameters are flattened.
+#     If hot_index is None, defaults to the middle index of the total parameters.
     
-    Args:
-        model: The model for which to craft the gradient
-        hot_index: Index at which to place the 1-hot value (10000.0) in the flattened parameter space.
-                  If None, uses the middle index of the total parameters.
-        device: Device on which to create the gradient tensors
+#     Args:
+#         model: The model for which to craft the gradient
+#         hot_index: Index at which to place the 1-hot value (10000.0) in the flattened parameter space.
+#                   If None, uses the middle index of the total parameters.
+#         device: Device on which to create the gradient tensors
         
-    Returns:
-        Dictionary with the same structure as model parameters containing the crafted gradients
-    """
-    # Get model parameters and calculate total number of elements
-    params = {}
-    total_elements = 0
+#     Returns:
+#         Dictionary with the same structure as model parameters containing the crafted gradients
+#     """
+#     # Get model parameters and calculate total number of elements
+#     params = {}
+#     total_elements = 0
     
-    # First pass: calculate total number of elements and store parameter info
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            num_elements = param.numel()
-            params[name] = {
-                'param': param,
-                'start_idx': total_elements,
-                'end_idx': total_elements + num_elements,
-                'shape': param.shape
-            }
-            total_elements += num_elements
+#     # First pass: calculate total number of elements and store parameter info
+#     for name, param in model.named_parameters():
+#         if param.requires_grad:
+#             num_elements = param.numel()
+#             params[name] = {
+#                 'param': param,
+#                 'start_idx': total_elements,
+#                 'end_idx': total_elements + num_elements,
+#                 'shape': param.shape
+#             }
+#             total_elements += num_elements
     
-    # Set default hot_index to middle if not provided
-    if hot_index is None:
-        hot_index = total_elements // 2 if total_elements > 0 else 0
+#     # Set default hot_index to middle if not provided
+#     if hot_index is None:
+#         hot_index = total_elements // 2 if total_elements > 0 else 0
     
-    # Validate hot_index is within bounds
-    if hot_index < 0 or (total_elements > 0 and hot_index >= total_elements):
-        raise ValueError(f"hot_index {hot_index} is out of bounds for model with {total_elements} parameters")
+#     # Validate hot_index is within bounds
+#     if hot_index < 0 or (total_elements > 0 and hot_index >= total_elements):
+#         raise ValueError(f"hot_index {hot_index} is out of bounds for model with {total_elements} parameters")
     
-    # Second pass: create the 1-hot gradient for each parameter
-    crafted_grad = {}
-    for name, info in params.items():
-        param = info['param']
-        if param.requires_grad:
-            # Create zero gradient for this parameter
-            grad = torch.zeros_like(param)
+#     # Second pass: create the 1-hot gradient for each parameter
+#     crafted_grad = {}
+#     for name, info in params.items():
+#         param = info['param']
+#         if param.requires_grad:
+#             # Create zero gradient for this parameter
+#             grad = torch.zeros_like(param)
             
-            # Check if the 1-hot index falls within this parameter's range
-            if info['start_idx'] <= hot_index < info['end_idx']:
-                # Calculate the local index within this parameter
-                local_idx = hot_index - info['start_idx']
-                # Flatten the gradient, set the 1-hot value, and reshape back
-                flat_grad = grad.view(-1)
-                flat_grad[local_idx] = 10000.0
-                grad = flat_grad.view(info['shape'])
+#             # Check if the 1-hot index falls within this parameter's range
+#             if info['start_idx'] <= hot_index < info['end_idx']:
+#                 # Calculate the local index within this parameter
+#                 local_idx = hot_index - info['start_idx']
+#                 # Flatten the gradient, set the 1-hot value, and reshape back
+#                 flat_grad = grad.view(-1)
+#                 flat_grad[local_idx] = 10000.0
+#                 grad = flat_grad.view(info['shape'])
                 
-            crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
-        else:
-            # For non-trainable parameters, set gradient to zero
-            crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
+#             crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
+#         else:
+#             # For non-trainable parameters, set gradient to zero
+#             crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
     
-    return crafted_grad
+#     return crafted_grad
 
 
 def xavier_init_model(model):
