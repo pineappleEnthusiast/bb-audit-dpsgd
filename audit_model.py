@@ -685,7 +685,7 @@ def main():
 
 
         # Options for Forgetting Canary Candidates
-        parser.add_argument('--defense', type=str, default='', help='use filtering defense during audit')
+        parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
         parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
 
         args = parser.parse_args()
