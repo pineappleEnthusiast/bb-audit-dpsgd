@@ -34,7 +34,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.dpsgd import clip_and_accum_grads
+from utils.dpsgd import clip_and_accum_grads, get_per_sample_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
