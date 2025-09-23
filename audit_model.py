@@ -247,8 +247,7 @@ class DDPModel(nn.Module):
 
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
-               n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, 
-               use_defense=False, aug_mult=1, rank=0, world_size=1,
+               n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, rank=0, world_size=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False):
     
     # Initialize distributed training
@@ -845,7 +844,7 @@ def main():
                                             args.batch_size,
                                             init_model=init_model,
                                             out_dim=out_dim, 
-                                            use_defense=args.defense,
+                                            defense=args.defense,
                                             aug_mult=args.aug_mult,
                                             rank=rank,
                                             world_size=world_size,
