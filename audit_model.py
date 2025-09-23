@@ -813,7 +813,7 @@ def main():
             xavier_init_model(temp_model)
         else:
             init_wideresnet(temp_model)
-        crafted_grad = craft_gradient(model=temp_model, hot_index=None, device=device)
+        crafted_grad = None # craft_gradient(model=temp_model, hot_index=None, device=device)
         del temp_model  # Clean up the temporary model
 
     for world in worlds:
