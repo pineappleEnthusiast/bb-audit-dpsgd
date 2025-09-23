@@ -115,7 +115,7 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
-                             is_gradient_space_canary=False, target_class=None):
+                             is_gradient_space_canary=False, crafted_gradient=None):
     """
     Add aug_fn and aug_mult params to support augmentation multiplicity outside vmap.
 
