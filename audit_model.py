@@ -119,7 +119,7 @@ def craft_gradient(model, hot_index=None, device='cuda'):
     
     return crafted_grad
 
-    
+
 def xavier_init_model(model):
     """Initialize model using Xavier initialization"""
     def init_weights(m):
@@ -813,7 +813,7 @@ def main():
             xavier_init_model(temp_model)
         else:
             init_wideresnet(temp_model)
-        crafted_grad = craft_gradient(model=temp_model, device=device)
+        crafted_grad = craft_gradient(model=temp_model, hot_index=None, device=device)
         del temp_model  # Clean up the temporary model
 
     for world in worlds:
