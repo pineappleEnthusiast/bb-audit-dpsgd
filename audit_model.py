@@ -45,6 +45,17 @@ import torchvision.transforms.v2 as v2
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 
+class AugmentationFunction:
+    def __init__(self, image_size=32, channels=3):
+        self.base_transforms = v2.Compose([
+            v2.RandomCrop(image_size, padding=4),
+            v2.RandomHorizontalFlip(p=0.5),
+        ])
+    
+    def __call__(self, x):
+        return self.base_transforms(x)
+
+
 def craft_gradient(model, hot_index=None, device='cuda'):
     """
     Craft a 1-hot gradient vector that spans all parameters in the model.
@@ -108,18 +119,7 @@ def craft_gradient(model, hot_index=None, device='cuda'):
     
     return crafted_grad
 
-
-class AugmentationFunction:
-    def __init__(self, image_size=32, channels=3):
-        self.base_transforms = v2.Compose([
-            v2.RandomCrop(image_size, padding=4),
-            v2.RandomHorizontalFlip(p=0.5),
-        ])
     
-    def __call__(self, x):
-        return self.base_transforms(x)
-
-
 def xavier_init_model(model):
     """Initialize model using Xavier initialization"""
     def init_weights(m):
