@@ -254,7 +254,7 @@ class DDPModel(nn.Module):
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, rank=0, world_size=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False):
-    
+    assert crafted_gradient is not None, "crafted_gradient must be provided IN"
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     rank = int(os.environ.get('RANK', 0))
@@ -391,6 +391,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 rank=rank, 
                 batch_size=batch_size,
                 is_gradient_space_canary=gradient_space_audit,
+                crafted_gradient=crafted_gradient
             )
 
             # Apply the accumulated gradients to the model parameters
