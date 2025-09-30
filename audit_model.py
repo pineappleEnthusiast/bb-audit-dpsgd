@@ -884,8 +884,8 @@ def main():
             y=y_train,
             X_target=None,
             y_target=None,
-            epsilon=0,  # No DP
-            delta=0,    # No DP
+            epsilon=None,  # No DP
+            delta=None,    # No DP
             max_grad_norm=float('inf'),  # No gradient clipping
             n_epochs=n_epochs,
             lr=args.lr,
