@@ -861,10 +861,6 @@ def main():
     elif args.target_type == 'fgsm':
         print("Preparing FGSM attack by training a model on the available data...")
         
-        # Move data to device
-        X_train = X_out.to(device)
-        y_train = y_out.to(device)
-        
         # Create a new model for FGSM
         fgsm_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
         if args.model_name == 'cnn':
@@ -874,20 +870,18 @@ def main():
         
         # Train the model using the existing train_model function
         print("Training FGSM model...")
-        n_epochs = 5
-        batch_size = min(128, len(X_train))
         
         # Use train_model with DP disabled (delta=0, max_grad_norm=inf)
         fgsm_model = train_model(
             model_name=args.model_name,
-            X=X_train,
-            y=y_train,
+            X=X_out,
+            y=y_out,
             X_target=None,
             y_target=None,
             epsilon=None,  # No DP
             delta=None,    # No DP
-            max_grad_norm=float('inf'),  # No gradient clipping
-            n_epochs=n_epochs,
+            max_grad_norm=None,  # No gradient clipping
+            n_epochs=args.n_epochs,
             lr=args.lr,
             block_size=1,
             batch_size=args.batch_size,
