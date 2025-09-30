@@ -440,6 +440,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             global_indices = global_indices.to(device, non_blocking=True)
             
             # Clip & accumulate gradients in memory-safe blocks
+            print('DEBUG: clip_and_accum_grads')
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model.module if world_size > 1 else model,  # Unwrap DDP model
                 curr_X, curr_y, optimizer, criterion,
@@ -461,6 +462,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             # Apply the accumulated gradients to the model parameters
             with torch.no_grad():
                 # Get parameter names without 'module.' prefix
+                print('DEBUG: model.named_parameters()')
                 param_names = [name.replace('module.', '') for name, _ in model.named_parameters()]
                 
                 for name, param in model.named_parameters():
@@ -472,7 +474,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                     # Get the accumulated gradient and move to device
                     grad = curr_accumulated_gradients[clean_name].to(device)
-                    
+                    print('DEBUG: grad')
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
                         # Generate noise on rank 0 and broadcast to other processes
