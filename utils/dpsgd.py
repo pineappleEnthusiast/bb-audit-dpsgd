@@ -185,7 +185,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
         all_norms[y == k] = centered_k_last_layer_norms
 
-    if gradient_space_canary:
+    if is_gradient_space_canary:
         print('Debug:', all_norms[canary_local_idx])
 
     # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
