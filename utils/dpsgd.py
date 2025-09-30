@@ -266,7 +266,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         print('Apply gradient space canary in this block:', block_contains_canary)
 
         # Get the local index of the last sample in the current block
-        last_sample_local_idx = (curr_global_indices == (len(scores) - 1)).nonzero()[0].item()
+        if block_contains_canary:
+            last_sample_local_idx = (curr_global_indices == (len(scores) - 1)).nonzero()[0].item()
+        else:
+            last_sample_local_idx = None
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
