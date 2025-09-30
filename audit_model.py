@@ -117,6 +117,11 @@ def craft_gradient(model, hot_index=None, device='cuda'):
             # For non-trainable parameters, set gradient to zero
             crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
     
+    # Sanity check: print the norm of the flattened gradient
+    flat_grad = torch.cat([grad.view(-1) for grad in crafted_grad.values()], dim=0)
+    flat_grad_norm = flat_grad.norm()
+    print(f"Flattened gradient norm: {flat_grad_norm}")
+    
     return crafted_grad
 
 
@@ -455,7 +460,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 # Debug print for cls == 9
                 if cls == 9:
                     sorted_indices = torch.argsort(cls_scores, descending=True)
-                    print(f"\n[DEBUG] Class 9 - Last element in sorted indices: {sorted_indices[-1]}")
+                    print(f"\n[DEBUG] Class 9 - Last element in sorted indices: {sorted_indices[-1]}", cls_scores[-1])
                 
                 # Get top-k indices within this class
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
