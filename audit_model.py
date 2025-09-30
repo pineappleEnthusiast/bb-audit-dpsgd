@@ -452,6 +452,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 # Get scores for this class and ensure it's a PyTorch tensor
                 cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
                 
+                # Debug print for cls == 9
+                if cls == 9:
+                    sorted_indices = torch.argsort(cls_scores, descending=True)
+                    print(f"\n[DEBUG] Class 9 - Last element in sorted indices: {sorted_indices[-1]}")
+                
                 # Get top-k indices within this class
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
                 topk_global_indices = cls_indices[topk_indices]
@@ -870,11 +875,11 @@ def main():
                     
                     if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
                         # Calculate parameter update
-                        final_params = {n: p.detach().clone() for n, p in model.named_parameters()}
-                        init_params = {n: p.detach().clone() for n, p in init_model.named_parameters()}
+                        final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
+                        init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
                         
                         # Calculate cosine similarity between crafted gradient and parameter update
-                        update = {n: final_params[n] - init_params[n] for n in final_params}
+                        update = {n: final_params[n] - init_params[n] for n, p in final_params.items()}
                         flat_crafted_grad = torch.cat([g.view(-1) for g in crafted_grad.values()])
                         flat_update = torch.cat([p.view(-1) for p in update.values()])
                         
