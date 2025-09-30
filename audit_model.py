@@ -481,7 +481,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 
                 # Check if canary (last index) was dropped
                 if X.shape[0] - 1 in dropped_indices and not hasattr(train_model, '_canary_dropped'):
-                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!")
+                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
                     train_model._canary_dropped = True  # Mark that we've seen the canary drop
         
             # Perform gradient ascent step with learning rate (outside class loop)
