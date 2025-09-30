@@ -44,6 +44,70 @@ import torchvision.transforms.v2 as v2
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
+def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
+    """
+    Perform iterative FGSM attack on the input X to make it misclassified as target class y.
+    
+    Args:
+        model: The model to attack
+        X: Input tensor (1, C, H, W)
+        y: Target class (tensor)
+        epsilon: Maximum perturbation (default: 0.1)
+        max_iter: Maximum number of iterations (default: 10)
+        alpha: Step size for each iteration (default: 0.01)
+        
+    Returns:
+        Adversarial example and number of iterations used
+    """
+    # Ensure model is in evaluation mode
+    model.eval()
+    
+    # Make a copy of the input and enable gradient computation
+    X_adv = X.clone().detach().requires_grad_(True)
+    
+    # Keep track of the best (most confident) adversarial example
+    best_adv = X_adv.detach().clone()
+    best_confidence = -float('inf')
+    
+    for i in range(max_iter):
+        # Forward pass
+        output = model(X_adv)
+        
+        # Check if attack succeeded
+        _, predicted = torch.max(output, 1)
+        if predicted != y:
+            # If we've found a successful adversarial example, return it
+            return X_adv.detach(), i + 1
+            
+        # Track the most confident adversarial example
+        confidence = F.softmax(output, dim=1)[0, y].item()
+        if confidence > best_confidence:
+            best_confidence = confidence
+            best_adv = X_adv.detach().clone()
+        
+        # Calculate loss (negative log likelihood for the target class)
+        loss = F.cross_entropy(output, y)
+        
+        # Backward pass to get gradients
+        model.zero_grad()
+        loss.backward()
+        
+        # Get the sign of the gradients
+        data_grad = X_adv.grad.data
+        sign_data_grad = data_grad.sign()
+        
+        # Create perturbed image with step size alpha
+        X_adv = X_adv.detach() + alpha * sign_data_grad
+        
+        # Project back to epsilon ball around original image
+        delta = X_adv - X
+        delta = torch.clamp(delta, -epsilon, epsilon)
+        X_adv = torch.clamp(X + delta, 0, 1).detach().requires_grad_(True)
+    
+    # If we get here, the attack didn't succeed within max_iter
+    # Return the best adversarial example found
+    return best_adv, max_iter
+
 
 class AugmentationFunction:
     def __init__(self, image_size=32, channels=3):
@@ -794,6 +858,84 @@ def main():
     elif args.target_type == 'clipbkd':
         # ClipBKD sample
         target_X, target_y = craft_clipbkd(X_out, init_model)
+    elif args.target_type == 'fgsm':
+        print("Preparing FGSM attack by training a model on the available data...")
+        
+        # Move data to device
+        X_train = X_out.to(device)
+        y_train = y_out.to(device)
+        
+        # Create a new model for FGSM
+        fgsm_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+        if args.model_name == 'cnn':
+            xavier_init_model(fgsm_model)
+        else:
+            init_wideresnet(fgsm_model)
+        
+        # Train the model using the existing train_model function
+        print("Training FGSM model...")
+        n_epochs = 5
+        batch_size = min(128, len(X_train))
+        
+        # Use train_model with DP disabled (delta=0, max_grad_norm=inf)
+        fgsm_model = train_model(
+            model_name=args.model_name,
+            X=X_train,
+            y=y_train,
+            X_target=None,
+            y_target=None,
+            epsilon=0,  # No DP
+            delta=0,    # No DP
+            max_grad_norm=float('inf'),  # No gradient clipping
+            n_epochs=n_epochs,
+            lr=args.lr,
+            block_size=1,
+            batch_size=args.batch_size,
+            init_model=fgsm_model,
+            out_dim=out_dim,
+            aug_mult=args.aug_mult,
+            rank=rank,
+            world_size=world_size,
+            gradient_space_audit=False,
+            defense=False
+        )
+        print("FGSM model training completed")
+        
+        # Get the last sample and its true label
+        original_X = X_out[-1].unsqueeze(0).to(device)
+        original_y = y_out[-1].unsqueeze(0).to(device)
+        
+        # Choose a target class different from the original
+        num_classes = out_dim
+        target_class = (original_y + 1) % num_classes  # Simple way to pick a different class
+        
+        print(f"Performing FGSM attack on sample (original class: {original_y.item()}, target class: {target_class.item()})")
+        
+        # Perform iterative FGSM attack
+        print("Running iterative FGSM attack...")
+        target_X, iters_used = fgsm_attack(
+            fgsm_model, 
+            original_X, 
+            target_class, 
+            epsilon=0.1,  # Maximum perturbation
+            max_iter=20,  # Maximum iterations
+            alpha=0.01    # Step size
+        )
+        target_y = target_class
+        print(f"FGSM attack completed in {iters_used} iterations")
+        
+        # Move back to CPU if needed
+        if not target_X.is_cpu:
+            target_X = target_X.cpu()
+        if not target_y.is_cpu:
+            target_y = target_y.cpu()
+            
+        # Clean up
+        del fgsm_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        print("FGSM attack completed")
     elif os.path.exists(args.target_type):
         # pre-crafted target sample
         target_X = torch.from_numpy(np.load(args.target_type))
