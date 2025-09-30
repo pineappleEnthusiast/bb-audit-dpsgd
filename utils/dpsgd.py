@@ -221,9 +221,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     if drop_mask is not None and len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
     
-    # Check if this is the last batch and we should apply gradient space canary
-    apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
-    print('Apply gradient space canary in this minibatch:', apply_gradient_space_canary)
     
     # Get indices of non-dropped samples
     active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
@@ -234,6 +231,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     X = X[active_indices]
     y = y[active_indices]
     global_indices = global_indices[active_indices]
+    
+    # Check if this is the last batch and we should apply gradient space canary
+    apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
+    print('Apply gradient space canary in this minibatch:', apply_gradient_space_canary)
     
     if len(X) == 0:
         return None, scores
