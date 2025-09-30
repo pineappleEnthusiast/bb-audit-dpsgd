@@ -510,6 +510,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             
             # Get unique classes
             unique_classes = torch.unique(y).cpu()
+
+            # privatize scores
             
             # For each class, find top-k samples with highest scores
             for cls in unique_classes:
@@ -951,9 +953,9 @@ def main():
     outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
     
     # Create the crafted gradient once if doing gradient space audit
-    print('Creating crafted gradient')
     crafted_grad = None
     if args.target_type == 'gradient_space_canary':
+        print('Creating crafted gradient')
         # Create a temporary model to generate the gradient
         temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
         if args.model_name == 'cnn':
