@@ -109,7 +109,7 @@ def craft_gradient(model, hot_index=None, device='cuda'):
                 local_idx = hot_index - info['start_idx']
                 # Flatten the gradient, set the 1-hot value, and reshape back
                 flat_grad = grad.view(-1)
-                flat_grad[local_idx] = 10000.0
+                flat_grad[local_idx] = torch.finfo(torch.float32).max
                 grad = flat_grad.view(info['shape'])
                 
             crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
