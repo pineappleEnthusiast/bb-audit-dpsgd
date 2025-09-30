@@ -154,6 +154,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
+            print('Applying gradient space canary')
             # For the last sample in the block, replace its gradient with a crafted one
             for name, param in model_to_use.named_parameters():
                 if param.requires_grad and param.grad is not None:
