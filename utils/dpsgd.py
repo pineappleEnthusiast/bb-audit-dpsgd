@@ -226,7 +226,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     
     # Check if this is the last batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
-    print('Apply gradient space canary:', apply_gradient_space_canary)
+    print('Apply gradient space canary in this minibatch:', apply_gradient_space_canary)
     
     # Get indices of non-dropped samples
     active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
@@ -258,6 +258,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             
         # Check if this block contains the last sample (canary)
         block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
+        print('Apply gradient space canary in this block:', block_contains_canary)
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
