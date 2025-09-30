@@ -115,7 +115,7 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
-                             is_gradient_space_canary=False, crafted_gradient=None):
+                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None):
     """
     Add aug_fn and aug_mult params to support augmentation multiplicity outside vmap.
 
@@ -157,10 +157,10 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             # For the last sample in the block, replace its gradient with a crafted one
             for name in ps_grads.keys():
                 # Replace the last sample's gradient with the crafted one
-                ps_grads[name][-1] = crafted_gradient[name]
+                ps_grads[name][canary_local_idx] = crafted_gradient[name]
 
             per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
-            canary_norm = per_sample_flat_grads[-1].norm(float('inf'))
+            canary_norm = per_sample_flat_grads[canary_local_idx].norm(float('inf'))
             print(f"Gradient norm of the last sample after crafting canary: {canary_norm}")
             
 
@@ -184,6 +184,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         # take norm of each class
         centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
         all_norms[y == k] = centered_k_last_layer_norms
+
+    if gradient_space_canary:
+        print('Debug:', all_norms[canary_local_idx])
 
     # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
     # last_biases = ps_grads[last_b_name]
@@ -261,13 +264,17 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         # Check if this block contains the last sample (canary)
         block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
         print('Apply gradient space canary in this block:', block_contains_canary)
+
+        # Get the local index of the last sample in the current block
+        last_sample_local_idx = (curr_global_indices == (len(scores) - 1)).nonzero()[0].item()
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
             model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
             device=device, aug_mult=aug_mult, aug_fn=aug_fn,
             is_gradient_space_canary=block_contains_canary,
-            crafted_gradient=crafted_gradient
+            crafted_gradient=crafted_gradient,
+            canary_local_idx=last_sample_local_idx
         )
         
         # Accumulate gradients
