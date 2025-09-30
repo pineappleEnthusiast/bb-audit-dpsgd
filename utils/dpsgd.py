@@ -158,12 +158,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             for name in ps_grads.keys():
                 # Replace the last sample's gradient with the crafted one
                 ps_grads[name][canary_local_idx] = crafted_gradient[name]
-
-            per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
-            canary_norm = per_sample_flat_grads[canary_local_idx].norm(float('inf'))
-            print(f"Gradient norm of the last sample after crafting canary: {canary_norm}")
             
-
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
     else:
@@ -184,9 +179,6 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         # take norm of each class
         centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
         all_norms[y == k] = centered_k_last_layer_norms
-
-    if is_gradient_space_canary:
-        print('Debug:', all_norms[canary_local_idx])
 
     # flat_last_weights = ps_grads[last_w_name].flatten(start_dim=1)
     # last_biases = ps_grads[last_b_name]
@@ -263,7 +255,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             
         # Check if this block contains the last sample (canary)
         block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
-        print('Apply gradient space canary in this block:', block_contains_canary)
 
         # Get the local index of the last sample in the current block
         if block_contains_canary:

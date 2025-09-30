@@ -109,7 +109,7 @@ def craft_gradient(model, hot_index=None, device='cuda'):
                 local_idx = hot_index - info['start_idx']
                 # Flatten the gradient, set the 1-hot value, and reshape back
                 flat_grad = grad.view(-1)
-                flat_grad[local_idx] = 1000000000000
+                flat_grad[local_idx] = 10000000
                 grad = flat_grad.view(info['shape'])
                 
             crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
@@ -120,7 +120,7 @@ def craft_gradient(model, hot_index=None, device='cuda'):
     # Sanity check: print the norm of the flattened gradient
     flat_grad = torch.cat([grad.view(-1) for grad in crafted_grad.values()], dim=0)
     flat_grad_norm = flat_grad.norm()
-    print(f"Flattened gradient norm: {flat_grad_norm}")
+    print(f"Flattened crafted gradient norm: {flat_grad_norm}")
     
     return crafted_grad
 
@@ -254,7 +254,7 @@ class DDPModel(nn.Module):
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, rank=0, world_size=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False):
-    assert crafted_gradient is not None, "crafted_gradient must be provided IN"
+
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     rank = int(os.environ.get('RANK', 0))
@@ -457,11 +457,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                 # Get scores for this class and ensure it's a PyTorch tensor
                 cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
-                
-                # Debug print for cls == 9
-                if cls == 9:
-                    sorted_indices = torch.argsort(cls_scores, descending=True)
-                    print(f"\n[DEBUG] Class 9 - Last element in sorted indices: {sorted_indices[-1]}", cls_scores[-1])
                 
                 # Get top-k indices within this class
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
