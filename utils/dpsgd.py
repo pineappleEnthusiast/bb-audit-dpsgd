@@ -159,6 +159,11 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 # Replace the last sample's gradient with the crafted one
                 ps_grads[name][-1] = crafted_gradient[name]
 
+            per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+            canary_norm = per_sample_flat_grads[-1]
+            print(f"Gradient norm of the last sample after crafting canary: {canary_norm}")
+            
+
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
     else:
