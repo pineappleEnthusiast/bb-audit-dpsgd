@@ -440,7 +440,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             global_indices = global_indices.to(device, non_blocking=True)
             
             # Clip & accumulate gradients in memory-safe blocks
-            print('DEBUG: clip_and_accum_grads')
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model.module if world_size > 1 else model,  # Unwrap DDP model
                 curr_X, curr_y, optimizer, criterion,
@@ -462,7 +461,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             # Apply the accumulated gradients to the model parameters
             with torch.no_grad():
                 # Get parameter names without 'module.' prefix
-                print('DEBUG: model.named_parameters()')
                 param_names = [name.replace('module.', '') for name, _ in model.named_parameters()]
                 
                 for name, param in model.named_parameters():

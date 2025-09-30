@@ -193,7 +193,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
     #     all_norms[y == k] = centered_k_last_layer_norms
 
-    return accum_grad_block, _, all_norms.cpu().numpy(), None
+    return accum_grad_block, None, all_norms.cpu().numpy(), None
 
 
 
@@ -263,7 +263,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             last_sample_local_idx = None
         
         # Compute per-block gradients with clipping
-        print('DEBUG: clip_and_accum_grads_block')
         accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
             model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
             device=device, aug_mult=aug_mult, aug_fn=aug_fn,
@@ -271,7 +270,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             crafted_gradient=crafted_gradient,
             canary_local_idx=last_sample_local_idx
         )
-        print('DEBUG: accum_grad_block')
         # Accumulate gradients
         if accum_grad is None:
             accum_grad = accum_grad_block
