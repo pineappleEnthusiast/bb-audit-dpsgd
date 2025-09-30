@@ -882,7 +882,7 @@ def main():
             max_grad_norm=None,  # No gradient clipping
             n_epochs=args.n_epochs,
             lr=args.lr,
-            block_size=1,
+            block_size=args.block_size,
             batch_size=args.batch_size,
             init_model=fgsm_model,
             out_dim=out_dim,
