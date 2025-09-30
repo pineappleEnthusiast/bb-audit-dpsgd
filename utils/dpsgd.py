@@ -155,7 +155,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
             # For the last sample in the block, replace its gradient with a crafted one
-            for name, param in model_to_use.named_parameters():
+            for name in ps_grads.keys():
                 # Replace the last sample's gradient with the crafted one
                 ps_grads[name][-1] = crafted_gradient[name]
                 canary_grad_norm = ps_grads[name][-1].flatten(start_dim=1).norm(2, dim=1)
@@ -217,6 +217,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         world_size: Number of processes in distributed training
         is_gradient_space_canary: Whether to apply gradient-space canary to the last sample
     """
+    assert crafted_gradient is not None, "crafted_gradient must be provided"
     if scores is None:
         raise ValueError("scores array must be provided")
     
