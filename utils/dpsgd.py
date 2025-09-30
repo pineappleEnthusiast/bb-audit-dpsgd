@@ -159,6 +159,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 if param.requires_grad and param.grad is not None:
                     # Replace the last sample's gradient with the crafted one
                     ps_grads[name][-1] = crafted_gradient[name]
+                    canary_grad_norm = ps_grads[name][-1].flatten(start_dim=1).norm(2, dim=1)
+                    print(f"Gradient norm of the last sample after crafting canary: {canary_grad_norm}")
 
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
