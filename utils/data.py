@@ -73,6 +73,8 @@ def load_data(data_name, n_df, root='./', split='train'):
         else:
             X, y = X[split_idx:], y[split_idx:]
 
+        X = X.float()
+
         dataset = TensorDataset(X, y)
         out_dim = len(torch.unique(y))
     elif data_name == 'tiny_shakespeare':
