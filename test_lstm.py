@@ -1,0 +1,46 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from utils.data import load_data
+from models.lstm import LSTMModel
+
+def main():
+    # Load data
+    X, y, out_dim = load_data('tiny_shakespeare', None, split='train')
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
+    print("num classes (out_dim):", out_dim)
+
+    # Wrap into DataLoader (mini-batches)
+    dataset = torch.utils.data.TensorDataset(X, y)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
+
+    # Model, loss, optimizer
+    model = LSTMModel(vocab_size=out_dim, hidden_dim=128, num_layers=1)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    # Training loop (just a few epochs)
+    for epoch in range(3):
+        total_loss = 0.0
+        for batch_X, batch_y in loader:
+            # batch_X, batch_y are (batch,) → treat as seq_len=1
+            batch_X = batch_X.unsqueeze(1)  # (B, 1)
+            batch_y = batch_y  # (B,)
+
+            # Forward
+            logits = model(batch_X)  # (B, vocab_size)
+            loss = criterion(logits, batch_y)
+
+            # Backward
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(loader)
+        print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
+
+if __name__ == "__main__":
+    main()
