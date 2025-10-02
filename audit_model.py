@@ -382,7 +382,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     drop_mask = None # torch.zeros(len(y), device=device)
     assert block_size <= batch_size, "block_size must be smaller than batch_size"
 
-    aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
+    if len(X.shape) > 2:
+        aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
+    else:
+        aug_fn = None
 
     # Create Dataset + DataLoader with DDP support
     dataset = IndexedTensorDataset(X, y)
