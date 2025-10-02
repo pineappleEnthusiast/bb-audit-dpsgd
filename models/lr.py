@@ -22,5 +22,5 @@ class LR(nn.Module):
         self.linear = nn.Linear(in_dim, out_dim)
     
     def forward(self, x):
-        out = self.linear(torch.flatten(x, start_dim=1))
+        out = self.linear(torch.flatten(x.float(), start_dim=1))
         return out
