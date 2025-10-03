@@ -24,7 +24,10 @@ class LSTM(nn.Module):
         x = self.embedding(x)
         output, (h_n, c_n) = self.lstm(x)
 
-        output = self.dropout(output)
+        # output: [batch_size, seq_len, hidden_dim]
+        # Take the last time step's output for each sequence
+        last_output = output[:, -1, :]  # [batch_size, hidden_dim]
 
-        out = self.fc(output)
+        last_output = self.dropout(last_output)
+        out = self.fc(last_output)      # [batch_size, out_dim]
         return out
