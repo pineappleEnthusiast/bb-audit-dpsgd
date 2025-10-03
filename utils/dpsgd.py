@@ -62,13 +62,10 @@ def get_per_sample_grads(model, X, y, criterion):
         model_to_use = model
         param_mapping = dict(model.named_parameters())
     
-    # # map of parameter names : parameter values (without module prefix)
-    # params = {k: v.detach() for k, v in model_to_use.named_parameters()}
-    # # map of buffer names : buffer values (without module prefix)
-    # buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
-
-    params = {k: v for k, v in model_to_use.named_parameters()}
-    buffers = {k: v for k, v in model_to_use.named_buffers()}
+    # map of parameter names : parameter values (without module prefix)
+    params = {k: v.detach() for k, v in model_to_use.named_parameters()}
+    # map of buffer names : buffer values (without module prefix)
+    buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
 
     def compute_loss(params, buffers, sample, target):
         batch = sample.unsqueeze(0)
