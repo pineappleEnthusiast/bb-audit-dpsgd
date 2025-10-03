@@ -83,20 +83,30 @@ def load_data(data_name, n_df, root='./', split='train'):
         with open(input_file_path, 'r', encoding='utf-8') as f:
             text = f.read()
 
+        # build vocab
         chars = sorted(list(set(text)))
         str_to_int = {ch: i for i, ch in enumerate(chars)}
         vocab_size = len(chars)
 
+        # encode text as IDs
         data_ids = torch.tensor([str_to_int[ch] for ch in text], dtype=torch.long)
 
+        # train/val split
         split_idx = int(0.8 * len(data_ids))
         if split == 'train':
             data_ids = data_ids[:split_idx]
         else:
             data_ids = data_ids[split_idx:]
 
-        X = data_ids[:-1]
-        y = data_ids[1:]
+        # chunk into subsequences
+        seq_len = 128  # 128 char sequences (random num)
+        num_chunks = len(data_ids) // seq_len
+
+        # truncate to full chunks only
+        data_ids = data_ids[:num_chunks * seq_len]
+
+        X = data_ids[:-1].view(num_chunks, seq_len)
+        y = data_ids[1:].view(num_chunks, seq_len)
 
         dataset = TensorDataset(X, y)
         out_dim = vocab_size
