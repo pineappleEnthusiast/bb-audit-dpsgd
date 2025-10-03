@@ -105,7 +105,7 @@ def load_data(data_name, n_df, root='./', split='train'):
         usable_len = (len(data_ids) - 1) // seq_len * seq_len
 
         X = data_ids[:usable_len].view(-1, seq_len)
-        y = data_ids[1:usable_len+1].view(-1, seq_len)
+        y = data_ids[1:usable_len+1].view(-1, seq_len)[:, -1]
 
         dataset = TensorDataset(X, y)
         out_dim = vocab_size
