@@ -340,15 +340,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     if rank == 0:
         print(f"Training on {world_size} GPUs across {world_size // torch.cuda.device_count()} nodes")
 
-    # Initialize model
-    # if init_model is None:
-    #     model = Models[model_name](X.shape, out_dim=out_dim).to(device)
-    #     if model_name == 'cnn':
-    #         xavier_init_model(model)
-    #     else:
-    #         init_wideresnet(model)
-    # else:
-    #     model = copy.deepcopy(init_model).to(device)
     if init_model is None:
         if model_name == 'lstm':
             vocab_size = out_dim
