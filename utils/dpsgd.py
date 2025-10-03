@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import threading
 import copy
 import pdb
+from opacus.grad_sample import GradSampleModule
 
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
@@ -61,29 +62,50 @@ def get_per_sample_grads(model, X, y, criterion):
     else:
         model_to_use = model
         param_mapping = dict(model.named_parameters())
-    
-    # map of parameter names : parameter values (without module prefix)
-    params = {k: v.detach() for k, v in model_to_use.named_parameters()}
-    # map of buffer names : buffer values (without module prefix)
-    buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
 
-    def compute_loss(params, buffers, sample, target):
-        batch = sample.unsqueeze(0)
-        targets = target.unsqueeze(0)
+    if isinstance(model_to_use, torch.nn.LSTM):
+        # --- Use Opacus GradSampleModule path ---
+        grad_model = GradSampleModule(model_to_use)
+        grad_model.train()
+
+        # Forward + backward pass with per-sample grads
+        outputs = grad_model(X)
+        loss = criterion(outputs, y)
+        loss.backward()
+
+        # Collect per-sample grads
+        ps_grads = {}
+        for name, p in grad_model.named_parameters():
+            if hasattr(p, "grad_sample") and p.grad_sample is not None:
+                ps_grads[name] = p.grad_sample.detach().clone()
+                p.grad_sample = None  # clear to save memory
+            else:
+                ps_grads[name] = torch.zeros((X.size(0), *p.shape), device=p.device)
+
+        return ps_grads
+    else:
+        # map of parameter names : parameter values (without module prefix)
+        params = {k: v.detach() for k, v in model_to_use.named_parameters()}
+        # map of buffer names : buffer values (without module prefix)
+        buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
+
+        def compute_loss(params, buffers, sample, target):
+            batch = sample.unsqueeze(0)
+            targets = target.unsqueeze(0)
+            
+            # Forward pass - no no_grad() here to allow gradient computation
+            predictions = functional_call(model_to_use, (params, buffers), (batch,))
+            loss = criterion(predictions, targets)
+            return loss
         
-        # Forward pass - no no_grad() here to allow gradient computation
-        predictions = functional_call(model_to_use, (params, buffers), (batch,))
-        loss = criterion(predictions, targets)
-        return loss
-    
-    # Compute gradients
-    ft_compute_grad = grad(compute_loss)
-    ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
-    
-    # Get gradients with consistent naming (without module prefix)
-    ps_grads = ft_compute_sample_grad(params, buffers, X, y)
-    
-    return ps_grads
+        # Compute gradients
+        ft_compute_grad = grad(compute_loss)
+        ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
+        
+        # Get gradients with consistent naming (without module prefix)
+        ps_grads = ft_compute_sample_grad(params, buffers, X, y)
+        
+        return ps_grads
 
 def get_per_sample_grad_norms(per_sample_grads):
     """Compute L2 norms of per-sample gradients"""
