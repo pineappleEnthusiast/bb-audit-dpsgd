@@ -814,9 +814,15 @@ def main():
     elif args.data_name == 'cifar100':
         pass # compatible with all canaries
     elif args.data_name == 'purchase':
-        # not compatible with badnets or clipbkd
-        if args.target_type == 'badnets' or args.target_type == 'clipbkd':
-            print("Warning: canary type does not support tabular data.")
+        # only compatible with blank
+        if args.target_type != 'blank':
+            raise Exception("Canary type does not support tabular data.")
+    elif args.data_name == 'tiny_shakespeare':
+        if args.target_type != 'empty_sequence':
+            raise Exception("For tiny_shakespeare, only target_type='empty_sequence' is supported.")
+    elif args.target_type == 'empty_sequence':
+        raise Exception("Target type 'empty_sequence' is only valid with data_name='tiny_shakespeare'.")
+
 
     print('Crafting target data point')
     # craft target data point (x_T, y_T)
@@ -934,6 +940,13 @@ def main():
             torch.cuda.empty_cache()
             
         print("FGSM attack completed")
+    elif args.target_type == 'empty_sequence':
+        # sequence length (same as existing chunks)
+        seq_len = X_out.shape[1] if X_out.ndim > 1 else 128
+        target_X = torch.zeros((1, seq_len), dtype=torch.long)
+        target_y = torch.full((1, seq_len), 9, dtype=torch.long)
+        if rank == 0:
+            print(f"Using empty sequence canary (length {seq_len}), label=9")
     elif os.path.exists(args.target_type):
         # pre-crafted target sample
         target_X = torch.from_numpy(np.load(args.target_type))
