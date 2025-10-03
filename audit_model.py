@@ -943,6 +943,9 @@ def main():
     elif args.target_type == 'empty_sequence':
         # sequence length (same as existing chunks)
         seq_len = X_out.shape[1] if X_out.ndim > 1 else 128
+
+        print("Building empty_sequence canary with seq_len:", seq_len)
+
         target_X = torch.zeros((1, seq_len), dtype=torch.long)
         target_y = torch.full((1, seq_len), 9, dtype=torch.long)
         if rank == 0:
