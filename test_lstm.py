@@ -24,13 +24,14 @@ def main():
     for epoch in range(3):
         total_loss = 0.0
         for batch_X, batch_y in loader:
-            # batch_X, batch_y are (batch,) → treat as seq_len=1
-            batch_X = batch_X.unsqueeze(1)  # (B, 1)
-            batch_y = batch_y  # (B,)
+            # batch_X: (B, seq_len), batch_y: (B, seq_len)
+            logits = model(batch_X)  # (B, seq_len, vocab_size)
 
-            # Forward
-            logits = model(batch_X)  # (B, vocab_size)
-            loss = criterion(logits, batch_y)
+            # Flatten for loss
+            loss = criterion(
+                logits.view(-1, logits.size(-1)),  # (B*seq_len, vocab_size)
+                batch_y.view(-1)                   # (B*seq_len)
+            )
 
             # Backward
             optimizer.zero_grad()
