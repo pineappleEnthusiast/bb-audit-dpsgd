@@ -4,7 +4,6 @@ import torch.nn as nn
 class LSTM(nn.Module):
     def __init__(self, vocab_size, out_dim=None, embed_dim=128, hidden_dim=256, num_layers=1, dropout_rate=0.1):
         super().__init__()
-        self.embeddings = None
 
         if out_dim is None:
             out_dim = vocab_size
@@ -26,7 +25,6 @@ class LSTM(nn.Module):
         output, (h_n, c_n) = self.lstm(x)
 
         output = self.dropout(output)
-        self.embeddings = output[:, -1, :].clone().detach()
 
         out = self.fc(output)
         return out
