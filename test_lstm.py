@@ -5,35 +5,28 @@ from utils.data import load_data
 from models.lstm import LSTMModel
 
 def main():
-    # Load data
     X, y, out_dim = load_data('tiny_shakespeare', None, split='train')
     print("X shape:", X.shape)
     print("y shape:", y.shape)
     print("num classes (out_dim):", out_dim)
 
-    # Wrap into DataLoader (mini-batches)
     dataset = torch.utils.data.TensorDataset(X, y)
     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
 
-    # Model, loss, optimizer
     model = LSTMModel(vocab_size=out_dim, hidden_dim=128, num_layers=1)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-    # Training loop (just a few epochs)
     for epoch in range(3):
         total_loss = 0.0
         for batch_X, batch_y in loader:
-            # batch_X: (B, seq_len), batch_y: (B, seq_len)
-            logits = model(batch_X)  # (B, seq_len, vocab_size)
+            logits = model(batch_X)
 
-            # Flatten for loss
             loss = criterion(
-                logits.view(-1, logits.size(-1)),  # (B*seq_len, vocab_size)
-                batch_y.view(-1)                   # (B*seq_len)
+                logits.view(-1, logits.size(-1)),
+                batch_y.view(-1)
             )
 
-            # Backward
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
