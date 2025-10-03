@@ -63,50 +63,29 @@ def get_per_sample_grads(model, X, y, criterion):
     else:
         model_to_use = model
         param_mapping = dict(model.named_parameters())
+    
+    # map of parameter names : parameter values (without module prefix)
+    params = {k: v.detach() for k, v in model_to_use.named_parameters()}
+    # map of buffer names : buffer values (without module prefix)
+    buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
 
-    if isinstance(model_to_use, LSTM):
-        grad_model = GradSampleModule(model_to_use)
-        grad_model.train()
-
-        # forward + backward pass with per-sample grads
-        outputs = grad_model(X)
-        loss = criterion(outputs, y)
-
-        loss.backward()
-
-        # collect per-sample grads
-        ps_grads = {}
-        for name, p in grad_model.named_parameters():
-            if hasattr(p, "grad_sample") and p.grad_sample is not None:
-                ps_grads[name] = p.grad_sample.detach().clone()
-                p.grad_sample = None
-            else:
-                ps_grads[name] = torch.zeros((X.size(0), *p.shape), device=p.device)
-
-        return ps_grads
-    else:
-        # map of parameter names : parameter values (without module prefix)
-        params = {k: v.detach() for k, v in model_to_use.named_parameters()}
-        # map of buffer names : buffer values (without module prefix)
-        buffers = {k: v.detach() for k, v in model_to_use.named_buffers()}
-
-        def compute_loss(params, buffers, sample, target):
-            batch = sample.unsqueeze(0)
-            targets = target.unsqueeze(0)
-            
-            # Forward pass - no no_grad() here to allow gradient computation
-            predictions = functional_call(model_to_use, (params, buffers), (batch,))
-            loss = criterion(predictions, targets)
-            return loss
+    def compute_loss(params, buffers, sample, target):
+        batch = sample.unsqueeze(0)
+        targets = target.unsqueeze(0)
         
-        # Compute gradients
-        ft_compute_grad = grad(compute_loss)
-        ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
-        
-        # Get gradients with consistent naming (without module prefix)
-        ps_grads = ft_compute_sample_grad(params, buffers, X, y)
-        
-        return ps_grads
+        # Forward pass - no no_grad() here to allow gradient computation
+        predictions = functional_call(model_to_use, (params, buffers), (batch,))
+        loss = criterion(predictions, targets)
+        return loss
+    
+    # Compute gradients
+    ft_compute_grad = grad(compute_loss)
+    ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
+    
+    # Get gradients with consistent naming (without module prefix)
+    ps_grads = ft_compute_sample_grad(params, buffers, X, y)
+    
+    return ps_grads
 
 def get_per_sample_grad_norms(per_sample_grads):
     """Compute L2 norms of per-sample gradients"""
@@ -135,7 +114,13 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
 
-
+def _get_per_sample_grads(model, X, y, criterion):
+    model.zero_grad()
+    output = model(X)
+    loss = criterion(output, y)
+    loss.backward()
+    ps_grads = {name: param.grad_sample for name, param in model.named_parameters()}
+    return ps_grads
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
                              is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None):
@@ -168,12 +153,18 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             X_aug = X_aug.to(device)
             y_aug = y_aug.to(device)
 
-            ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
+            if isinstance(model_to_use, LSTM):
+                ps_grads = _get_per_sample_grads(GradSampleModule(model), X_aug, y_aug, criterion)
+            else:
+                ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
             ps_grads = average_grads_over_augmentations(ps_grads, batch_size=len(X), aug_mult=aug_mult)
         else:
             X = X.to(device)
             y = y.to(device)
-            ps_grads = get_per_sample_grads(model, X, y, criterion)
+            if isinstance(model_to_use, LSTM):
+                ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
+            else:
+                ps_grads = get_per_sample_grads(model, X, y, criterion)
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
