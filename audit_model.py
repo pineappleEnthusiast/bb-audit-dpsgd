@@ -947,8 +947,8 @@ def main():
     elif args.target_type == 'empty_sequence':
         # sequence length (same as existing chunks)
         seq_len = X_out.shape[1]
-        target_X = torch.zeros((1, seq_len), dtype=torch.long)
-        target_y = torch.full((1, seq_len), 9, dtype=torch.long)
+        target_X = torch.zeros((1, seq_len), dtype=torch.float32)
+        target_y = torch.tensor([9], dtype=torch.long)
     elif os.path.exists(args.target_type):
         # pre-crafted target sample
         target_X = torch.from_numpy(np.load(args.target_type))
