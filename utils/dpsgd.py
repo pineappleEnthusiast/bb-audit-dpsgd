@@ -70,11 +70,6 @@ def get_per_sample_grads(model, X, y, criterion):
     def compute_loss(params, buffers, sample, target):
         batch = sample.unsqueeze(0)
         targets = target.unsqueeze(0)
-
-        if batch.dtype != torch.long:
-            batch = batch.long()
-        if targets.dtype != torch.long:
-            targets = targets.long()
         
         # Forward pass - no no_grad() here to allow gradient computation
         predictions = functional_call(model_to_use, (params, buffers), (batch,))
