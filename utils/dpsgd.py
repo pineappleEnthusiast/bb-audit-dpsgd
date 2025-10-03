@@ -10,6 +10,7 @@ import threading
 import copy
 import pdb
 from opacus.grad_sample import GradSampleModule
+from models.lstm import LSTM
 
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
@@ -63,7 +64,7 @@ def get_per_sample_grads(model, X, y, criterion):
         model_to_use = model
         param_mapping = dict(model.named_parameters())
 
-    if isinstance(model_to_use, torch.nn.LSTM):
+    if isinstance(model_to_use, LSTM):
         # --- Use Opacus GradSampleModule path ---
         grad_model = GradSampleModule(model_to_use)
         grad_model.train()
