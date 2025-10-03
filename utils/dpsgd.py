@@ -65,21 +65,32 @@ def get_per_sample_grads(model, X, y, criterion):
         param_mapping = dict(model.named_parameters())
 
     if isinstance(model_to_use, LSTM):
-        # --- Use Opacus GradSampleModule path ---
         grad_model = GradSampleModule(model_to_use)
         grad_model.train()
 
-        # Forward + backward pass with per-sample grads
+        # forward + backward pass with per-sample grads
         outputs = grad_model(X)
-        loss = criterion(outputs, y)
+        # loss = criterion(outputs, y)
+
+        if outputs.dim() == 3:
+            # logits for every time step: (B, S, V)
+            B, S, V = outputs.shape
+            loss = criterion(outputs.reshape(B * S, V), y.reshape(B * S))
+        elif outputs.dim() == 2:
+            # logits for last step only: (B, V)
+            target_last = y[:, -1] if y.dim() == 2 else y
+            loss = criterion(outputs, target_last)
+        else:
+            raise RuntimeError(f"Unexpected LSTM logits shape {outputs.shape}")
+
         loss.backward()
 
-        # Collect per-sample grads
+        # collect per-sample grads
         ps_grads = {}
         for name, p in grad_model.named_parameters():
             if hasattr(p, "grad_sample") and p.grad_sample is not None:
                 ps_grads[name] = p.grad_sample.detach().clone()
-                p.grad_sample = None  # clear to save memory
+                p.grad_sample = None
             else:
                 ps_grads[name] = torch.zeros((X.size(0), *p.shape), device=p.device)
 
