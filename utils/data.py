@@ -103,10 +103,11 @@ def load_data(data_name, n_df, root='./', split='train'):
         num_chunks = len(data_ids) // seq_len
 
         # truncate to full chunks only
-        data_ids = data_ids[:num_chunks * seq_len]
+        # Truncate so both X and y align cleanly
+        usable_len = (len(data_ids) - 1) // seq_len * seq_len
 
-        X = data_ids[:-1].view(num_chunks, seq_len)
-        y = data_ids[1:].view(num_chunks, seq_len)
+        X = data_ids[:usable_len].view(-1, seq_len)
+        y = data_ids[1:usable_len+1].view(-1, seq_len)
 
         dataset = TensorDataset(X, y)
         out_dim = vocab_size
