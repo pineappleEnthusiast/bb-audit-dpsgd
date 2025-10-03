@@ -25,6 +25,7 @@ import copy
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import time
 import dill
+from models.lstm import LSTM
 
 import pdb
 
@@ -41,6 +42,8 @@ from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 import gc
 import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
+
+from opacus.grad_sample import GradSampleModule
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -589,6 +592,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
 def test_model(model, X, y, batch_size=128):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    if isinstance(model, LSTM):
+        model = GradSampleModule(model)
 
     model = model.to(device)
     X = X.to(device)
