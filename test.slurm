@@ -5,7 +5,7 @@
 #SBATCH -p gh                    # Partition (queue) name
 #SBATCH -N 10                     # Number of nodes
 #SBATCH -n 10                     # Number of tasks (MPI ranks)
-#SBATCH -t 15:00:00              # Run time (hh:mm:ss)
+#SBATCH -t 40:00:00              # Run time (hh:mm:ss)
 #SBATCH -A ASC25081       # Allocation/Project ID (required on TACC)
 
 # Load any needed modules
@@ -23,4 +23,4 @@ conda activate bb_audit_dpsgd
 
 cd bb-audit-dpsgd
 # python3 audit_model.py --data_name mnist --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out debug --block_size 4096 --target_type blank --n_reps 400 --batch_size 4096 --defense
-python3 audit_model.py --data_name cifar10 --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out debug --block_size 1366 --target_type blank --n_reps 400 --batch_size 4096
+python3 audit_model.py --data_name cifar10 --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out no_defense --block_size 1366 --target_type blank --n_reps 400 --batch_size 4096
