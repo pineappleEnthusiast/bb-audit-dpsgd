@@ -1,5 +1,3 @@
-"""Three-Layer Fully Connected Network"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,7 +30,6 @@ class MLP(nn.Module):
         x = torch.flatten(x, start_dim=1)
 
         x = F.relu(self.fc1(x))
-        # x = self.dropout(x)
         x = F.relu(self.fc2(x))
 
         self.embeddings = x.clone().detach()
