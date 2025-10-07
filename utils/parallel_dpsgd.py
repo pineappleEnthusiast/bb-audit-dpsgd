@@ -1,14 +1,48 @@
 """
-Utility functions to execute DP-SGD
+Utility functions to execute DP-SGD with distributed training support
 """
+import os
 import torch
-# Distributed training not used in this version
+import torch.distributed as dist
 import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
 import threading
 import copy
 import pdb
+
+def init_distributed(model_type=None):
+    """
+    Initialize distributed training environment.
+    
+    This should be called at the start of each process.
+    
+    Args:
+        model_type: Optional string identifying the model type ('in' or 'out')
+        
+    Returns:
+        Tuple of (rank, world_size, device)
+    """
+    # Initialize the process group
+    dist.init_process_group(backend="nccl")
+    
+    # Get rank and world size
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    
+    # Get local rank from environment (set by torchrun)
+    local_rank = int(os.environ["LOCAL_RANK"])
+    
+    # Set the device for this process
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+    
+    # Print initialization info
+    model_prefix = f"[Model {model_type.upper()}] " if model_type else ""
+    print(f"{model_prefix}Process {rank}/{world_size} on {os.uname().nodename}, "
+          f"local_rank={local_rank}, device={device}")
+    
+    return rank, world_size, device
 
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
@@ -198,15 +232,19 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
 
 def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
-                         block_size=1024, scores=None, device='cuda',
+                         block_size=1024, scores=None, device=None,
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
-                        batch_size=None, drop_mask=None, is_gradient_space_canary=False, 
-                        crafted_gradient=None):
+                         batch_size=None, drop_mask=None, is_gradient_space_canary=False, 
+                         crafted_gradient=None, model_type=None):
     """
-    Clip and accumulate gradients in blocks with support for parallel execution.
+    Clip and accumulate gradients with support for distributed training.
+    
+    This function supports multi-node, multi-GPU training where each process
+    handles a portion of the computation. The model should already be on the
+    correct device before calling this function.
     
     Args:
-        model: The model to train
+        model: The model to train (should already be on the correct device)
         X: Input tensor
         y: Target tensor
         optimizer: The optimizer to use
@@ -214,17 +252,40 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         max_grad_norm: Maximum gradient norm for clipping
         block_size: Size of blocks for processing (default: 1024)
         scores: Pre-allocated array to store scores for the entire dataset
-        device: Device to run on ('cuda' or 'cpu')
+        device: Device to run on (must be a CUDA device)
         global_indices: Global indices of the current batch in the full dataset
         aug_mult: Multiplier for data augmentation
         aug_fn: Function to apply data augmentation
         drop_mask: Optional mask to drop specific samples
         is_gradient_space_canary: Whether to apply gradient-space canary to the last sample
         crafted_gradient: Pre-computed gradient for audit
+        model_type: Type of model ('in' or 'out') for logging
         
     Returns:
         Tuple of (accumulated gradients, updated scores)
     """
+    # Get rank and world size for distributed training
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    
+    # Ensure device is specified and valid
+    if device is None:
+        device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
+    
+    # Log model information
+    model_prefix = f"[Model {model_type.upper()}] " if model_type else ""
+    print(f"{model_prefix}Rank {rank}/{world_size} processing {len(X)} samples on {device}")
+    
+    # Move data to the specified device
+    X = X.to(device)
+    y = y.to(device)
+    model = model.to(device)
+    
+    # Move other tensors to device if provided
+    if global_indices is not None:
+        global_indices = global_indices.to(device)
+    if drop_mask is not None:
+        drop_mask = drop_mask.to(device) if isinstance(drop_mask, torch.Tensor) else torch.tensor(drop_mask, device=device)
     if scores is None:
         raise ValueError("scores array must be provided")
     
@@ -270,25 +331,25 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         if block_contains_canary:
             last_sample_local_idx = (curr_global_indices == (len(scores) - 1)).nonzero()[0].item()
         
-        # Compute per-block gradients with clipping
-        accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
-            model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
-            device=device, aug_mult=aug_mult, aug_fn=aug_fn,
-            is_gradient_space_canary=block_contains_canary,
-            crafted_gradient=crafted_gradient,
+            # Compute per-block gradients with clipping
+            accum_grad_block, _, last_layer_norms, _ = clip_and_accum_grads_block(
+                model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
+                device=device, aug_mult=aug_mult, aug_fn=aug_fn,
+                is_gradient_space_canary=block_contains_canary,
+                crafted_gradient=crafted_gradient,
             canary_local_idx=last_sample_local_idx
-        )
-        
-        # Accumulate gradients
-        if accum_grad is None:
-            accum_grad = accum_grad_block
-        else:
-            with torch.no_grad():
-                for name in accum_grad:
-                    accum_grad[name] += accum_grad_block[name]
-        
+            )
+            
+            # Accumulate gradients
+            if accum_grad is None:
+                accum_grad = accum_grad_block
+            else:
+                with torch.no_grad():
+                    for name in accum_grad:
+                                accum_grad[name] += accum_grad_block[name]
+            
         # Update scores for this block
-        scores[curr_global_indices.cpu().numpy()] = last_layer_norms
+                scores[curr_global_indices.cpu().numpy()] = last_layer_norms
     
     return accum_grad, scores
 
