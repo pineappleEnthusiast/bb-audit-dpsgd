@@ -480,8 +480,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 
                 for name, param in model.named_parameters():
                     # Remove 'module.' prefix for DDP models
-                    # clean_name = name.replace('module.', '')
-                    clean_name = name
+                    if any(isinstance(m, (nn.Embedding, nn.LSTM)) for m in model.modules()):
+                        clean_name = name # keep _module prefix (Opacus/GradSampleModule case)
+                    else:
+                        clean_name = name.replace('module.', '')
+
                     if clean_name not in curr_accumulated_gradients:
                         print(f"Warning: Parameter {clean_name} not found in accumulated gradients")
                         continue

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from opacus.layers import DPLSTM   # <-- add this
+from opacus.layers import DPLSTM
 
 class LSTM(nn.Module):
     def __init__(self, vocab_size, out_dim=None, embed_dim=128, hidden_dim=256, num_layers=1, dropout_rate=0.1):
@@ -11,8 +11,6 @@ class LSTM(nn.Module):
 
         self.embedding = nn.Embedding(vocab_size, embed_dim)
 
-        # Use DPLSTM instead of nn.LSTM
-        # (Opacus DPLSTM currently supports a single layer; keep num_layers=1)
         self.lstm = DPLSTM(
             embed_dim,
             hidden_dim,
