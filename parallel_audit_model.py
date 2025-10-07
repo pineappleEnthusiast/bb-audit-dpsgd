@@ -449,13 +449,25 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
 
     assert loader is not None, "Loader is None"
     
+    # Debug information
+    print("\n=== Debug Information ===")
+    print(f"Dataset length: {len(dataset)}")
+    print(f"Batch size: {batch_size}")
+    print(f"Number of batches: {len(loader)}")
+    print(f"Loader drop_last: {loader.drop_last}")
+    print(f"Loader sampler type: {type(loader.sampler).__name__}")
+    print(f"First few dataset items:")
+    for i in range(min(3, len(dataset))):
+        item = dataset[i]
+        print(f"  Item {i}: len={len(item)}, types={[type(x) for x in item]}")
+    print("=======================\n")
+    
     for epoch in range(n_epochs):
         epoch_start = time.time()
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
-            print(f"Batch {batch_idx}: X shape: {curr_X.shape}, y shape: {curr_y.shape}, indices shape: {global_indices.shape}")
             # Move batch to device
             # Only use non_blocking if data is pinned (on CPU)
             non_blocking = pin_memory
