@@ -272,9 +272,52 @@ def init_wideresnet(model):
     
     return model, model_idx
 
+def setup_ddp():
+    """Initialize distributed training."""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        
+        # Initialize the process group
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=rank
+        )
+        
+        # Set device
+        device = torch.device(f'cuda:{local_rank}')
+        
+        return {
+            'rank': rank,
+            'world_size': world_size,
+            'local_rank': local_rank,
+            'device': device,
+            'is_main_process': (rank == 0)
+        }
+    else:
+        # Default to single-GPU mode if not using DDP
+        return {
+            'rank': 0,
+            'world_size': 1,
+            'local_rank': 0,
+            'device': torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'),
+            'is_main_process': True
+        }
+
+
+def cleanup_ddp():
+    """Clean up distributed training."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
-                       n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, 
-                       gradient_space_audit=False, crafted_gradient=None, defense=False, seed=42):
+                     n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, 
+                     gradient_space_audit=False, crafted_gradient=None, defense=False, seed=42):
     """Train a single model with the given parameters.
     
     Args:
@@ -317,6 +360,12 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
             init_wideresnet(model)
     else:
         model = copy.deepcopy(init_model).to(device)
+    
+    # Wrap model in DDP if using multiple processes
+    if ddp_info['world_size'] > 1:
+        model = DDP(model, device_ids=[ddp_info['local_rank']], output_device=ddp_info['local_rank'])
+        if is_main_process:
+            print("Using DDP with", ddp_info['world_size'], "processes")
     
     # Set model to training mode
     model.train()
