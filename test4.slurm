@@ -22,4 +22,4 @@ eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 
 cd bb-audit-dpsgd
-python3 audit_model.py --data_name mnist --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out debug --block_size 4096 --target_type blank --blank_alpha 0.75 --n_reps 400 --batch_size 4096 --defense
+python3 audit_model.py --data_name mnist --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out results/test_mnist_blank_75 --block_size 4096 --target_type blank --blank_alpha 0.75 --n_reps 400 --batch_size 4096 --defense
