@@ -453,12 +453,25 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
             curr_y = curr_y.to(device, non_blocking=non_blocking)
             global_indices = global_indices.to(device, non_blocking=non_blocking)
             
+            # Prepare batch_drop_mask if drop_mask is provided
+            batch_drop_mask = None
+            if drop_mask is not None:
+                with torch.no_grad():
+                    batch_drop_mask = torch.tensor(
+                        drop_mask[global_indices.cpu().numpy()], 
+                        device=device, 
+                        dtype=torch.bool
+                    )
+            
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, scores = clip_and_accum_grads(
-                model,
-                curr_X, curr_y, optimizer, criterion,
-                max_grad_norm, 
-                drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
+                model=model,
+                X=curr_X, 
+                y=curr_y, 
+                optimizer=optimizer, 
+                criterion=criterion,
+                max_grad_norm=max_grad_norm, 
+                drop_mask=batch_drop_mask,
                 block_size=block_size,
                 scores=scores,
                 device=device,
@@ -466,7 +479,8 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
                 aug_mult=aug_mult, 
                 aug_fn=aug_fn,
                 is_gradient_space_canary=gradient_space_audit,
-                crafted_gradient=crafted_gradient
+                crafted_gradient=crafted_gradient,
+                model_type='in'  # or 'out' depending on your use case
             )
 
             # Apply the accumulated gradients to the model parameters
