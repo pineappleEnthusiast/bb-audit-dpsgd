@@ -34,7 +34,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads, init_distributed, init_process_group, cleanup
+from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads, init_distributed
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
@@ -574,12 +574,17 @@ def train_model_wrapper(args, gpu_id=0):
     
     if world_size > 1:
         try:
-            # Initialize the process group
-            init_process_group(backend='nccl')
-            print(f"[Rank {rank}] Initialized process group")
+            # Initialize distributed training using the provided function
+            rank, world_size, device = init_distributed()
+            print(f"[Rank {rank}/{world_size}] Initialized distributed training on device {device}")
         except Exception as e:
-            print(f"[Rank {rank}] Error initializing process group: {e}")
-            raise
+            print(f"[Rank {rank}] Error initializing distributed training: {e}")
+            # Fall back to single-GPU training if distributed init fails
+            world_size = 1
+            rank = 0
+            local_rank = 0
+            device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
+            print(f"Falling back to single-GPU training on device {device}")
     
     # Set CUDA device for this process
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -640,9 +645,9 @@ def train_model_wrapper(args, gpu_id=0):
         # Move model to CPU to avoid GPU memory issues when returning
         model = model.cpu()
         
-        # Clean up distributed training
-        if world_size > 1:
-            cleanup()
+        # Clean up distributed training if needed
+        if world_size > 1 and dist.is_initialized():
+            dist.destroy_process_group()
             print(f"[Rank {rank}] Cleaned up process group")
         
         return model, model_idx
