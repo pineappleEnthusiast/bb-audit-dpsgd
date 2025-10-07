@@ -281,11 +281,16 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     y = y.to(device)
     model = model.to(device)
     
-    # Move other tensors to device if provided
-    if global_indices is not None:
+    # Initialize global_indices if not provided
+    if global_indices is None:
+        global_indices = torch.arange(len(X), device=device)
+    else:
         global_indices = global_indices.to(device)
+    
+    # Handle drop_mask
     if drop_mask is not None:
         drop_mask = drop_mask.to(device) if isinstance(drop_mask, torch.Tensor) else torch.tensor(drop_mask, device=device)
+    
     if scores is None:
         raise ValueError("scores array must be provided")
     
