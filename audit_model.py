@@ -26,6 +26,7 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset
 import time
 import dill
 from models.lstm import LSTM
+from opacus.grad_sample import GradSampleModule
 
 import pdb
 
@@ -355,6 +356,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 init_wideresnet(model)
     else:
         model = copy.deepcopy(init_model).to(device)
+    
+
+    if model_name == 'lstm' and not isinstance(model, GradSampleModule):
+        model = GradSampleModule(model)
 
     
     # Verify model is in training mode
@@ -593,8 +598,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 def test_model(model, X, y, batch_size=128):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    if isinstance(model, LSTM):
-        model = GradSampleModule(model)
+    # if isinstance(model, LSTM):
+    #     model = GradSampleModule(model)
 
     model = model.to(device)
     X = X.to(device)

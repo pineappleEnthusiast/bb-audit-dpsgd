@@ -153,16 +153,16 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             X_aug = X_aug.to(device)
             y_aug = y_aug.to(device)
 
-            if isinstance(model_to_use, LSTM):
-                ps_grads = _get_per_sample_grads(GradSampleModule(model), X_aug, y_aug, criterion)
+            if any(isinstance(m, (nn.Embedding, nn.LSTM)) for m in model.modules()):
+                ps_grads = _get_per_sample_grads(model, X_aug, y_aug, criterion)
             else:
                 ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
             ps_grads = average_grads_over_augmentations(ps_grads, batch_size=len(X), aug_mult=aug_mult)
         else:
             X = X.to(device)
             y = y.to(device)
-            if isinstance(model_to_use, LSTM):
-                ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
+            if any(isinstance(m, (nn.Embedding, nn.LSTM)) for m in model.modules()):
+                ps_grads = _get_per_sample_grads(model, X, y, criterion)
             else:
                 ps_grads = get_per_sample_grads(model, X, y, criterion)
         
