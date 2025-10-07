@@ -17,7 +17,7 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 
 set -e
 
-cd $SCRATCH
+cd $WORK
 eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 
