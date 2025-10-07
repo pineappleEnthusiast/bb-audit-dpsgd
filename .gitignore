@@ -258,3 +258,5 @@ pyrightconfig.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/linux,visualstudiocode,python,jupyternotebooks
+Miniconda3-latest-Linux-aarch64.sh
+bb-audit-dpsgd.git/
