@@ -467,7 +467,27 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
+        for batch_idx, batch in enumerate(loader):
+            # Handle batch structure - DataLoader might return a list of tuples or a tuple of tensors
+            if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                curr_X, curr_y, global_indices = batch
+            elif isinstance(batch, (list, tuple)) and len(batch) == 2:
+                # If we only got two items, the indices are probably the second item
+                curr_X, curr_y = batch
+                global_indices = torch.arange(
+                    batch_idx * batch_size,
+                    min((batch_idx + 1) * batch_size, len(dataset)),
+                    device=curr_X.device
+                )
+            else:
+                raise ValueError(f"Unexpected batch format: {type(batch)}")
+                
+            # Print batch info for debugging
+            print(f"\nBatch {batch_idx}:")
+            print(f"  X shape: {curr_X.shape}")
+            print(f"  y shape: {curr_y.shape}")
+            print(f"  global_indices shape: {global_indices.shape if hasattr(global_indices, 'shape') else 'N/A'}")
+            
             # Move batch to device
             # Only use non_blocking if data is pinned (on CPU)
             non_blocking = pin_memory
