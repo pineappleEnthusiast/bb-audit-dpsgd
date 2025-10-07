@@ -91,7 +91,8 @@ def get_per_sample_grads(model, X, y, criterion):
         model_to_use = model
         param_mapping = dict(model.named_parameters())
     
-    if any(isinstance(m, nn.Embedding) for m in model_to_use.modules()):
+    # if any(isinstance(m, nn.Embedding) for m in model_to_use.modules()):
+    if isinstance(model_to_use, LSTM):
         return _per_sample_grads_autograd(model_to_use, X, y, criterion)
     
     # map of parameter names : parameter values (without module prefix)
