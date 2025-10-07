@@ -34,7 +34,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads
+from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads, init_distributed
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
@@ -730,7 +730,7 @@ def main():
     if world_size > 1:
         print(f'[Rank {rank}] Initializing distributed training...')
         try:
-            setup(rank, world_size, local_rank)
+            init_distributed()  # Initialize distributed training
             print(f'[Rank {rank}] Distributed training initialized successfully')
         except Exception as e:
             print(f'[Rank {rank}] Failed to initialize distributed training: {str(e)}')
