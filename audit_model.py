@@ -478,26 +478,13 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 # Get parameter names without 'module.' prefix
                 param_names = [name.replace('module.', '') for name, _ in model.named_parameters()]
                 
-                # DEBUG: show how keys differ (print once)
-                if epoch == 0 and batch_idx == 0:
-                    print("\n[DEBUG] sample accumulated gradient keys:")
-                    print(list(curr_accumulated_gradients.keys()))
-                    print("\n[DEBUG] model.named_parameters() names:")
-                    print([n for n, _ in model.named_parameters()])
-
-                
                 for name, param in model.named_parameters():
                     # Remove 'module.' prefix for DDP models
                     # clean_name = name.replace('module.', '')
                     clean_name = name
-                    if epoch == 0 and batch_idx == 0:
-                        print(f"[DEBUG] matching param {name} → {clean_name}")
-                        print(f"[DEBUG] found in grads: {clean_name in curr_accumulated_gradients}")
-
                     if clean_name not in curr_accumulated_gradients:
                         print(f"Warning: Parameter {clean_name} not found in accumulated gradients")
                         continue
-                        
                     # Get the accumulated gradient and move to device
                     grad = curr_accumulated_gradients[clean_name].to(device)
                     # Add DP noise if needed
