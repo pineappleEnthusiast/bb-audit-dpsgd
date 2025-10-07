@@ -439,6 +439,8 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         drop_last=True,
         generator=torch.Generator().manual_seed(seed)
     )
+
+    assert loader is not None, "Loader is None"
     
     for epoch in range(n_epochs):
         epoch_start = time.time()
