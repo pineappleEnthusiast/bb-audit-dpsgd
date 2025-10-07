@@ -931,8 +931,8 @@ def main():
         with ProcessPoolExecutor(max_workers=num_gpus) as executor:
             futures = []
             for model_args in model_args_list:
-                # Submit training tasks
-                future = executor.submit(train_single_model, model_args)
+                # Submit training tasks with unpacked arguments
+                future = executor.submit(train_single_model, *model_args)
                 futures.append(future)
                 
             # Process results as they complete
