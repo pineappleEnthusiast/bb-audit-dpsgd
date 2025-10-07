@@ -34,7 +34,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads, init_distributed
+from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads, init_distributed, init_process_group, cleanup
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
@@ -567,6 +567,20 @@ def train_model_wrapper(args, gpu_id=0):
     import os
     import torch
     
+    # Initialize distributed training
+    rank = int(os.environ.get('RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    
+    if world_size > 1:
+        try:
+            # Initialize the process group
+            init_process_group(backend='nccl')
+            print(f"[Rank {rank}] Initialized process group")
+        except Exception as e:
+            print(f"[Rank {rank}] Error initializing process group: {e}")
+            raise
+    
     # Set CUDA device for this process
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
@@ -625,6 +639,11 @@ def train_model_wrapper(args, gpu_id=0):
         
         # Move model to CPU to avoid GPU memory issues when returning
         model = model.cpu()
+        
+        # Clean up distributed training
+        if world_size > 1:
+            cleanup()
+            print(f"[Rank {rank}] Cleaned up process group")
         
         return model, model_idx
         
