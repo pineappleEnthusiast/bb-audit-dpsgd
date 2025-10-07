@@ -429,14 +429,21 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
     # Create the DataLoader
     # Only enable pin_memory if the data is on CPU
     pin_memory = X.device.type == 'cpu'
+    
+    sampler = torch.utils.data.RandomSampler(
+        dataset,
+        replacement=False,
+        generator=torch.Generator().manual_seed(seed)
+    )
+    
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        sampler=sampler,
         pin_memory=pin_memory,  # Only pin memory if data is on CPU
         num_workers=4,
         persistent_workers=True,
-        drop_last=True,
+        drop_last=False,
         generator=torch.Generator().manual_seed(seed)
     )
 
