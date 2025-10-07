@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH -J test_mnist_blank_25              # Job name
-#SBATCH -o test_mnist_blank_25.o%j          # Output file (%j = job ID)
-#SBATCH -e test_mnist_blank_25.e%j          # Error file
+#SBATCH -J test_mnist_blank_50              # Job name
+#SBATCH -o test_mnist_blank_50.o%j          # Output file (%j = job ID)
+#SBATCH -e test_mnist_blank_50.e%j          # Error file
 #SBATCH -p gh                    # Partition (queue) name
 #SBATCH -N 1                     # Number of nodes
 #SBATCH -n 1                     # Number of tasks (MPI ranks)
@@ -22,4 +22,4 @@ eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 
 cd bb-audit-dpsgd
-python3 audit_model.py --data_name mnist --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out debug --block_size 4096 --target_type blank --blank_alpha 0.25 --n_reps 400 --batch_size 4096 --defense
+python3 audit_model.py --data_name mnist --model_name cnn --lr 1.33e-4 --epsilon 10 --fixed_init --out debug --block_size 4096 --target_type blank --blank_alpha 50 --n_reps 400 --batch_size 4096 --defense
