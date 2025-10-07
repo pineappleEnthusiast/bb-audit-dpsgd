@@ -913,7 +913,7 @@ def main():
             seed = curr_seed
             curr_seed += 1
             
-model_args = (
+            model_args = (
                 args.model_name,  # model_name
                 curr_X,          # X
                 curr_y,          # y
