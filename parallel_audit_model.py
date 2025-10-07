@@ -7,22 +7,40 @@ import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
+import os
+import sys
 import numpy as np
 import argparse
 from opacus.accountants.utils import get_noise_multiplier
+import copy
 from torch.utils.data import TensorDataset, DataLoader, Dataset
-from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import gc
-import torch.nn.functional as F
-import torchvision.transforms.v2 as v2
+import time
+import dill
+
+import pdb
+
+import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.dpsgd import clip_and_accum_grads, get_per_sample_grads
+from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
+
+import gc
+import torch.nn.functional as F
+import torchvision.transforms.v2 as v2
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
