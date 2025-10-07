@@ -293,9 +293,15 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
     
     # Get indices of non-dropped samples
-    active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
-    if drop_mask is not None:
-        active_indices = ~torch.tensor(drop_mask, device=device)
+    if drop_mask is None:
+        active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
+    else:
+        # Ensure drop_mask is a tensor on the correct device
+        if not isinstance(drop_mask, torch.Tensor):
+            drop_mask = torch.tensor(drop_mask, device=device, dtype=torch.bool)
+        elif drop_mask.device != device:
+            drop_mask = drop_mask.to(device)
+        active_indices = ~drop_mask
     
     # Filter out dropped samples
     X = X[active_indices]
