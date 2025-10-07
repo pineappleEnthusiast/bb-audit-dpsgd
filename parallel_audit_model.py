@@ -317,7 +317,7 @@ def cleanup_ddp():
 
 def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                      n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, 
-                     gradient_space_audit=False, crafted_gradient=None, defense=False, seed=42):
+                     gradient_space_audit=False, crafted_gradient=None, defense=False, seed=42, ddp_info=None):
     """Train a single model with the given parameters.
     
     Args:
@@ -361,10 +361,20 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
     else:
         model = copy.deepcopy(init_model).to(device)
     
+    # Initialize ddp_info if not provided
+    if ddp_info is None:
+        ddp_info = {
+            'world_size': 1,
+            'rank': 0,
+            'local_rank': 0,
+            'device': device,
+            'is_main_process': True
+        }
+    
     # Wrap model in DDP if using multiple processes
     if ddp_info['world_size'] > 1:
         model = DDP(model, device_ids=[ddp_info['local_rank']], output_device=ddp_info['local_rank'])
-        if is_main_process:
+        if ddp_info.get('is_main_process', False):
             print("Using DDP with", ddp_info['world_size'], "processes")
     
     # Set model to training mode
@@ -577,6 +587,15 @@ def train_model_wrapper(args, gpu_id=0):
         if init_model is not None:
             init_model = copy.deepcopy(init_model).to(device)
         
+        # Get DDP info if available
+        ddp_info = {
+            'world_size': int(os.environ.get('WORLD_SIZE', 1)),
+            'rank': int(os.environ.get('RANK', 0)),
+            'local_rank': int(os.environ.get('LOCAL_RANK', 0)),
+            'device': device,
+            'is_main_process': int(os.environ.get('RANK', 0)) == 0
+        }
+        
         # Call the training function
         model = train_single_model(
             model_name=model_name,
@@ -597,7 +616,8 @@ def train_model_wrapper(args, gpu_id=0):
             gradient_space_audit=gradient_space_audit,
             crafted_gradient=crafted_gradient,
             defense=defense,
-            seed=seed
+            seed=seed,
+            ddp_info=ddp_info
         )
         
         # Get the model index from the last argument (seed)
