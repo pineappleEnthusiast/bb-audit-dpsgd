@@ -495,6 +495,75 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
     return model
     
 
+def train_model_wrapper(args, gpu_id=0):
+    """Wrapper function to handle GPU device assignment and model training.
+    
+    Args:
+        args: Tuple of arguments to pass to train_single_model
+        gpu_id: ID of the GPU to use for this process
+        
+    Returns:
+        Tuple of (trained_model, model_index)
+    """
+    import os
+    import torch
+    
+    # Set CUDA device for this process
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
+    
+    try:
+        # Unpack arguments and add device information
+        model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, \
+        block_size, batch_size, init_model, out_dim, aug_mult, gradient_space_audit, \
+        crafted_gradient, defense, seed = args
+        
+        # Move data to the correct device
+        X = X.to(device)
+        y = y.to(device)
+        X_target = X_target.to(device) if X_target is not None else None
+        y_target = y_target.to(device) if y_target is not None else None
+        
+        # Clone init_model to avoid sharing weights between processes
+        if init_model is not None:
+            init_model = copy.deepcopy(init_model).to(device)
+        
+        # Call the training function
+        model = train_single_model(
+            model_name=model_name,
+            X=X,
+            y=y,
+            X_target=X_target,
+            y_target=y_target,
+            epsilon=epsilon,
+            delta=delta,
+            max_grad_norm=max_grad_norm,
+            n_epochs=n_epochs,
+            lr=lr,
+            block_size=block_size,
+            batch_size=batch_size,
+            init_model=init_model,
+            out_dim=out_dim,
+            aug_mult=aug_mult,
+            gradient_space_audit=gradient_space_audit,
+            crafted_gradient=crafted_gradient,
+            defense=defense,
+            seed=seed
+        )
+        
+        # Get the model index from the last argument (seed)
+        model_idx = seed - 42  # Since we started seed at 42 and incremented
+        
+        # Move model to CPU to avoid GPU memory issues when returning
+        model = model.cpu()
+        
+        return model, model_idx
+        
+    except Exception as e:
+        print(f"Error in train_model_wrapper: {str(e)}")
+        raise
+
+
 def test_model(model, X, y, batch_size=128):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -936,16 +1005,22 @@ def main():
             )
             model_args_list.append(model_args)
         
+        # Set the start method to 'spawn' for CUDA compatibility
+        import multiprocessing as mp
+        mp.set_start_method('spawn', force=True)
+        
         # Train models in parallel using ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=num_gpus) as executor:
+        with ProcessPoolExecutor(max_workers=num_gpus, mp_context=mp.get_context('spawn')) as executor:
             futures = []
-            for model_args in model_args_list:
-                # Submit training tasks with unpacked arguments
+            for i, model_args in enumerate(model_args_list):
+                # Submit training tasks with the wrapper function
                 try:
-                    # Unpack the model arguments and pass them to train_single_model
+                    # Assign models to GPUs in a round-robin fashion
+                    gpu_id = i % num_gpus
                     future = executor.submit(
-                        train_single_model,
-                        *model_args
+                        train_model_wrapper,
+                        model_args,
+                        gpu_id=gpu_id
                     )
                     futures.append(future)
                 except Exception as e:
