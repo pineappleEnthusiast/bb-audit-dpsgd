@@ -427,11 +427,13 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
     drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
     
     # Create the DataLoader
+    # Only enable pin_memory if the data is on CPU
+    pin_memory = X.device.type == 'cpu'
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
+        pin_memory=pin_memory,  # Only pin memory if data is on CPU
         num_workers=4,
         persistent_workers=True,
         drop_last=True,
@@ -444,9 +446,12 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
-            # Move batch to device asynchronously
-            curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
-            global_indices = global_indices.to(device, non_blocking=True)
+            # Move batch to device
+            # Only use non_blocking if data is pinned (on CPU)
+            non_blocking = pin_memory
+            curr_X = curr_X.to(device, non_blocking=non_blocking)
+            curr_y = curr_y.to(device, non_blocking=non_blocking)
+            global_indices = global_indices.to(device, non_blocking=non_blocking)
             
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, scores = clip_and_accum_grads(
