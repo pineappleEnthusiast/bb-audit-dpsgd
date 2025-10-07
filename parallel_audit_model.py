@@ -41,6 +41,21 @@ from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 import gc
 import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
+from torch.utils.data import Dataset
+
+
+class IndexedTensorDataset(Dataset):
+    """A dataset that includes the index of each sample."""
+    def __init__(self, *tensors):
+        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
+        self.tensors = tensors
+        
+    def __getitem__(self, index):
+        return tuple(tensor[index] for tensor in self.tensors) + (index,)
+        
+    def __len__(self):
+        return self.tensors[0].size(0)
+
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
