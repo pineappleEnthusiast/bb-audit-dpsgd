@@ -457,11 +457,13 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
             batch_drop_mask = None
             if drop_mask is not None:
                 with torch.no_grad():
-                    batch_drop_mask = torch.tensor(
-                        drop_mask[global_indices.cpu().numpy()], 
-                        device=device, 
-                        dtype=torch.bool
-                    )
+                    # Convert to tensor if it's a numpy array
+                    if isinstance(drop_mask, np.ndarray):
+                        drop_mask_tensor = torch.from_numpy(drop_mask).to(device=device, dtype=torch.bool)
+                    else:
+                        drop_mask_tensor = drop_mask.to(device=device, dtype=torch.bool)
+                    # Index using the global indices
+                    batch_drop_mask = drop_mask_tensor[global_indices]
             
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, scores = clip_and_accum_grads(
