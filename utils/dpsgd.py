@@ -3,6 +3,7 @@ Utility functions to execute DP-SGD
 """
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
@@ -48,6 +49,32 @@ def average_grads_over_augmentations(ps_grads, batch_size, aug_mult):
     """Original function signature maintained for compatibility"""
     return average_grads_over_augmentations_optimized(ps_grads, batch_size, aug_mult)
 
+def _per_sample_grads_autograd(model, X, y, criterion):
+    model.train()  # ensure grads flow
+    B = X.shape[0]
+    # Prepare containers (on same device/dtype as params)
+    param_list = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    out = {n: [] for n, _ in param_list}
+
+    # We’ll keep the forward graph for all but the last sample
+    for i in range(B):
+        model.zero_grad(set_to_none=True)
+        logits = model(X[i].unsqueeze(0))
+        loss = criterion(logits, y[i].unsqueeze(0))
+        loss.backward(retain_graph=(i < B - 1))
+
+        # collect grads
+        for n, p in param_list:
+            # .grad is None if param unused; substitute zeros of same shape
+            if p.grad is None:
+                out[n].append(torch.zeros_like(p, device=p.device).unsqueeze(0))
+            else:
+                out[n].append(p.grad.detach().clone().unsqueeze(0))
+
+    # stack to [B, ...]
+    for n in out:
+        out[n] = torch.cat(out[n], dim=0)
+    return out
 
 def get_per_sample_grads(model, X, y, criterion):
     """Compute per-sample gradients"""
@@ -63,6 +90,9 @@ def get_per_sample_grads(model, X, y, criterion):
     else:
         model_to_use = model
         param_mapping = dict(model.named_parameters())
+    
+    if any(isinstance(m, nn.Embedding) for m in model_to_use.modules()):
+        return _per_sample_grads_autograd(model_to_use, X, y, criterion)
     
     # map of parameter names : parameter values (without module prefix)
     params = {k: v.detach() for k, v in model_to_use.named_parameters()}
