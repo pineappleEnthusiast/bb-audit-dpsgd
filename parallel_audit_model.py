@@ -913,17 +913,26 @@ def main():
             seed = curr_seed
             curr_seed += 1
             
-            model_args = (
-                args.model_name, curr_X, curr_y, target_X, target_y, 
-                args.epsilon, args.delta, args.max_grad_norm, args.n_epochs, args.lr,
-                args.block_size, args.batch_size, init_model, out_dim, args.aug_mult,
-                0, 1,  # rank=0, world_size=1 for single-GPU training
-                args.target_type == 'gradient_space_canary' and world == 'in',
-                crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,
-                args.defense,
-                i,  # model index
-                gpu_id,  # which GPU to use
-                seed  # random seed for this model
+model_args = (
+                args.model_name,  # model_name
+                curr_X,          # X
+                curr_y,          # y
+                target_X,        # X_target
+                target_y,        # y_target
+                args.epsilon,    # epsilon
+                args.delta,      # delta
+                args.max_grad_norm,  # max_grad_norm
+                args.n_epochs,   # n_epochs
+                args.lr,         # lr
+                args.block_size, # block_size
+                args.batch_size, # batch_size
+                init_model,      # init_model
+                out_dim,         # out_dim
+                args.aug_mult,   # aug_mult
+                args.target_type == 'gradient_space_canary' and world == 'in',  # gradient_space_audit
+                crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,  # crafted_gradient
+                args.defense,    # defense
+                seed             # seed
             )
             model_args_list.append(model_args)
         
@@ -932,8 +941,16 @@ def main():
             futures = []
             for model_args in model_args_list:
                 # Submit training tasks with unpacked arguments
-                future = executor.submit(train_single_model, *model_args)
-                futures.append(future)
+                try:
+                    # Unpack the model arguments and pass them to train_single_model
+                    future = executor.submit(
+                        train_single_model,
+                        *model_args
+                    )
+                    futures.append(future)
+                except Exception as e:
+                    print(f"Error submitting training task: {str(e)}")
+                    raise
                 
             # Process results as they complete
             for future in as_completed(futures):
