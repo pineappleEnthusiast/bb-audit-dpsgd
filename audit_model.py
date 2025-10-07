@@ -489,7 +489,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 for name, param in model.named_parameters():
                     # Remove 'module.' prefix for DDP models
                     # clean_name = name.replace('module.', '')
-                    clean_name = name.replace('module.', '')
+                    clean_name = name
                     if epoch == 0 and batch_idx == 0:
                         print(f"[DEBUG] matching param {name} → {clean_name}")
                         print(f"[DEBUG] found in grads: {clean_name in curr_accumulated_gradients}")
