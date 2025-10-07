@@ -490,6 +490,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     # Remove 'module.' prefix for DDP models
                     # clean_name = name.replace('module.', '')
                     clean_name = name.replace('module.', '').replace('_module.', '')
+                    if epoch == 0 and batch_idx == 0:
+                        print(f"[DEBUG] matching param {name} → {clean_name}")
+                        print(f"[DEBUG] found in grads: {clean_name in curr_accumulated_gradients}")
+
                     if clean_name not in curr_accumulated_gradients:
                         print(f"Warning: Parameter {clean_name} not found in accumulated gradients")
                         continue
