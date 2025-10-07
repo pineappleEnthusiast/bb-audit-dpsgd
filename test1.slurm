@@ -7,7 +7,6 @@
 #SBATCH -n 1                     # Number of tasks (MPI ranks)
 #SBATCH -t 06:00:00              # Run time (hh:mm:ss)
 #SBATCH -A ASC25081       # Allocation/Project ID (required on TACC)
-#SBATCH --gres=gpu:1
 
 # Load any needed modules
 module load cuda/12.4
