@@ -25,6 +25,8 @@ import copy
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import time
 import dill
+from models.lstm import LSTM
+from opacus.grad_sample import GradSampleModule
 
 import pdb
 
@@ -41,6 +43,8 @@ from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 import gc
 import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
+
+from opacus.grad_sample import GradSampleModule
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -340,15 +344,23 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     if rank == 0:
         print(f"Training on {world_size} GPUs across {world_size // torch.cuda.device_count()} nodes")
 
-    # Initialize model
     if init_model is None:
-        model = Models[model_name](X.shape, out_dim=out_dim).to(device)
-        if model_name == 'cnn':
-            xavier_init_model(model)
+        if model_name == 'lstm':
+            vocab_size = out_dim
+            model = Models[model_name](vocab_size=vocab_size, out_dim=out_dim).to(device)
         else:
-            init_wideresnet(model)
+            model = Models[model_name](X.shape, out_dim=out_dim).to(device)
+            if model_name == 'cnn':
+                xavier_init_model(model)
+            else:
+                init_wideresnet(model)
     else:
         model = copy.deepcopy(init_model).to(device)
+    
+
+    if model_name == 'lstm' and not isinstance(model, GradSampleModule):
+        model = GradSampleModule(model)
+
     
     # Verify model is in training mode
     model.train()
@@ -468,11 +480,14 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 
                 for name, param in model.named_parameters():
                     # Remove 'module.' prefix for DDP models
-                    clean_name = name.replace('module.', '')
+                    if any(isinstance(m, (nn.Embedding, nn.LSTM)) for m in model.modules()):
+                        clean_name = name # keep _module prefix (Opacus/GradSampleModule case)
+                    else:
+                        clean_name = name.replace('module.', '')
+
                     if clean_name not in curr_accumulated_gradients:
                         print(f"Warning: Parameter {clean_name} not found in accumulated gradients")
                         continue
-                        
                     # Get the accumulated gradient and move to device
                     grad = curr_accumulated_gradients[clean_name].to(device)
                     # Add DP noise if needed
@@ -585,6 +600,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
 def test_model(model, X, y, batch_size=128):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # if isinstance(model, LSTM):
+    #     model = GradSampleModule(model)
 
     model = model.to(device)
     X = X.to(device)
@@ -814,9 +832,15 @@ def main():
     elif args.data_name == 'cifar100':
         pass # compatible with all canaries
     elif args.data_name == 'purchase':
-        # not compatible with badnets or clipbkd
-        if args.target_type == 'badnets' or args.target_type == 'clipbkd':
-            print("Warning: canary type does not support tabular data.")
+        # only compatible with blank
+        if args.target_type != 'blank':
+            raise Exception("Canary type does not support tabular data.")
+    elif args.data_name == 'tiny_shakespeare':
+        if args.target_type != 'empty_sequence':
+            raise Exception("For tiny_shakespeare, only target_type='empty_sequence' is supported.")
+    elif args.target_type == 'empty_sequence':
+        raise Exception("Target type 'empty_sequence' is only valid with data_name='tiny_shakespeare'.")
+
 
     print('Crafting target data point')
     # craft target data point (x_T, y_T)
@@ -934,6 +958,11 @@ def main():
             torch.cuda.empty_cache()
             
         print("FGSM attack completed")
+    elif args.target_type == 'empty_sequence':
+        # sequence length (same as existing chunks)
+        seq_len = X_out.shape[1]
+        target_X = torch.zeros((1, seq_len), dtype=torch.long)
+        target_y = torch.tensor([9], dtype=torch.long)
     elif os.path.exists(args.target_type):
         # pre-crafted target sample
         target_X = torch.from_numpy(np.load(args.target_type))

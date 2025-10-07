@@ -3,12 +3,15 @@ Utility functions to execute DP-SGD
 """
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import numpy as np
 from torch.func import functional_call, vmap, grad
 import matplotlib.pyplot as plt
 import threading
 import copy
 import pdb
+from opacus.grad_sample import GradSampleModule
+from models.lstm import LSTM
 
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
@@ -45,7 +48,6 @@ def preaugment_batch(X, y, aug_fn, aug_mult):
 def average_grads_over_augmentations(ps_grads, batch_size, aug_mult):
     """Original function signature maintained for compatibility"""
     return average_grads_over_augmentations_optimized(ps_grads, batch_size, aug_mult)
-
 
 def get_per_sample_grads(model, X, y, criterion):
     """Compute per-sample gradients"""
@@ -112,7 +114,13 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
 
-
+def _get_per_sample_grads(model, X, y, criterion):
+    model.zero_grad()
+    output = model(X)
+    loss = criterion(output, y)
+    loss.backward()
+    ps_grads = {name: param.grad_sample for name, param in model.named_parameters()}
+    return ps_grads
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
                              is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None):
@@ -145,12 +153,18 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             X_aug = X_aug.to(device)
             y_aug = y_aug.to(device)
 
-            ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
+            if any(isinstance(m, (nn.Embedding, nn.LSTM)) for m in model.modules()):
+                ps_grads = _get_per_sample_grads(model, X_aug, y_aug, criterion)
+            else:
+                ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
             ps_grads = average_grads_over_augmentations(ps_grads, batch_size=len(X), aug_mult=aug_mult)
         else:
             X = X.to(device)
             y = y.to(device)
-            ps_grads = get_per_sample_grads(model, X, y, criterion)
+            if any(isinstance(m, (nn.Embedding, nn.LSTM)) for m in model.modules()):
+                ps_grads = _get_per_sample_grads(model, X, y, criterion)
+            else:
+                ps_grads = get_per_sample_grads(model, X, y, criterion)
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
