@@ -161,10 +161,10 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         else:
             X = X.to(device)
             y = y.to(device)
-            if isinstance(model_to_use, LSTM):
-                ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
-            else:
-                ps_grads = get_per_sample_grads(model, X, y, criterion)
+            # if isinstance(model_to_use, LSTM):
+            #     ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
+            # else:
+            ps_grads = get_per_sample_grads(model, X, y, criterion)
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
