@@ -446,6 +446,7 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
+            print(f"Batch {batch_idx}: X shape: {curr_X.shape}, y shape: {curr_y.shape}, indices shape: {global_indices.shape}")
             # Move batch to device
             # Only use non_blocking if data is pinned (on CPU)
             non_blocking = pin_memory
@@ -466,6 +467,7 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
                     batch_drop_mask = drop_mask_tensor[global_indices]
             
             # Clip & accumulate gradients in memory-safe blocks
+            print('DEBUG: Entering clip_and_accum_grads')
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model=model,
                 X=curr_X, 
@@ -484,6 +486,7 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
                 crafted_gradient=crafted_gradient,
                 model_type='in'  # or 'out' depending on your use case
             )
+            print('DEBUG: Exiting clip_and_accum_grads')
 
             # Apply the accumulated gradients to the model parameters
             with torch.no_grad():
