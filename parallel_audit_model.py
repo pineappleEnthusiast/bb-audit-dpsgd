@@ -359,270 +359,274 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
     Returns:
         Trained model
     """
-    # Set device and random seed
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    
-    # Initialize model
-    if init_model is None:
-        model = Models[model_name](X.shape, out_dim=out_dim).to(device)
-        if model_name == 'cnn':
-            xavier_init_model(model)
-        else:
-            init_wideresnet(model)
-    else:
-        model = copy.deepcopy(init_model).to(device)
-    
-    # Initialize ddp_info if not provided
-    if ddp_info is None:
-        ddp_info = {
-            'world_size': 1,
-            'rank': 0,
-            'local_rank': 0,
-            'device': device,
-            'is_main_process': True
-        }
-    
-    # Set model to training mode
-    model.train()
-    print(f"Model training mode: {model.training}")
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr)
-
-    # Set DP noise
-    if epsilon is not None:
-        noise_multiplier = get_noise_multiplier(
-            target_epsilon=epsilon,
-            target_delta=delta,
-            sample_rate=batch_size / len(X),
-            epochs=n_epochs,
-            accountant='rdp'
-        )
-    else:
-        noise_multiplier = 0
-
-    drop_mask = None
-    assert block_size <= batch_size, "block_size must be smaller than batch_size"
-
-    if len(X.shape) > 2:
-        aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
-    else:
-        aug_fn = None
-
-    # Create Dataset + DataLoader
-    dataset = IndexedTensorDataset(X, y)
-    
-    # Initialize scores array and drop mask for the entire dataset
-    scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
-    
-    
-    sampler = torch.utils.data.RandomSampler(
-        dataset,
-        replacement=False,
-        num_samples=None,
-        generator=torch.Generator().manual_seed(seed)
-    )
-    
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        pin_memory=False,
-        num_workers=4,
-        persistent_workers=True,
-        drop_last=False,
-        generator=torch.Generator().manual_seed(seed)
-    )
-
-    assert loader is not None, "Loader is None"
-    
-    # Debug information
-    print("\n=== Debug Information ===")
-    print(f"Dataset length: {len(dataset)}")
-    print(f"Batch size: {batch_size}")
-    print(f"Number of batches: {len(loader)}")
-    print(f"Loader drop_last: {loader.drop_last}")
-    print(f"Loader sampler type: {type(loader.sampler).__name__}")
-    print(f"First few dataset items:")
-    for i in range(min(3, len(dataset))):
-        item = dataset[i]
-        print(f"  Item {i}: len={len(item)}, types={[type(x) for x in item]}")
-    print("=======================\n")
-    
-    for epoch in range(n_epochs):
-        epoch_start = time.time()
-        optimizer.zero_grad()
-        print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
-
-        for batch_idx, batch in enumerate(loader):
-            assert batch is not None, "Batch is None"
-            assert batch_idx is not None, "Batch index is None"
-            # Handle batch structure - DataLoader might return a list of tuples or a tuple of tensors
-            if isinstance(batch, (list, tuple)) and len(batch) == 3:
-                curr_X, curr_y, global_indices = batch
-            elif isinstance(batch, (list, tuple)) and len(batch) == 2:
-                # If we only got two items, the indices are probably the second item
-                curr_X, curr_y = batch
-                global_indices = torch.arange(
-                    batch_idx * batch_size,
-                    min((batch_idx + 1) * batch_size, len(dataset)),
-                    device=curr_X.device
-                )
+    try:
+        # Set device and random seed
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        
+        # Initialize model
+        if init_model is None:
+            model = Models[model_name](X.shape, out_dim=out_dim).to(device)
+            if model_name == 'cnn':
+                xavier_init_model(model)
             else:
-                raise ValueError(f"Unexpected batch format: {type(batch)}")
-                
-            # Print batch info for debugging
-            print(f"\nBatch {batch_idx}:")
-            print(f"  X shape: {curr_X.shape}")
-            print(f"  y shape: {curr_y.shape}")
-            print(f"  global_indices shape: {global_indices.shape if hasattr(global_indices, 'shape') else 'N/A'}")
-            
-            curr_X = curr_X.to(device)
-            curr_y = curr_y.to(device)
-            global_indices = global_indices.to(device)
-            
-            # Prepare batch_drop_mask if drop_mask is provided
-            batch_drop_mask = None
-            if drop_mask is not None:
-                with torch.no_grad():
-                    # Convert to tensor if it's a numpy array
-                    if isinstance(drop_mask, np.ndarray):
-                        drop_mask_tensor = torch.from_numpy(drop_mask).to(device=device, dtype=torch.bool)
-                    else:
-                        drop_mask_tensor = drop_mask.to(device=device, dtype=torch.bool)
-                    # Index using the global indices
-                    batch_drop_mask = drop_mask_tensor[global_indices]
-            
-            # Clip & accumulate gradients in memory-safe blocks
-            print('DEBUG: Entering clip_and_accum_grads')
-            curr_accumulated_gradients, scores = clip_and_accum_grads(
-                model=model,
-                X=curr_X, 
-                y=curr_y, 
-                optimizer=optimizer, 
-                criterion=criterion,
-                max_grad_norm=max_grad_norm, 
-                drop_mask=batch_drop_mask,
-                block_size=block_size,
-                scores=scores,
-                device=device,
-                global_indices=global_indices,
-                aug_mult=aug_mult, 
-                aug_fn=aug_fn,
-                is_gradient_space_canary=gradient_space_audit,
-                crafted_gradient=crafted_gradient,
-                model_type='in'  # or 'out' depending on your use case
-            )
-            print('DEBUG: Exiting clip_and_accum_grads')
+                init_wideresnet(model)
+        else:
+            model = copy.deepcopy(init_model).to(device)
+        
+        # Initialize ddp_info if not provided
+        if ddp_info is None:
+            ddp_info = {
+                'world_size': 1,
+                'rank': 0,
+                'local_rank': 0,
+                'device': device,
+                'is_main_process': True
+            }
+        
+        # Set model to training mode
+        model.train()
+        print(f"Model training mode: {model.training}")
 
-            # Apply the accumulated gradients to the model parameters
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    if name not in curr_accumulated_gradients:
-                        print(f"Warning: Parameter {name} not found in accumulated gradients")
-                        continue
-                        
-                    # Get the accumulated gradient and move to device
-                    grad = curr_accumulated_gradients[name].to(device)
-                    
-                    # Add DP noise if needed
-                    if noise_multiplier > 0 and max_grad_norm is not None:
-                        noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
-                        grad.add_(noise)
-                    
-                    # Update the parameter's gradient
-                    if param.grad is None:
-                        param.grad = grad.clone()
-                    else:
-                        param.grad.copy_(grad)
-            
-            # Take an optimization step
-            optimizer.step()
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.SGD(model.parameters(), lr=lr)
+
+        # Set DP noise
+        if epsilon is not None:
+            noise_multiplier = get_noise_multiplier(
+                target_epsilon=epsilon,
+                target_delta=delta,
+                sample_rate=batch_size / len(X),
+                epochs=n_epochs,
+                accountant='rdp'
+            )
+        else:
+            noise_multiplier = 0
+
+        drop_mask = None
+        assert block_size <= batch_size, "block_size must be smaller than batch_size"
+
+        if len(X.shape) > 2:
+            aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
+        else:
+            aug_fn = None
+
+        # Create Dataset + DataLoader
+        dataset = IndexedTensorDataset(X, y)
+        
+        # Initialize scores array and drop mask for the entire dataset
+        scores = np.zeros(len(dataset))
+        drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
+        
+        
+        sampler = torch.utils.data.RandomSampler(
+            dataset,
+            replacement=False,
+            num_samples=None,
+            generator=torch.Generator().manual_seed(seed)
+        )
+        
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            pin_memory=False,
+            num_workers=4,
+            persistent_workers=True,
+            drop_last=False,
+            generator=torch.Generator().manual_seed(seed)
+        )
+
+        assert loader is not None, "Loader is None"
+        
+        # Debug information
+        print("\n=== Debug Information ===")
+        print(f"Dataset length: {len(dataset)}")
+        print(f"Batch size: {batch_size}")
+        print(f"Number of batches: {len(loader)}")
+        print(f"Loader drop_last: {loader.drop_last}")
+        print(f"Loader sampler type: {type(loader.sampler).__name__}")
+        print(f"First few dataset items:")
+        for i in range(min(3, len(dataset))):
+            item = dataset[i]
+            print(f"  Item {i}: len={len(item)}, types={[type(x) for x in item]}")
+        print("=======================\n")
+        
+        for epoch in range(n_epochs):
+            epoch_start = time.time()
             optimizer.zero_grad()
-        
-        # Print epoch time
-        epoch_time = time.time() - epoch_start
-        print(f" | Time: {epoch_time:.2f}s")
-        
-        # Only perform defense-related operations if defense flag is True
-        if defense:
-            # Find top-k samples per class for gradient ascent
-            k = 5  # Number of top samples per class
-            top_k_grads = {}
-            
-            # Get unique classes
-            unique_classes = torch.unique(y).cpu()
-            
-            # For each class, find top-k samples with highest scores
-            for cls in unique_classes:
-                # Get indices of samples in this class
-                cls_indices = (y.cpu() == cls.item()).nonzero(as_tuple=True)[0]
-                if len(cls_indices) == 0:
-                    continue
+            print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
+
+            for batch_idx, batch in enumerate(loader):
+                assert batch is not None, "Batch is None"
+                assert batch_idx is not None, "Batch index is None"
+                # Handle batch structure - DataLoader might return a list of tuples or a tuple of tensors
+                if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                    curr_X, curr_y, global_indices = batch
+                elif isinstance(batch, (list, tuple)) and len(batch) == 2:
+                    # If we only got two items, the indices are probably the second item
+                    curr_X, curr_y = batch
+                    global_indices = torch.arange(
+                        batch_idx * batch_size,
+                        min((batch_idx + 1) * batch_size, len(dataset)),
+                        device=curr_X.device
+                    )
+                else:
+                    raise ValueError(f"Unexpected batch format: {type(batch)}")
                     
-                # Get scores for this class and ensure it's a PyTorch tensor
-                cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+                # Print batch info for debugging
+                print(f"\nBatch {batch_idx}:")
+                print(f"  X shape: {curr_X.shape}")
+                print(f"  y shape: {curr_y.shape}")
+                print(f"  global_indices shape: {global_indices.shape if hasattr(global_indices, 'shape') else 'N/A'}")
                 
-                # Get top-k indices within this class
-                _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
-                topk_global_indices = cls_indices[topk_indices]
+                curr_X = curr_X.to(device)
+                curr_y = curr_y.to(device)
+                global_indices = global_indices.to(device)
                 
-                # Compute gradients for these samples
-                model.zero_grad()
-                
-                # Get the samples and their targets
-                X_topk = X[topk_global_indices].to(device)
-                y_topk = y[topk_global_indices].to(device)
-                
-                # Get per-sample gradients using the utility function
-                ps_grads = get_per_sample_grads(model, X_topk, y_topk, criterion)
-                
-                # Store the gradients for later use
-                top_k_grads[cls] = ps_grads
-                
-                # Mark these samples as dropped
-                dropped_indices = topk_global_indices.cpu().numpy()
-                drop_mask[dropped_indices] = True
-                
-                # Check if canary (last index) was dropped
-                if X.shape[0] - 1 in dropped_indices and not hasattr(train_single_model, '_canary_dropped'):
-                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
-                    train_single_model._canary_dropped = True  # Mark that we've seen the canary drop
-        
-            # Perform gradient ascent step with learning rate (outside class loop)
-            if top_k_grads:
-                model.zero_grad()
-                
-                # Sum gradients across all classes
-                sum_grads = None
-                for grads in top_k_grads.values():
-                    if sum_grads is None:
-                        sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
-                    else:
-                        for k in grads:
-                            sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
-                
-                # Apply gradient ascent
-                for name, param in model.named_parameters():
-                    if name in sum_grads:
-                        if param.grad is None:
-                            param.grad = -lr * sum_grads[name]  # Negative for ascent
+                # Prepare batch_drop_mask if drop_mask is provided
+                batch_drop_mask = None
+                if drop_mask is not None:
+                    with torch.no_grad():
+                        # Convert to tensor if it's a numpy array
+                        if isinstance(drop_mask, np.ndarray):
+                            drop_mask_tensor = torch.from_numpy(drop_mask).to(device=device, dtype=torch.bool)
                         else:
-                            param.grad.add_(-lr * sum_grads[name])
+                            drop_mask_tensor = drop_mask.to(device=device, dtype=torch.bool)
+                        # Index using the global indices
+                        batch_drop_mask = drop_mask_tensor[global_indices]
                 
-                # Take the gradient ascent step
+                # Clip & accumulate gradients in memory-safe blocks
+                print('DEBUG: Entering clip_and_accum_grads')
+                curr_accumulated_gradients, scores = clip_and_accum_grads(
+                    model=model,
+                    X=curr_X, 
+                    y=curr_y, 
+                    optimizer=optimizer, 
+                    criterion=criterion,
+                    max_grad_norm=max_grad_norm, 
+                    drop_mask=batch_drop_mask,
+                    block_size=block_size,
+                    scores=scores,
+                    device=device,
+                    global_indices=global_indices,
+                    aug_mult=aug_mult, 
+                    aug_fn=aug_fn,
+                    is_gradient_space_canary=gradient_space_audit,
+                    crafted_gradient=crafted_gradient,
+                    model_type='in'  # or 'out' depending on your use case
+                )
+                print('DEBUG: Exiting clip_and_accum_grads')
+
+                # Apply the accumulated gradients to the model parameters
+                with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        if name not in curr_accumulated_gradients:
+                            print(f"Warning: Parameter {name} not found in accumulated gradients")
+                            continue
+                            
+                        # Get the accumulated gradient and move to device
+                        grad = curr_accumulated_gradients[name].to(device)
+                        
+                        # Add DP noise if needed
+                        if noise_multiplier > 0 and max_grad_norm is not None:
+                            noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                            grad.add_(noise)
+                        
+                        # Update the parameter's gradient
+                        if param.grad is None:
+                            param.grad = grad.clone()
+                        else:
+                            param.grad.copy_(grad)
+                
+                # Take an optimization step
                 optimizer.step()
                 optimizer.zero_grad()
-        
-            # Update scores for the next epoch
-            scores.fill(0)
+            
+            # Print epoch time
+            epoch_time = time.time() - epoch_start
+            print(f" | Time: {epoch_time:.2f}s")
+            
+            # Only perform defense-related operations if defense flag is True
+            if defense:
+                # Find top-k samples per class for gradient ascent
+                k = 5  # Number of top samples per class
+                top_k_grads = {}
+                
+                # Get unique classes
+                unique_classes = torch.unique(y).cpu()
+                
+                # For each class, find top-k samples with highest scores
+                for cls in unique_classes:
+                    # Get indices of samples in this class
+                    cls_indices = (y.cpu() == cls.item()).nonzero(as_tuple=True)[0]
+                    if len(cls_indices) == 0:
+                        continue
+                        
+                    # Get scores for this class and ensure it's a PyTorch tensor
+                    cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+                    
+                    # Get top-k indices within this class
+                    _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
+                    topk_global_indices = cls_indices[topk_indices]
+                    
+                    # Compute gradients for these samples
+                    model.zero_grad()
+                    
+                    # Get the samples and their targets
+                    X_topk = X[topk_global_indices].to(device)
+                    y_topk = y[topk_global_indices].to(device)
+                    
+                    # Get per-sample gradients using the utility function
+                    ps_grads = get_per_sample_grads(model, X_topk, y_topk, criterion)
+                    
+                    # Store the gradients for later use
+                    top_k_grads[cls] = ps_grads
+                    
+                    # Mark these samples as dropped
+                    dropped_indices = topk_global_indices.cpu().numpy()
+                    drop_mask[dropped_indices] = True
+                    
+                    # Check if canary (last index) was dropped
+                    if X.shape[0] - 1 in dropped_indices and not hasattr(train_single_model, '_canary_dropped'):
+                        print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
+                        train_single_model._canary_dropped = True  # Mark that we've seen the canary drop
+            
+                # Perform gradient ascent step with learning rate (outside class loop)
+                if top_k_grads:
+                    model.zero_grad()
+                    
+                    # Sum gradients across all classes
+                    sum_grads = None
+                    for grads in top_k_grads.values():
+                        if sum_grads is None:
+                            sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
+                        else:
+                            for k in grads:
+                                sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
+                    
+                    # Apply gradient ascent
+                    for name, param in model.named_parameters():
+                        if name in sum_grads:
+                            if param.grad is None:
+                                param.grad = -lr * sum_grads[name]  # Negative for ascent
+                            else:
+                                param.grad.add_(-lr * sum_grads[name])
+                    
+                    # Take the gradient ascent step
+                    optimizer.step()
+                    optimizer.zero_grad()
+            
+                # Update scores for the next epoch
+                scores.fill(0)
 
-    return model
+        return model
+    except Exception as e:
+        print(f"Error in train_single_model: {e}")
+        raise
     
 
 def train_model_wrapper(args, gpu_id=0):
@@ -635,8 +639,6 @@ def train_model_wrapper(args, gpu_id=0):
     Returns:
         Tuple of (trained_model, model_index)
     """
-    import os
-    import torch
     
     # Initialize distributed training
     rank = int(os.environ.get('RANK', 0))
@@ -647,6 +649,8 @@ def train_model_wrapper(args, gpu_id=0):
     device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
     
     try:
+        assert args is not None, "No arguments provided to train_model_wrapper"
+
         # Unpack arguments and add device information
         model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr, \
         block_size, batch_size, init_model, out_dim, aug_mult, gradient_space_audit, \
