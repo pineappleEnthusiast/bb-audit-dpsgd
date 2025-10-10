@@ -432,7 +432,7 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         dataset,
         batch_size=batch_size,
         sampler=sampler,
-        pin_memory=True,
+        pin_memory=False,
         num_workers=4,
         persistent_workers=True,
         drop_last=False,
