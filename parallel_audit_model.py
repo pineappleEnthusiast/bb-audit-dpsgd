@@ -468,6 +468,8 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, batch in enumerate(loader):
+            assert batch is not None, "Batch is None"
+            assert batch_idx is not None, "Batch index is None"
             # Handle batch structure - DataLoader might return a list of tuples or a tuple of tensors
             if isinstance(batch, (list, tuple)) and len(batch) == 3:
                 curr_X, curr_y, global_indices = batch

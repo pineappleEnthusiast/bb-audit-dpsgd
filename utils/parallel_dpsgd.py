@@ -11,39 +11,6 @@ import threading
 import copy
 import pdb
 
-def init_distributed(model_type=None):
-    """
-    Initialize distributed training environment.
-    
-    This should be called at the start of each process.
-    
-    Args:
-        model_type: Optional string identifying the model type ('in' or 'out')
-        
-    Returns:
-        Tuple of (rank, world_size, device)
-    """
-    # Initialize the process group
-    dist.init_process_group(backend="nccl")
-    
-    # Get rank and world size
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    
-    # Get local rank from environment (set by torchrun)
-    local_rank = int(os.environ["LOCAL_RANK"])
-    
-    # Set the device for this process
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
-    
-    # Print initialization info
-    model_prefix = f"[Model {model_type.upper()}] " if model_type else ""
-    print(f"{model_prefix}Process {rank}/{world_size} on {os.uname().nodename}, "
-          f"local_rank={local_rank}, device={device}")
-    
-    return rank, world_size, device
-
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
         return aug_fn(X), y
