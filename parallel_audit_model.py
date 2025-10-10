@@ -34,7 +34,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_CO
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads, init_distributed
+from utils.parallel_dpsgd import clip_and_accum_grads, get_per_sample_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd, choose_worstcase_label
 
@@ -386,12 +386,6 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
             'is_main_process': True
         }
     
-    # Wrap model in DDP if using multiple processes
-    if ddp_info['world_size'] > 1:
-        model = DDP(model, device_ids=[ddp_info['local_rank']], output_device=ddp_info['local_rank'])
-        if ddp_info.get('is_main_process', False):
-            print("Using DDP with", ddp_info['world_size'], "processes")
-    
     # Set model to training mode
     model.train()
     print(f"Model training mode: {model.training}")
@@ -426,13 +420,12 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
     scores = np.zeros(len(dataset))
     drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
     
-    # Create the DataLoader
-    # Only enable pin_memory if the data is on CPU
-    pin_memory = X.device.type == 'cpu'
     
     sampler = torch.utils.data.RandomSampler(
         dataset,
         replacement=False,
+        num_samples=None,
+        drop_last=False,
         generator=torch.Generator().manual_seed(seed)
     )
     
@@ -440,7 +433,7 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         dataset,
         batch_size=batch_size,
         sampler=sampler,
-        pin_memory=pin_memory,  # Only pin memory if data is on CPU
+        pin_memory=True,
         num_workers=4,
         persistent_workers=True,
         drop_last=False,
@@ -654,23 +647,8 @@ def train_model_wrapper(args, gpu_id=0):
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     
-    if world_size > 1:
-        try:
-            # Initialize distributed training using the provided function
-            rank, world_size, device = init_distributed()
-            print(f"[Rank {rank}/{world_size}] Initialized distributed training on device {device}")
-        except Exception as e:
-            print(f"[Rank {rank}] Error initializing distributed training: {e}")
-            # Fall back to single-GPU training if distributed init fails
-            world_size = 1
-            rank = 0
-            local_rank = 0
-            device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
-            print(f"Falling back to single-GPU training on device {device}")
-    
-    # Set CUDA device for this process
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    device = torch.device(f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu')
+    # Get CUDA device for this process
+    device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
     
     try:
         # Unpack arguments and add device information
@@ -683,10 +661,6 @@ def train_model_wrapper(args, gpu_id=0):
         y = y.to(device)
         X_target = X_target.to(device) if X_target is not None else None
         y_target = y_target.to(device) if y_target is not None else None
-        
-        # Clone init_model to avoid sharing weights between processes
-        if init_model is not None:
-            init_model = copy.deepcopy(init_model).to(device)
         
         # Get DDP info if available
         ddp_info = {
