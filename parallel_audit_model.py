@@ -324,7 +324,7 @@ def setup_ddp():
         }
 
 
-def cleanup_ddp():
+def cleanup():
     """Clean up distributed training."""
     if dist.is_initialized():
         dist.destroy_process_group()
