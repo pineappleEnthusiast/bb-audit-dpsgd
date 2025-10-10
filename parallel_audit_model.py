@@ -425,7 +425,6 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
         dataset,
         replacement=False,
         num_samples=None,
-        drop_last=False,
         generator=torch.Generator().manual_seed(seed)
     )
     
