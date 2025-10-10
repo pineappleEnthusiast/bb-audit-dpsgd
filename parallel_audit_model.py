@@ -482,12 +482,9 @@ def train_single_model(model_name, X, y, X_target, y_target, epsilon, delta, max
             print(f"  y shape: {curr_y.shape}")
             print(f"  global_indices shape: {global_indices.shape if hasattr(global_indices, 'shape') else 'N/A'}")
             
-            # Move batch to device
-            # Only use non_blocking if data is pinned (on CPU)
-            non_blocking = pin_memory
-            curr_X = curr_X.to(device, non_blocking=non_blocking)
-            curr_y = curr_y.to(device, non_blocking=non_blocking)
-            global_indices = global_indices.to(device, non_blocking=non_blocking)
+            curr_X = curr_X.to(device)
+            curr_y = curr_y.to(device)
+            global_indices = global_indices.to(device)
             
             # Prepare batch_drop_mask if drop_mask is provided
             batch_drop_mask = None
