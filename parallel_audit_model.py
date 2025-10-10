@@ -812,6 +812,8 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
 def main():
     # Parse command line arguments first
     parser = argparse.ArgumentParser()
+
+    setup_ddp()
     
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
@@ -825,16 +827,6 @@ def main():
     print(f"[Rank {rank}] CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"[Rank {rank}] CUDA device count: {torch.cuda.device_count()}")
-    
-    # Initialize distributed training if needed
-    if world_size > 1:
-        print(f'[Rank {rank}] Initializing distributed training...')
-        try:
-            init_distributed()  # Initialize distributed training
-            print(f'[Rank {rank}] Distributed training initialized successfully')
-        except Exception as e:
-            print(f'[Rank {rank}] Failed to initialize distributed training: {str(e)}')
-            raise
     
     # Set device for this process
     device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
