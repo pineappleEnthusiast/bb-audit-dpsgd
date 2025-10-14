@@ -396,7 +396,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     
     # Initialize scores array and drop mask for the entire dataset
     scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=bool)  # All samples active (not dropped) initially
+    drop_mask = np.zeros(len(dataset), dtype=np.int32)  # 0 means not dropped, 1 means dropped
     
     per_gpu_batch_size = batch_size // world_size if world_size > 1 else batch_size
     if rank == 0:
@@ -439,7 +439,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             sampler.set_epoch(epoch)
             
         optimizer.zero_grad()
-        print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
+        print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             # Move batch to device asynchronously
@@ -464,6 +464,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 is_gradient_space_canary=gradient_space_audit,
                 crafted_gradient=crafted_gradient
             )
+
+            drop_mask[drop_mask == 1] = 2
 
             # Apply the accumulated gradients to the model parameters
             with torch.no_grad():
@@ -529,6 +531,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                 # Get scores for this class and ensure it's a PyTorch tensor
                 cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+
+                # noise the scores
                 
                 # Get top-k indices within this class
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
@@ -549,37 +553,37 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 
                 # Mark these samples as dropped
                 dropped_indices = topk_global_indices.cpu().numpy()
-                drop_mask[dropped_indices] = True
+                drop_mask[dropped_indices] = 1
                 
                 # Check if canary (last index) was dropped
                 if X.shape[0] - 1 in dropped_indices and not hasattr(train_model, '_canary_dropped'):
                     print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
                     train_model._canary_dropped = True  # Mark that we've seen the canary drop
         
-            # Perform gradient ascent step with learning rate (outside class loop)
-            if top_k_grads:
-                model.zero_grad()
+            # # Perform gradient ascent step with learning rate (outside class loop)
+            # if top_k_grads:
+            #     model.zero_grad()
                 
-                # Sum gradients across all classes
-                sum_grads = None
-                for grads in top_k_grads.values():
-                    if sum_grads is None:
-                        sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
-                    else:
-                        for k in grads:
-                            sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
+            #     # Sum gradients across all classes
+            #     sum_grads = None
+            #     for grads in top_k_grads.values():
+            #         if sum_grads is None:
+            #             sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
+            #         else:
+            #             for k in grads:
+            #                 sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
                 
-                # Apply gradient ascent
-                for name, param in model.named_parameters():
-                    if name in sum_grads:
-                        if param.grad is None:
-                            param.grad = -lr * sum_grads[name]  # Negative for ascent
-                        else:
-                            param.grad.add_(-lr * sum_grads[name])
+            #     # Apply gradient ascent
+            #     for name, param in model.named_parameters():
+            #         if name in sum_grads:
+            #             if param.grad is None:
+            #                 param.grad = -lr * sum_grads[name]  # Negative for ascent
+            #             else:
+            #                 param.grad.add_(-lr * sum_grads[name])
                 
-                # Take the gradient ascent step
-                optimizer.step()
-                optimizer.zero_grad()
+            #     # Take the gradient ascent step
+            #     optimizer.step()
+            #     optimizer.zero_grad()
         
             # Update scores for the next epoch
             scores.fill(0)
