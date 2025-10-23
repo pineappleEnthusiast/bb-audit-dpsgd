@@ -42,6 +42,8 @@ import gc
 import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
 
+from train_o1_model import train_model as train_o1_model
+
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
@@ -765,6 +767,9 @@ def main():
         parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
         parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
 
+        # For metagradient canary training: O(1) model training type
+        parser.add_argument('--model_type', type=int, default=0, help='0 = legacy two-world audit, >0 = O(1) audit using that many canaries')
+
         args = parser.parse_args()
         if args.max_grad_norm == -1: 
             args.max_grad_norm = None
@@ -949,6 +954,69 @@ def main():
         seq_len = X_out.shape[1]
         target_X = torch.zeros((1, seq_len), dtype=torch.long)
         target_y = torch.full((1, seq_len), 9, dtype=torch.long)
+    elif args.target_type == 'metagradient_canary':
+        # setup canaries and optimization procedure
+        num_canaries = args.model_type
+        base_dataset = (X_out, y_out)
+
+        X_base, y_base = base_dataset
+
+        optimized_canaries = torch.randn(
+            (num_canaries, *X_out.shape[1:]), device=device, requires_grad=True
+        )
+        optimized_labels = torch.randint(
+            low=0, high=out_dim, size=(num_canaries,), device=device
+        )
+
+        small_model = Models['cnn'](X_base.shape, out_dim=out_dim).to(device)
+        meta_optimizer = torch.optim.SGD([optimized_canaries], lr=1e-2)
+        meta_steps = 10
+        inner_epochs = 1
+        batch_size = 128
+
+        # metagradient optimization loop
+        for step in range(meta_steps):
+            # random 50/50 split of canaries into CIN / COUT
+            perm = torch.randperm(num_canaries, device=device)
+            half = num_canaries // 2
+            C_in, y_inC = optimized_canaries[perm[:half]], optimized_labels[perm[:half]]
+            C_out, y_outC = optimized_canaries[perm[half:]], optimized_labels[perm[half:]]
+
+            # train model
+            train_subset_X = torch.cat([X_base, C_in.detach()])
+            train_subset_y = torch.cat([y_base, y_inC.detach()])
+            small_model.train()
+            opt = torch.optim.SGD(small_model.parameters(), lr=0.05, momentum=0.9)
+
+            loader = torch.utils.data.DataLoader(
+                torch.utils.data.TensorDataset(train_subset_X, train_subset_y),
+                batch_size=batch_size, shuffle=True
+            )
+            for epoch in range(inner_epochs):
+                for xb, yb in loader:
+                    xb, yb = xb.to(device), yb.to(device)
+                    opt.zero_grad()
+                    loss = F.cross_entropy(small_model(xb), yb)
+                    loss.backward()
+                    opt.step()
+
+            # compute loss gap
+            small_model.eval()
+            with torch.no_grad():
+                loss_in = F.cross_entropy(small_model(C_in), y_inC)
+                loss_out = F.cross_entropy(small_model(C_out), y_outC)
+            loss_gap = loss_in - loss_out
+
+            # compute gradients of loss_gap w.r.t. canary pixels
+            meta_optimizer.zero_grad()
+            loss_gap.backward()
+            meta_optimizer.step()
+
+            print(f"[Meta-Step {step+1}/{meta_steps}]  Loss Gap = {loss_gap.item():.4f}")
+
+        optimized_canaries = optimized_canaries.detach().cpu()
+        optimized_labels = optimized_labels.detach().cpu()
+
     elif os.path.exists(args.target_type):
         # pre-crafted target sample
         target_X = torch.from_numpy(np.load(args.target_type))
@@ -964,156 +1032,171 @@ def main():
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
     
     print('Training models')
-    # train M on D and D-
-    # resume from checkpoint
-    worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
-    models = {'in': [], 'out': []}
-    outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
+
+    if args.model_type > 0:
+        emp_eps = train_o1_model(
+            model_name=args.model_name,
+            base_dataset=(X_out, y_out),
+            optimized_canaries=optimized_canaries,
+            optimized_labels=optimized_labels,
+            init_model=init_model,
+            args=args
+        )
+
+        print(f'Theoretical eps: {args.epsilon}')
+        print(f'Empirical eps: {emp_eps}')
     
-    # Create the crafted gradient once if doing gradient space audit
-    crafted_grad = None
-    if args.target_type == 'gradient_space_canary':
-        print('Creating crafted gradient')
-        # Create a temporary model to generate the gradient
-        temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
-        if args.model_name == 'cnn':
-            xavier_init_model(temp_model)
-        else:
-            init_wideresnet(temp_model)
-        crafted_grad = craft_gradient(model=temp_model, device=device)
-        del temp_model  # Clean up the temporary model
-
-    for world in worlds:
-        # set dataset according to "world"
-        curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
-
-        # check how many reps initially completed
-        reps_completed = len(losses[world])
-
-        # Simple loop with print for progress
-        for rep in range(reps_completed, args.n_reps // 2):
-            if rank == 0:
-                print(f"Rep {rep + 1}/{(args.n_reps // 2)}")
-            
-            # Train model on all ranks
-            model = train_model(args.model_name, 
-                                            curr_X, 
-                                            curr_y, 
-                                            target_X, 
-                                            target_y, 
-                                            args.epsilon, 
-                                            args.delta,
-                                            args.max_grad_norm, 
-                                            args.n_epochs, 
-                                            args.lr, 
-                                            args.block_size, 
-                                            args.batch_size,
-                                            init_model=init_model,
-                                            out_dim=out_dim, 
-                                            defense=args.defense,
-                                            aug_mult=args.aug_mult,
-                                            rank=rank,
-                                            world_size=world_size,
-                                            gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
-                                            crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None)
-            
-            # Only rank 0 processes the rest
-            if rank == 0:
-                model.eval()
-                with torch.no_grad():
-                    # Ensure target data is on the same device as the model
-                    device = next(model.parameters()).device
-                    target_X_device = target_X.to(device)
-                    target_y_device = target_y.to(device)
-                    
-                    output = model(target_X_device)
-                    outputs[world].append(output[0].cpu().numpy())
-                    
-                    if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
-                        # Calculate parameter update
-                        final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
-                        init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
-                        
-                        # Calculate cosine similarity between crafted gradient and parameter update
-                        update = {n: final_params[n] - init_params[n] for n, p in final_params.items()}
-                        flat_crafted_grad = torch.cat([g.view(-1) for g in crafted_grad.values()])
-                        flat_update = torch.cat([p.view(-1) for p in update.values()])
-                        
-                        # Normalize vectors for cosine similarity
-                        flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-10)
-                        flat_update = flat_update / (flat_update.norm() + 1e-10)
-                        
-                        cos_sim = (flat_crafted_grad * flat_update).sum().item()
-                        losses[world].append(cos_sim)
-                    else:
-                        # Original loss calculation for non-gradient canary cases
-                        losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
-            
-            # Synchronize all processes after processing
-            if world_size > 1:
-                torch.distributed.barrier()
-            
-            # Save checkpoint after each rep (only rank 0)
-            if rank == 0:
-                save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
-                
-                # get test set accuracy from first 5 reps
-                if rep < 5 and world == 'in':
-                    if len(X_out) > 0:
-                        train_set_accs.append(test_model(model, X_in, y_in))
-                        print('Train set acc:', train_set_accs[-1])
-                    test_set_accs.append(test_model(model, X_test, y_test))
-                    print('Test set acc:', test_set_accs[-1])
-
-                # save checkpoint
-                save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
+    else:
+        # train M on D and D-
+        # resume from checkpoint
+        worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
+        models = {'in': [], 'out': []}
+        outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(out_folder, args.fit_world_only, args.resume)
         
+        # Create the crafted gradient once if doing gradient space audit
+        crafted_grad = None
+        if args.target_type == 'gradient_space_canary':
+            print('Creating crafted gradient')
+            # Create a temporary model to generate the gradient
+            temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+            if args.model_name == 'cnn':
+                xavier_init_model(temp_model)
+            else:
+                init_wideresnet(temp_model)
+            crafted_grad = craft_gradient(model=temp_model, device=device)
+            del temp_model  # Clean up the temporary model
+
+        for world in worlds:
+            # set dataset according to "world"
+            curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
+
+            # check how many reps initially completed
+            reps_completed = len(losses[world])
+
+            # Simple loop with print for progress
+            for rep in range(reps_completed, args.n_reps // 2):
+                if rank == 0:
+                    print(f"Rep {rep + 1}/{(args.n_reps // 2)}")
+                
+                # Train model on all ranks
+                model = train_model(args.model_name, 
+                                                curr_X, 
+                                                curr_y, 
+                                                target_X, 
+                                                target_y, 
+                                                args.epsilon, 
+                                                args.delta,
+                                                args.max_grad_norm, 
+                                                args.n_epochs, 
+                                                args.lr, 
+                                                args.block_size, 
+                                                args.batch_size,
+                                                init_model=init_model,
+                                                out_dim=out_dim, 
+                                                defense=args.defense,
+                                                aug_mult=args.aug_mult,
+                                                rank=rank,
+                                                world_size=world_size,
+                                                gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
+                                                crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None)
+                
+                # Only rank 0 processes the rest
+                if rank == 0:
+                    model.eval()
+                    with torch.no_grad():
+                        # Ensure target data is on the same device as the model
+                        device = next(model.parameters()).device
+                        target_X_device = target_X.to(device)
+                        target_y_device = target_y.to(device)
+                        
+                        output = model(target_X_device)
+                        outputs[world].append(output[0].cpu().numpy())
+                        
+                        if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
+                            # Calculate parameter update
+                            final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
+                            init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
+                            
+                            # Calculate cosine similarity between crafted gradient and parameter update
+                            update = {n: final_params[n] - init_params[n] for n, p in final_params.items()}
+                            flat_crafted_grad = torch.cat([g.view(-1) for g in crafted_grad.values()])
+                            flat_update = torch.cat([p.view(-1) for p in update.values()])
+                            
+                            # Normalize vectors for cosine similarity
+                            flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-10)
+                            flat_update = flat_update / (flat_update.norm() + 1e-10)
+                            
+                            cos_sim = (flat_crafted_grad * flat_update).sum().item()
+                            losses[world].append(cos_sim)
+                        else:
+                            # Original loss calculation for non-gradient canary cases
+                            losses[world].append(-nn.CrossEntropyLoss()(output, target_y_device).cpu().item())
+                
+                # Synchronize all processes after processing
+                if world_size > 1:
+                    torch.distributed.barrier()
+                
+                # Save checkpoint after each rep (only rank 0)
+                if rank == 0:
+                    save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
+                    
+                    # get test set accuracy from first 5 reps
+                    if rep < 5 and world == 'in':
+                        if len(X_out) > 0:
+                            train_set_accs.append(test_model(model, X_in, y_in))
+                            print('Train set acc:', train_set_accs[-1])
+                        test_set_accs.append(test_model(model, X_test, y_test))
+                        print('Test set acc:', test_set_accs[-1])
+
+                    # save checkpoint
+                    save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
+            
+            if rank == 0:
+                outputs[world] = np.array(outputs[world])
+
         if rank == 0:
-            outputs[world] = np.array(outputs[world])
+            if not args.fit_world_only:
+                def audit_canary(losses, args):        
+                    k = len(losses['in'])
+                    t_losses = {'in': None, 'out': None}
+                    holdout_losses = {'in': None, 'out': None}
 
-    if rank == 0:
-        if not args.fit_world_only:
-            def audit_canary(losses, args):        
-                k = len(losses['in'])
-                t_losses = {'in': None, 'out': None}
-                holdout_losses = {'in': None, 'out': None}
+                    if args.holdout_audit:
+                        k = len(losses['in']) // 2
+                    
+                    t_losses['in'] = losses['in'][:k]
+                    t_losses['out'] = losses['out'][:k]
+                    holdout_losses['in'] = losses['in'][k:]
+                    holdout_losses['out'] = losses['out'][k:]
 
-                if args.holdout_audit:
-                    k = len(losses['in']) // 2
+                    # calculate empirical epsilon using GDP
+                    mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
+                    mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
+
+                    max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
+
+                    if args.holdout_audit:
+                        emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
+                            [holdout_losses['in'], holdout_losses['out']]), 
+                            np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
+                            args.alpha, 
+                            args.delta, 
+                            max_t, 
+                            'GDP')
+                    
+                    return emp_eps_loss, mia_scores, mia_labels
                 
-                t_losses['in'] = losses['in'][:k]
-                t_losses['out'] = losses['out'][:k]
-                holdout_losses['in'] = losses['in'][k:]
-                holdout_losses['out'] = losses['out'][k:]
+                emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
 
-                # calculate empirical epsilon using GDP
-                mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
-                mia_labels = np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
-
-                max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
-
-                if args.holdout_audit:
-                    emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
-                        [holdout_losses['in'], holdout_losses['out']]), 
-                        np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
-                        args.alpha, 
-                        args.delta, 
-                        max_t, 
-                        'GDP')
-                
-                return emp_eps_loss, mia_scores, mia_labels
+                np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
+                np.save(f'{out_folder}/mia_scores.npy', mia_scores)
+                np.save(f'{out_folder}/mia_labels.npy', mia_labels)
             
-            emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
+                print(f'Theoretical eps: {args.epsilon}')
+                print(f'Empirical eps: {emp_eps_loss}')
 
-            np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
-            np.save(f'{out_folder}/mia_scores.npy', mia_scores)
-            np.save(f'{out_folder}/mia_labels.npy', mia_labels)
-        
-            print(f'Theoretical eps: {args.epsilon}')
-            print(f'Empirical eps: {emp_eps_loss}')
-
-        print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
-        print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
+            print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
+            print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
 
 if __name__ == '__main__':
     try:
