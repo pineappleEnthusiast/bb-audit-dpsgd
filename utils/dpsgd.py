@@ -265,6 +265,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         curr_y = y[idx_block]
         curr_global_indices = global_indices[idx_block]
 
+        curr_gradient_ascent_indices = gradient_ascent_indices[idx_block]
+
         print("curr_X.shape", curr_X.shape)
         print("curr_y.shape", curr_y.shape)
         print("curr_global_indices.shape", curr_global_indices.shape)
@@ -296,7 +298,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
         for name in accum_grad_block:
             print("accum_grad_block[name].shape", accum_grad_block[name].shape)
-            accum_grad_block[name][gradient_ascent_indices] *= -1
+            accum_grad_block[name][curr_gradient_ascent_indices] *= -1
 
         print("negated gradient ascent indices")
 
