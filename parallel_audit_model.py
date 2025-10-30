@@ -240,9 +240,9 @@ def init_wideresnet(model):
     This function is designed to be called in parallel.
     """
     # Unpack arguments
-    (model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr,
-     block_size, batch_size, init_model, out_dim, aug_mult, rank, world_size,
-     gradient_space_audit, crafted_gradient, defense, model_idx, device_id, seed) = model_args
+    # (model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, n_epochs, lr,
+    #  block_size, batch_size, init_model, out_dim, aug_mult, rank, world_size,
+    #  gradient_space_audit, crafted_gradient, defense, model_idx, device_id, seed) = model_args
     
     # Set device and random seed
     device = torch.device(f'cuda:{device_id}' if torch.cuda.is_available() else 'cpu')
