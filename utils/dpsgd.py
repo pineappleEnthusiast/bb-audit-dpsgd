@@ -218,18 +218,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None, drop_mask=None,
                          is_gradient_space_canary=False, crafted_gradient=None):
-    """
-    Clip and accumulate gradients in blocks with support for distributed training.
-    
-    Args:
-        X: Input tensor
-        y: Target tensor
-        global_indices: Global indices of the current batch in the full dataset
-        scores: Pre-allocated array to store scores for the entire dataset
-        world_size: Number of processes in distributed training
-        is_gradient_space_canary: Whether to apply gradient-space canary to the last sample
-    """
-
     print("clip_and_accum_grads")
 
     if scores is None:
@@ -247,6 +235,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     gradient_ascent_indices = torch.tensor(drop_mask, device=device)[active_indices] == 1
     print("gradient_ascent_indices shape", gradient_ascent_indices.shape)
 
+
     assert len(gradient_ascent_indices) == len(active_indices)
     print("assertion passed")
 
@@ -258,7 +247,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     global_indices = global_indices[active_indices]
     print("global_indices.shape", global_indices.shape)
     
-    # Check if this is the last batch and we should apply gradient space canary
+    # Check if the canary is in this batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
     print("apply_gradient_space_canary", apply_gradient_space_canary)
     
@@ -304,9 +293,9 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         )
 
         for name in accum_grad_block:
-            accum_grad_block[name][active_indices] *= -1
+            accum_grad_block[name][gradient_ascent_indices] *= -1
 
-        print("negated active indices")
+        print("negated gradient ascent indices")
 
         # Accumulate gradients
         if accum_grad is None:

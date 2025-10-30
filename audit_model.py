@@ -517,12 +517,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         if defense:
             # Find top-k samples per class for gradient ascent
             k = 5  # Number of top samples per class
-            top_k_grads = {}
-            
+                        
             # Get unique classes
             unique_classes = torch.unique(y).cpu()
-
-            # privatize scores
             
             # For each class, find top-k samples with highest scores
             for cls in unique_classes:
@@ -533,25 +530,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                 # Get scores for this class and ensure it's a PyTorch tensor
                 cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
-
-                # noise the scores
                 
                 # Get top-k indices within this class
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
                 topk_global_indices = cls_indices[topk_indices]
-                
-                # Compute gradients for these samples
-                model.zero_grad()
-                
-                # Get the samples and their targets
-                X_topk = X[topk_global_indices].to(device)
-                y_topk = y[topk_global_indices].to(device)
-                
-                # Get per-sample gradients using the utility function
-                ps_grads = get_per_sample_grads(model, X_topk, y_topk, criterion)
-                
-                # Store the gradients for later use
-                top_k_grads[cls] = ps_grads
                 
                 # Mark these samples as dropped
                 dropped_indices = topk_global_indices.cpu().numpy()
