@@ -123,7 +123,7 @@ def _get_per_sample_grads(model, X, y, criterion):
     return ps_grads
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
-                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None):
+                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None, curr_gradient_ascent_indices=None):
     """
     Add aug_fn and aug_mult params to support augmentation multiplicity outside vmap.
 
@@ -178,9 +178,6 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     else:
         ps_grads_clipped = ps_grads
 
-    with torch.no_grad():
-        accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-
     # last_layer_name = list(model.net.named_modules())[-1][0]
     # last_w_name = 'net.' + last_layer_name + '.weight'
     # last_b_name = 'net.' + last_layer_name + '.bias'
@@ -206,6 +203,13 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     #     # take norm of each class
     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
     #     all_norms[y == k] = centered_k_last_layer_norms
+
+        for name in ps_grads_clipped:
+            ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
+
+
+    with torch.no_grad():
+        accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
 
     return accum_grad_block, None, all_norms.cpu().numpy(), None
 
@@ -291,16 +295,9 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             device=device, aug_mult=aug_mult, aug_fn=aug_fn,
             is_gradient_space_canary=block_contains_canary,
             crafted_gradient=crafted_gradient,
-            canary_local_idx=last_sample_local_idx
+            canary_local_idx=last_sample_local_idx,
+            curr_gradient_ascent_indices=curr_gradient_ascent_indices
         )
-
-        print("gradient ascent indices shape", curr_gradient_ascent_indices.shape)
-
-        for name in accum_grad_block:
-            print("accum_grad_block[name].shape", accum_grad_block[name].shape)
-            accum_grad_block[name][curr_gradient_ascent_indices] *= -1
-
-        print("negated gradient ascent indices")
 
         # Accumulate gradients
         if accum_grad is None:
