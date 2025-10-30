@@ -248,14 +248,19 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     print("gradient_ascent_indices shape", gradient_ascent_indices.shape)
 
     assert len(gradient_ascent_indices) == len(active_indices)
+    print("assertion passed")
 
     # Filter out dropped samples
     X = X[active_indices]
+    print("X.shape", X.shape)
     y = y[active_indices]
+    print("y.shape", y.shape)
     global_indices = global_indices[active_indices]
+    print("global_indices.shape", global_indices.shape)
     
     # Check if this is the last batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
+    print("apply_gradient_space_canary", apply_gradient_space_canary)
     
     if len(X) == 0:
         return None, scores
