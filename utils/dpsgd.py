@@ -292,7 +292,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             canary_local_idx=last_sample_local_idx
         )
 
+        print("gradient ascent indices shape", gradient_ascent_indices.shape)
+
         for name in accum_grad_block:
+            print("accum_grad_block[name].shape", accum_grad_block[name].shape)
             accum_grad_block[name][gradient_ascent_indices] *= -1
 
         print("negated gradient ascent indices")
