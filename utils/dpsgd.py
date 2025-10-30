@@ -275,6 +275,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         curr_X = X[idx_block]
         curr_y = y[idx_block]
         curr_global_indices = global_indices[idx_block]
+
+        print("curr_X.shape", curr_X.shape)
+        print("curr_y.shape", curr_y.shape)
+        print("curr_global_indices.shape", curr_global_indices.shape)
         
         # Skip if no samples in this block
         if len(curr_X) == 0:
@@ -282,6 +286,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             
         # Check if this block contains the last sample (canary)
         block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
+        print("block_contains_canary", block_contains_canary)
 
         # Get the local index of the last sample in the current block
         if block_contains_canary:
@@ -297,6 +302,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             crafted_gradient=crafted_gradient,
             canary_local_idx=last_sample_local_idx
         )
+        print("accum_grad_block", accum_grad_block)
 
         for name in accum_grad_block:
             accum_grad_block[name][active_indices] *= -1
