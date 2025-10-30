@@ -229,12 +229,14 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         world_size: Number of processes in distributed training
         is_gradient_space_canary: Whether to apply gradient-space canary to the last sample
     """
+
+    print("clip_and_accum_grads")
+
     if scores is None:
         raise ValueError("scores array must be provided")
     
     if drop_mask is not None and len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
-    
     
     # Get indices of non-dropped samples
     active_indices = (torch.tensor(drop_mask, device=device) != 2)

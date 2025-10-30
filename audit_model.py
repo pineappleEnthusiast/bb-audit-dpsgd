@@ -445,6 +445,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             # Move batch to device asynchronously
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
+
+            print(f"Batch {batch_idx}")
             
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, scores = clip_and_accum_grads(
