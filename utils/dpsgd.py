@@ -302,10 +302,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             crafted_gradient=crafted_gradient,
             canary_local_idx=last_sample_local_idx
         )
-        print("accum_grad_block", accum_grad_block)
 
         for name in accum_grad_block:
             accum_grad_block[name][active_indices] *= -1
+
+        print("negated active indices")
 
         # Accumulate gradients
         if accum_grad is None:
@@ -314,9 +315,13 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             with torch.no_grad():
                 for name in accum_grad:
                     accum_grad[name] += accum_grad_block[name]
+
+        print("accumulated gradients")
         
         # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
+
+        print("updated scores")
 
     # idx_blocks is relative to current chunk
     # we want to map each chunk to global indices
