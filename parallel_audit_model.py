@@ -245,47 +245,47 @@ def init_wideresnet(model):
     #  gradient_space_audit, crafted_gradient, defense, model_idx, device_id, seed) = model_args
     
     # Set device and random seed
-    device = torch.device(f'cuda:{device_id}' if torch.cuda.is_available() else 'cpu')
-    torch.cuda.set_device(device)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    # device = torch.device(f'cuda:{device_id}' if torch.cuda.is_available() else 'cpu')
+    # torch.cuda.set_device(device)
+    # torch.manual_seed(seed)
+    # np.random.seed(seed)
     
-    # Create a copy of the initial model if provided
-    if init_model is not None:
-        model = Models[model_name](X.shape, out_dim=out_dim).to(device)
-        model.load_state_dict(init_model.state_dict())
-    else:
-        model = Models[model_name](X.shape, out_dim=out_dim).to(device)
-        if model_name == 'cnn':
-            xavier_init_model(model)
-        else:
-            init_wideresnet(model)
+    # # Create a copy of the initial model if provided
+    # if init_model is not None:
+    #     model = Models[model_name](X.shape, out_dim=out_dim).to(device)
+    #     model.load_state_dict(init_model.state_dict())
+    # else:
+    #     model = Models[model_name](X.shape, out_dim=out_dim).to(device)
+    #     if model_name == 'cnn':
+    #         xavier_init_model(model)
+    #     else:
+    #         init_wideresnet(model)
     
-    # Train the model
-    model = train_model(
-        model_name=model_name,
-        X=X,
-        y=y,
-        X_target=X_target,
-        y_target=y_target,
-        epsilon=epsilon,
-        delta=delta,
-        max_grad_norm=max_grad_norm,
-        n_epochs=n_epochs,
-        lr=lr,
-        block_size=block_size,
-        batch_size=batch_size,
-        init_model=model,  # Use the initialized model
-        out_dim=out_dim,
-        aug_mult=aug_mult,
-        rank=0,  # Single GPU training
-        world_size=1,  # Single process
-        gradient_space_audit=gradient_space_audit,
-        crafted_gradient=crafted_gradient,
-        defense=defense
-    )
+    # # Train the model
+    # model = train_model(
+    #     model_name=model_name,
+    #     X=X,
+    #     y=y,
+    #     X_target=X_target,
+    #     y_target=y_target,
+    #     epsilon=epsilon,
+    #     delta=delta,
+    #     max_grad_norm=max_grad_norm,
+    #     n_epochs=n_epochs,
+    #     lr=lr,
+    #     block_size=block_size,
+    #     batch_size=batch_size,
+    #     init_model=model,  # Use the initialized model
+    #     out_dim=out_dim,
+    #     aug_mult=aug_mult,
+    #     rank=0,  # Single GPU training
+    #     world_size=1,  # Single process
+    #     gradient_space_audit=gradient_space_audit,
+    #     crafted_gradient=crafted_gradient,
+    #     defense=defense
+    # )
     
-    return model, model_idx
+    # return model, model_idx
 
 def setup_ddp():
     """Initialize distributed training."""
