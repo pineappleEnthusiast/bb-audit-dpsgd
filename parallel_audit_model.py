@@ -340,36 +340,39 @@ def test_model(model, X, y, batch_size=128):
     return acc / total if total > 0 else 0.0
 
 
-def save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only):
-    """Save checkpoint"""
+def save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only, rank=0):
+    """Save checkpoint - each rank saves to its own file"""
     os.makedirs(out_folder, exist_ok=True)
 
+    # Save with rank suffix
+    suffix = f'_rank{rank}' if rank > 0 else ''
+    
     random_state = {
         'np': np.random.get_state(),
         'torch': torch.random.get_rng_state()
     }
-    dill.dump(random_state, open(f'{out_folder}/random_state.dill', 'wb'))
+    dill.dump(random_state, open(f'{out_folder}/random_state{suffix}.dill', 'wb'))
 
     if fit_world_only:
-        np.save(f'{out_folder}/outputs_{fit_world_only}.npy', outputs[fit_world_only])
-        np.save(f'{out_folder}/losses_{fit_world_only}.npy', losses[fit_world_only])
-        np.save(f'{out_folder}/all_losses_{fit_world_only}.npy', all_losses[fit_world_only])
+        np.save(f'{out_folder}/outputs_{fit_world_only}{suffix}.npy', outputs[fit_world_only])
+        np.save(f'{out_folder}/losses_{fit_world_only}{suffix}.npy', losses[fit_world_only])
+        np.save(f'{out_folder}/all_losses_{fit_world_only}{suffix}.npy', all_losses[fit_world_only])
 
         if fit_world_only == 'out':
-            np.save(f'{out_folder}/train_set_accs.npy', train_set_accs)
-            np.save(f'{out_folder}/test_set_accs.npy', test_set_accs)
+            np.save(f'{out_folder}/train_set_accs{suffix}.npy', train_set_accs)
+            np.save(f'{out_folder}/test_set_accs{suffix}.npy', test_set_accs)
     else:
-        np.save(f'{out_folder}/outputs_in.npy', outputs['in'])
-        np.save(f'{out_folder}/outputs_out.npy', outputs['out'])
-        np.save(f'{out_folder}/train_set_accs.npy', train_set_accs)
-        np.save(f'{out_folder}/test_set_accs.npy', test_set_accs)
-        np.save(f'{out_folder}/losses_in.npy', losses['in'])
-        np.save(f'{out_folder}/losses_out.npy', losses['out'])
-        np.save(f'{out_folder}/all_losses_in.npy', all_losses['in'])
-        np.save(f'{out_folder}/all_losses_out.npy', all_losses['out'])
+        np.save(f'{out_folder}/outputs_in{suffix}.npy', outputs['in'])
+        np.save(f'{out_folder}/outputs_out{suffix}.npy', outputs['out'])
+        np.save(f'{out_folder}/train_set_accs{suffix}.npy', train_set_accs)
+        np.save(f'{out_folder}/test_set_accs{suffix}.npy', test_set_accs)
+        np.save(f'{out_folder}/losses_in{suffix}.npy', losses['in'])
+        np.save(f'{out_folder}/losses_out{suffix}.npy', losses['out'])
+        np.save(f'{out_folder}/all_losses_in{suffix}.npy', all_losses['in'])
+        np.save(f'{out_folder}/all_losses_out{suffix}.npy', all_losses['out'])
 
 
-def resume_checkpoint(out_folder, fit_world_only, resume):
+def resume_checkpoint(out_folder, fit_world_only, resume, rank=0):
     """Load checkpoint if resume is set to True and previous checkpoint exists"""
     outputs = {'out': [], 'in': []}
     losses = {'out': [], 'in': []}
@@ -377,31 +380,36 @@ def resume_checkpoint(out_folder, fit_world_only, resume):
     train_set_accs = []
     test_set_accs = []
 
+    suffix = f'_rank{rank}' if rank > 0 else ''
+
     if os.path.exists(out_folder) and resume:
-        random_state = dill.load(open(f'{out_folder}/random_state.dill', 'rb'))
-        np.random.set_state(random_state['np'])
-        torch.random.set_rng_state(random_state['torch'])
+        try:
+            random_state = dill.load(open(f'{out_folder}/random_state{suffix}.dill', 'rb'))
+            np.random.set_state(random_state['np'])
+            torch.random.set_rng_state(random_state['torch'])
 
-        if fit_world_only:
-            outputs[fit_world_only] = np.load(f'{out_folder}/outputs_{fit_world_only}.npy').tolist()
-            losses[fit_world_only] = np.load(f'{out_folder}/losses_{fit_world_only}.npy').tolist()
-            all_losses[fit_world_only] = np.load(f'{out_folder}/all_losses_{fit_world_only}.npy').tolist()
+            if fit_world_only:
+                outputs[fit_world_only] = np.load(f'{out_folder}/outputs_{fit_world_only}{suffix}.npy').tolist()
+                losses[fit_world_only] = np.load(f'{out_folder}/losses_{fit_world_only}{suffix}.npy').tolist()
+                all_losses[fit_world_only] = np.load(f'{out_folder}/all_losses_{fit_world_only}{suffix}.npy').tolist()
 
-            if fit_world_only == 'out':
-                train_set_accs = np.load(f'{out_folder}/train_set_accs.npy').tolist()
-                test_set_accs = np.load(f'{out_folder}/test_set_accs.npy').tolist()
-        else:
-            outputs['in'] = np.load(f'{out_folder}/outputs_in.npy').tolist()
-            outputs['out'] = np.load(f'{out_folder}/outputs_out.npy').tolist()
-            train_set_accs = np.load(f'{out_folder}/train_set_accs.npy').tolist()
-            test_set_accs = np.load(f'{out_folder}/test_set_accs.npy').tolist()
-            losses['in'] = np.load(f'{out_folder}/losses_in.npy').tolist()
-            losses['out'] = np.load(f'{out_folder}/losses_out.npy').tolist()
-            all_losses['in'] = np.load(f'{out_folder}/all_losses_in.npy').tolist()
-            all_losses['out'] = np.load(f'{out_folder}/all_losses_out.npy').tolist()
+                if fit_world_only == 'out':
+                    train_set_accs = np.load(f'{out_folder}/train_set_accs{suffix}.npy').tolist()
+                    test_set_accs = np.load(f'{out_folder}/test_set_accs{suffix}.npy').tolist()
+            else:
+                outputs['in'] = np.load(f'{out_folder}/outputs_in{suffix}.npy').tolist()
+                outputs['out'] = np.load(f'{out_folder}/outputs_out{suffix}.npy').tolist()
+                train_set_accs = np.load(f'{out_folder}/train_set_accs{suffix}.npy').tolist()
+                test_set_accs = np.load(f'{out_folder}/test_set_accs{suffix}.npy').tolist()
+                losses['in'] = np.load(f'{out_folder}/losses_in{suffix}.npy').tolist()
+                losses['out'] = np.load(f'{out_folder}/losses_out{suffix}.npy').tolist()
+                all_losses['in'] = np.load(f'{out_folder}/all_losses_in{suffix}.npy').tolist()
+                all_losses['out'] = np.load(f'{out_folder}/all_losses_out{suffix}.npy').tolist()
+        except FileNotFoundError:
+            print(f"[Rank {rank}] No checkpoint found, starting fresh")
     else:
         os.makedirs(out_folder, exist_ok=True)
-        save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only)
+        save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only, rank)
     
     return outputs, losses, all_losses, train_set_accs, test_set_accs
 
@@ -418,24 +426,21 @@ def distribute_reps(n_reps, world_size):
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     
-    # Get distributed training info from environment
+    # Get rank info from environment (but won't use NCCL/distributed ops)
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     rank = int(os.environ.get('RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     
     print(f'[Rank {rank}] Starting with world_size={world_size}, local_rank={local_rank}')
     
-    # Initialize distributed training if needed
-    if world_size > 1:
-        print(f'[Rank {rank}] Initializing distributed training...')
-        try:
-            setup(rank, world_size, local_rank)
-        except Exception as e:
-            print(f'[Rank {rank}] Failed to initialize: {str(e)}')
-            raise
-    
-    device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
-    torch.cuda.set_device(device)
+    # Set device for this process - NO distributed initialization
+    if torch.cuda.is_available():
+        device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(device)
+        print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
+    else:
+        device = torch.device('cpu')
+        print(f'[Rank {rank}] CUDA not available, using CPU')
     
     # Parse arguments
     parser.add_argument('--local_rank', type=int, default=0)
@@ -547,22 +552,11 @@ def main():
     if rank == 0:
         print('Training models')
     
-    # Resume checkpoint (only rank 0 loads, then broadcasts)
+    # Resume checkpoint - each rank loads its own
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
     
-    if rank == 0:
-        outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(
-            out_folder, args.fit_world_only, args.resume)
-    else:
-        outputs = {'out': [], 'in': []}
-        losses = {'out': [], 'in': []}
-        all_losses = {'in': [], 'out': []}
-        train_set_accs = []
-        test_set_accs = []
-    
-    # Synchronize checkpoint state across ranks
-    if world_size > 1:
-        dist.barrier()
+    outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(
+        out_folder, args.fit_world_only, args.resume, rank)
     
     # Create crafted gradient if needed
     crafted_grad = None
@@ -639,59 +633,64 @@ def main():
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
-                # Store locally
-                local_output = output[0].cpu().numpy()
-                local_loss = loss
+                # Store locally - no gathering needed
+                outputs[world].append(output[0].cpu().numpy())
+                losses[world].append(loss)
             
-            # Gather results to rank 0
-            if world_size > 1:
-                # Create lists to gather all results
-                if rank == 0:
-                    gathered_outputs = [None] * world_size
-                    gathered_losses = [None] * world_size
-                else:
-                    gathered_outputs = None
-                    gathered_losses = None
-                
-                # Gather outputs and losses
-                dist.gather_object(local_output, gathered_outputs if rank == 0 else None, dst=0)
-                dist.gather_object(local_loss, gathered_losses if rank == 0 else None, dst=0)
-                
-                # Rank 0 processes gathered results
-                if rank == 0:
-                    for i, gpu_rank in enumerate(range(world_size)):
-                        if gathered_outputs[i] is not None:
-                            outputs[world].append(gathered_outputs[i])
-                            losses[world].append(gathered_losses[i])
-            else:
-                # Single GPU - just append
-                outputs[world].append(local_output)
-                losses[world].append(local_loss)
+            # Each rank saves its own checkpoint
+            save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only, rank)
             
-            # Only rank 0 saves checkpoints and computes accuracies
-            if rank == 0:
-                # Save checkpoint after each rep
-                save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
-                
-                # Get test set accuracy from first 5 reps
-                if rep < 5 and world == 'in':
-                    if len(X_out) > 0:
-                        train_set_accs.append(test_model(model, X_in, y_in))
-                        print('Train set acc:', train_set_accs[-1])
-                    test_set_accs.append(test_model(model, X_test, y_test))
-                    print('Test set acc:', test_set_accs[-1])
-                    save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only)
-            
-            # Synchronize before next rep
-            if world_size > 1:
-                dist.barrier()
+            # Get test set accuracy from first 5 reps
+            if rep < 5 and world == 'in':
+                if len(X_out) > 0:
+                    train_set_accs.append(test_model(model, X_in, y_in))
+                    print(f'[Rank {rank}] Train set acc:', train_set_accs[-1])
+                test_set_accs.append(test_model(model, X_test, y_test))
+                print(f'[Rank {rank}] Test set acc:', test_set_accs[-1])
+                save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only, rank)
         
         # After all reps in this world
-        if rank == 0:
-            outputs[world] = np.array(outputs[world])
+        outputs[world] = np.array(outputs[world])
 
-    # Final audit (only rank 0)
+    # Final audit - only rank 0 needs to combine results from all ranks
     if rank == 0:
+        print("\n[Rank 0] Combining results from all ranks...")
+        
+        # Load results from all rank files
+        combined_outputs = {'in': [], 'out': []}
+        combined_losses = {'in': [], 'out': []}
+        combined_train_accs = []
+        combined_test_accs = []
+        
+        for r in range(world_size):
+            suffix = f'_rank{r}' if r > 0 else ''
+            try:
+                if not args.fit_world_only:
+                    combined_outputs['in'].extend(np.load(f'{out_folder}/outputs_in{suffix}.npy'))
+                    combined_outputs['out'].extend(np.load(f'{out_folder}/outputs_out{suffix}.npy'))
+                    combined_losses['in'].extend(np.load(f'{out_folder}/losses_in{suffix}.npy'))
+                    combined_losses['out'].extend(np.load(f'{out_folder}/losses_out{suffix}.npy'))
+                    if os.path.exists(f'{out_folder}/train_set_accs{suffix}.npy'):
+                        combined_train_accs.extend(np.load(f'{out_folder}/train_set_accs{suffix}.npy'))
+                    if os.path.exists(f'{out_folder}/test_set_accs{suffix}.npy'):
+                        combined_test_accs.extend(np.load(f'{out_folder}/test_set_accs{suffix}.npy'))
+                else:
+                    combined_outputs[args.fit_world_only].extend(np.load(f'{out_folder}/outputs_{args.fit_world_only}{suffix}.npy'))
+                    combined_losses[args.fit_world_only].extend(np.load(f'{out_folder}/losses_{args.fit_world_only}{suffix}.npy'))
+            except FileNotFoundError:
+                print(f"Warning: Could not find results for rank {r}")
+        
+        # Save combined results
+        if not args.fit_world_only:
+            np.save(f'{out_folder}/outputs_in.npy', combined_outputs['in'])
+            np.save(f'{out_folder}/outputs_out.npy', combined_outputs['out'])
+            np.save(f'{out_folder}/losses_in.npy', combined_losses['in'])
+            np.save(f'{out_folder}/losses_out.npy', combined_losses['out'])
+            if combined_train_accs:
+                np.save(f'{out_folder}/train_set_accs.npy', combined_train_accs)
+            if combined_test_accs:
+                np.save(f'{out_folder}/test_set_accs.npy', combined_test_accs)
+        
         if not args.fit_world_only:
             def audit_canary(losses, args):        
                 k = len(losses['in'])
@@ -723,7 +722,7 @@ def main():
                 
                 return emp_eps_loss, mia_scores, mia_labels
             
-            emp_eps_loss, mia_scores, mia_labels = audit_canary(losses, args)
+            emp_eps_loss, mia_scores, mia_labels = audit_canary(combined_losses, args)
 
             np.save(f'{out_folder}/emp_eps_loss.npy', [emp_eps_loss])
             np.save(f'{out_folder}/mia_scores.npy', mia_scores)
@@ -732,12 +731,14 @@ def main():
             print(f'Theoretical eps: {args.epsilon}')
             print(f'Empirical eps: {emp_eps_loss}')
 
-        print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
-        print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
+        if combined_train_accs:
+            print(f'Train set accuracy: {np.mean(combined_train_accs) * 100:.3f}%')
+        if combined_test_accs:
+            print(f'Test set accuracy: {np.mean(combined_test_accs) * 100:.3f}%')
+    
+    print(f"[Rank {rank}] Finished!")
 
-    # Cleanup
-    if world_size > 1:
-        cleanup()
+    # No cleanup needed - no distributed operations
 
 
 if __name__ == '__main__':
@@ -749,6 +750,3 @@ if __name__ == '__main__':
         print(f'\nError in main: {str(e)}')
         import traceback
         traceback.print_exc()
-    finally:
-        if dist.is_initialized():
-            cleanup()
