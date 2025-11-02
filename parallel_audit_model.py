@@ -426,21 +426,38 @@ def distribute_reps(n_reps, world_size):
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     
-    # Get rank info from environment (but won't use NCCL/distributed ops)
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    rank = int(os.environ.get('RANK', 0))
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    # # Get rank info from environment (but won't use NCCL/distributed ops)
+    # local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    # rank = int(os.environ.get('RANK', 0))
+    # world_size = int(os.environ.get('WORLD_SIZE', 1))
     
-    print(f'[Rank {rank}] Starting with world_size={world_size}, local_rank={local_rank}')
+    # print(f'[Rank {rank}] Starting with world_size={world_size}, local_rank={local_rank}')
     
-    # Set device for this process - NO distributed initialization
-    if torch.cuda.is_available():
-        device = torch.device(f'cuda:{local_rank}')
-        torch.cuda.set_device(device)
-        print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
-    else:
-        device = torch.device('cpu')
-        print(f'[Rank {rank}] CUDA not available, using CPU')
+    # # Set device for this process - NO distributed initialization
+    # if torch.cuda.is_available():
+    #     device = torch.device(f'cuda:{local_rank}')
+    #     torch.cuda.set_device(device)
+    #     print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
+    # else:
+    #     device = torch.device('cpu')
+    #     print(f'[Rank {rank}] CUDA not available, using CPU')
+
+
+
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://'
+    )
+    
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+    
+    # Get local rank (GPU on this node)
+    local_rank = args.local_rank
+    if 'LOCAL_RANK' in os.environ:
+        local_rank = int(os.environ['LOCAL_RANK'])
+    
+    torch.cuda.set_device(local_rank)
     
     # Parse arguments
     parser.add_argument('--local_rank', type=int, default=0)
@@ -740,7 +757,7 @@ def main():
     
     print(f"[Rank {rank}] Finished!")
 
-    # No cleanup needed - no distributed operations
+    dist.destroy_process_group()
 
 
 if __name__ == '__main__':
