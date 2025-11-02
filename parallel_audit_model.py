@@ -449,13 +449,9 @@ def main():
         init_method='env://'
     )
     
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()
-    
-    # Get local rank (GPU on this node)
-    local_rank = args.local_rank
-    if 'LOCAL_RANK' in os.environ:
-        local_rank = int(os.environ['LOCAL_RANK'])
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    rank = int(os.environ.get('RANK', 0))
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
     
     torch.cuda.set_device(local_rank)
     
