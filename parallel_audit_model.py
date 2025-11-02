@@ -149,45 +149,9 @@ def init_wideresnet(model):
             nn.init.constant_(m.bias, 0)
 
 
-def setup(rank, world_size, local_rank):
-    """Initialize the distributed environment."""
-    if dist.is_initialized():
-        print(f'[Rank {rank}] Process group already initialized')
-        return
-    
-    print(f'[Rank {rank}] Initializing process group...')
-    
-    try:
-        dist.init_process_group(
-            backend='nccl',
-            init_method='env://',
-            rank=rank,
-            world_size=world_size,
-            timeout=datetime.timedelta(seconds=60)
-        )
-        print(f'[Rank {rank}] Process group initialized successfully')
-    except Exception as e:
-        print(f'[Rank {rank}] Error initializing process group: {str(e)}')
-        raise
-    
-    try:
-        torch.cuda.set_device(local_rank)
-        print(f'[Rank {rank}] CUDA device set to {torch.cuda.get_device_name(local_rank)}')
-    except Exception as e:
-        print(f'[Rank {rank}] Error setting CUDA device: {str(e)}')
-        raise
-
-
 def cleanup():
-    try:
-        if dist.is_initialized():
-            if dist.get_world_size() > 1:
-                torch.cuda.synchronize()
-                dist.barrier()
-            dist.destroy_process_group()
-            print(f'[Rank {dist.get_rank()}] Successfully cleaned up process group')
-    except Exception as e:
-        print(f'Error during cleanup: {str(e)}')
+    """Cleanup - no distributed operations needed"""
+    pass
 
 
 class IndexedTensorDataset(Dataset):
