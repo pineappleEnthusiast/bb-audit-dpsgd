@@ -205,8 +205,6 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     #     all_norms[y == k] = centered_k_last_layer_norms
 
         for name in ps_grads_clipped:
-            print("ps_grads_clipped[name].shape", ps_grads_clipped[name].shape)
-            print("curr_gradient_ascent_indices.shape", curr_gradient_ascent_indices.shape)
             ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
 
 
