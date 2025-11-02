@@ -224,35 +224,26 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None, drop_mask=None,
                          is_gradient_space_canary=False, crafted_gradient=None):
-    print("clip_and_accum_grads")
 
     if scores is None:
         raise ValueError("scores array must be provided")
     
     if drop_mask is not None and len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
-
-    print("drop_mask shape", drop_mask.shape)
     
     # Get indices of non-dropped samples
     # TODO: bug is here
     active_indices = (torch.tensor(drop_mask, device=device) != 2)
-    print("active_indices shape", active_indices.shape)
 
     gradient_ascent_indices = torch.tensor(drop_mask, device=device)[active_indices] == 1
-    print("gradient_ascent_indices shape", gradient_ascent_indices.shape)
 
     # Filter out dropped samples
     X = X[active_indices]
-    print("X.shape", X.shape)
     y = y[active_indices]
-    print("y.shape", y.shape)
     global_indices = global_indices[active_indices]
-    print("global_indices.shape", global_indices.shape)
     
     # Check if the canary is in this batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
-    print("apply_gradient_space_canary", apply_gradient_space_canary)
     
     if len(X) == 0:
         return None, scores
@@ -269,10 +260,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         curr_global_indices = global_indices[idx_block]
 
         curr_gradient_ascent_indices = gradient_ascent_indices[idx_block]
-
-        print("curr_X.shape", curr_X.shape)
-        print("curr_y.shape", curr_y.shape)
-        print("curr_global_indices.shape", curr_global_indices.shape)
         
         # Skip if no samples in this block
         if len(curr_X) == 0:
@@ -280,7 +267,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             
         # Check if this block contains the last sample (canary)
         block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
-        print("block_contains_canary", block_contains_canary)
 
         # Get the local index of the last sample in the current block
         if block_contains_canary:
@@ -305,13 +291,9 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             with torch.no_grad():
                 for name in accum_grad:
                     accum_grad[name] += accum_grad_block[name]
-
-        print("accumulated gradients")
         
         # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
-
-        print("updated scores")
 
     # idx_blocks is relative to current chunk
     # we want to map each chunk to global indices
