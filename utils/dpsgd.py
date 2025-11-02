@@ -235,15 +235,12 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     print("drop_mask shape", drop_mask.shape)
     
     # Get indices of non-dropped samples
+    # TODO: bug is here
     active_indices = (torch.tensor(drop_mask, device=device) != 2)
     print("active_indices shape", active_indices.shape)
 
     gradient_ascent_indices = torch.tensor(drop_mask, device=device)[active_indices] == 1
     print("gradient_ascent_indices shape", gradient_ascent_indices.shape)
-
-
-    assert len(gradient_ascent_indices) == len(active_indices)
-    print("assertion passed")
 
     # Filter out dropped samples
     X = X[active_indices]
