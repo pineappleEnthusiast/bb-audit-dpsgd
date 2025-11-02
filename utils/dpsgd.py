@@ -303,11 +303,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     #     print('Canary is getting dumped')
     #     exit()
 
-    # Sum gradients across all processes
-    if world_size > 1 and accum_grad is not None:
-            # Synchronize gradients
-            for name in accum_grad:
-                dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
+    # # Sum gradients across all processes
+    # if world_size > 1 and accum_grad is not None:
+    #         # Synchronize gradients
+    #         for name in accum_grad:
+    #             dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
     
     return accum_grad, scores
 
