@@ -453,7 +453,13 @@ def main():
     rank = int(os.environ.get('RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     
-    torch.cuda.set_device(local_rank)
+    if torch.cuda.is_available():
+        device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(device)
+        print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
+    else:
+        device = torch.device('cpu')
+        print(f'[Rank {rank}] CUDA not available, using CPU')
     
     # Parse arguments
     parser.add_argument('--local_rank', type=int, default=0)
