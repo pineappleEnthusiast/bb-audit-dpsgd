@@ -652,6 +652,8 @@ def main():
         # After all reps in this world
         outputs[world] = np.array(outputs[world])
 
+    dist.barrier()
+
     # Final audit - only rank 0 needs to combine results from all ranks
     if rank == 0:
         print("\n[Rank 0] Combining results from all ranks...")
