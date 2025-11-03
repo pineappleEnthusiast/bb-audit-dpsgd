@@ -151,6 +151,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             X = X.to(device)
             y = y.to(device)
             ps_grads = get_per_sample_grads(model, X, y, criterion)
+
+            print("ps_grads", ps_grads["net.conv1.weight"][0])
+            exit()
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
