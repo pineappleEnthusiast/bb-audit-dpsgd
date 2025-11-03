@@ -277,6 +277,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
+                        print("Adding noise:", noise_multiplier, max_grad_norm)
                         noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
                         grad.add_(noise)
                     
@@ -293,6 +294,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         
         # Defense operations
         if defense:
+            print('Defense')
             k = 5
             unique_classes = torch.unique(y).cpu()
             
