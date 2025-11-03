@@ -477,7 +477,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     grad = curr_accumulated_gradients[clean_name].to(device)
 
                     print(f"grad[0]: {grad[0]}")
-                    
+                    exit()
+
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
                         # Generate noise on rank 0 and broadcast to other processes
