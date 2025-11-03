@@ -820,6 +820,9 @@ def main():
             # don't train on the first half of the dataset
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
 
+    if init_model is not None:
+        print(f"Initializing first conv kernel: {init_model.conv1.weight[0]}")
+
     # check for data_names + target_types that don't match
     if args.data_name == 'mnist':
         pass # compatible with all canaries

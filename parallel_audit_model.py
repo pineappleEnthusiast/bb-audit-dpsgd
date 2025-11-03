@@ -544,6 +544,11 @@ def main():
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
 
+
+    if init_model is not None:
+        print(f"Initializing first conv kernel: {init_model.conv1.weight[0]}")
+    
+
     # Craft target
     if rank == 0:
         print('Crafting target data point')
