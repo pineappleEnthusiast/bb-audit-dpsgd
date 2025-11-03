@@ -288,7 +288,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                     grad = curr_accumulated_gradients[name].to(device)
 
-                    print(f"grad[0]: {grad[0]}")
+                    print(f"name: {name}, grad[0]: {grad[0]}")
                     exit()
                     
                     
