@@ -248,6 +248,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
+
+            print(f"global_indices: {global_indices}")
+            
             
             # Clip & accumulate gradients (no world_size/rank needed)
             curr_accumulated_gradients, scores = clip_and_accum_grads(
