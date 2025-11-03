@@ -251,6 +251,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
             print(f"global_indices: {global_indices}")
             
+            print("gradient_space_audit: ", gradient_space_audit, " crafted_gradient: ", crafted_gradient)
             
             # Clip & accumulate gradients (no world_size/rank needed)
             curr_accumulated_gradients, scores = clip_and_accum_grads(
