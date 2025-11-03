@@ -234,6 +234,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     
     # Check if this is the last batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
+    print("apply_gradient_space_canary", apply_gradient_space_canary)
     
     if len(X) == 0:
         return None, scores
@@ -255,6 +256,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             
         # Check if this block contains the last sample (canary)
         block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
+        print("block_contains_canary", block_contains_canary)
 
         # Get the local index of the last sample in the current block
         if block_contains_canary:
@@ -277,6 +279,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             with torch.no_grad():
                 for name in accum_grad:
                     accum_grad[name] += accum_grad_block[name]
+                    print("accum_grad block", accum_grad[name][0])
+                    exit()
         
         # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
@@ -309,7 +313,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     #         for name in accum_grad:
     #             dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
     
-    print('accum_grad', accum_grad["net.conv1.weight"][0])
     return accum_grad, scores
 
 
