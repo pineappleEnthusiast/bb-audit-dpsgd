@@ -173,6 +173,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     """
     Train a single model on a single GPU (no DDP).
     """
+
+    print(f"Numpy random seed: {np.random.get_state()[1][0]}")
+    print(f"Torch random seed: {torch.initial_seed()}")
+
     # Move everything to the specified device
     device = torch.device(device)
     

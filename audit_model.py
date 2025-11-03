@@ -318,6 +318,8 @@ class DDPModel(nn.Module):
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, rank=0, world_size=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False):
+    print(f"Numpy random seed: {np.random.get_state()[1][0]}")
+    print(f"Torch random seed: {torch.initial_seed()}")
 
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
