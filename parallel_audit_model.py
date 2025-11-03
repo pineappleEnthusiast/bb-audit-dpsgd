@@ -546,7 +546,7 @@ def main():
 
 
     if init_model is not None:
-        print(f"Initializing first conv kernel: {init_model.conv1.weight[0]}")
+        print(f"Initializing first conv kernel: {init_model.net.conv1.weight[0]}")
     
 
     # Craft target
