@@ -515,6 +515,7 @@ def main():
     # Reproducibility
     np.random.seed(args.seed + rank)  # Different seed per rank
     torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)  # Different seed per rank for CUDA
 
     out_folder = f'{args.out}/{args.data_name}_{args.model_name}_eps{args.epsilon}'
     os.makedirs(out_folder, exist_ok=True)

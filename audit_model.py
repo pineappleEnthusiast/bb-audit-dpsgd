@@ -788,6 +788,7 @@ def main():
     print('Reproducibility enabled')
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
 
     out_folder = f'{args.out}/{args.data_name}_{args.model_name}_eps{args.epsilon}'
     os.makedirs(out_folder, exist_ok=True)
