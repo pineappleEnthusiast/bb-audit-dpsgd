@@ -52,12 +52,7 @@ def get_per_sample_grads(model, X, y, criterion):
 
     print(X[0])
     print(y[0])
-
     print(f"Criterion: {criterion}")
-    print(f"Criterion requires_grad: {criterion.requires_grad}")
-    print(f"Criterion device: {criterion.device}")
-    print(f"Criterion dtype: {criterion.dtype}")
-    print(f"Criterion shape: {criterion.shape}")
 
 
     model_to_use = model
