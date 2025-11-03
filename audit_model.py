@@ -438,7 +438,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
-            print("Global indices:", global_indices)
             # Move batch to device asynchronously
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
@@ -476,6 +475,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                     # Get the accumulated gradient and move to device
                     grad = curr_accumulated_gradients[clean_name].to(device)
+
+                    print(f"grad[0]: {grad[0]}")
+                    
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
                         # Generate noise on rank 0 and broadcast to other processes

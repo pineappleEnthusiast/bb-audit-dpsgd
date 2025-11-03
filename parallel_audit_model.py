@@ -242,7 +242,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
-            print("Global indices:", global_indices)
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
             
@@ -265,6 +264,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 crafted_gradient=crafted_gradient
             )
 
+            print(f"Sum of drop_mask: {drop_mask.sum()}")
+            
             drop_mask[drop_mask == 1] = 2
 
             # Apply the accumulated gradients
@@ -275,6 +276,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         continue
                         
                     grad = curr_accumulated_gradients[name].to(device)
+
+                    print(f"grad[0]: {grad[0]}")
+                    
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
