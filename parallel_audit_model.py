@@ -220,7 +220,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # Create Dataset + DataLoader (no DDP sampler)
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=np.int32)
+    drop_mask = np.zeros(len(dataset), dtype=bool)
     
     sampler = torch.utils.data.RandomSampler(
         dataset,
