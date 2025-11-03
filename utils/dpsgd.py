@@ -227,6 +227,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
     if drop_mask is not None:
         active_indices = ~torch.tensor(drop_mask, device=device)
+
+    print("active_indices", active_indices)
     
     # Filter out dropped samples
     X = X[active_indices]
