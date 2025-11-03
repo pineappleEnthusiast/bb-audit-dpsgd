@@ -309,6 +309,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     #         for name in accum_grad:
     #             dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
     
+    print('accum_grad', accum_grad["net.conv1.weight"][0])
     return accum_grad, scores
 
 
