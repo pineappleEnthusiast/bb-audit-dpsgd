@@ -49,18 +49,8 @@ def average_grads_over_augmentations(ps_grads, batch_size, aug_mult):
 
 def get_per_sample_grads(model, X, y, criterion):
     """Compute per-sample gradients"""
-    # Check if model is DDP-wrapped
-    is_ddp = hasattr(model, 'module')
-    
-    # Get model parameters, handling DDP case
-    if is_ddp:
-        # For DDP, we need to use the module's parameters but with the original names
-        model_to_use = model.module
-        # Create a mapping from original names to parameters
-        param_mapping = {name.replace('module.', ''): param for name, param in model.named_parameters()}
-    else:
-        model_to_use = model
-        param_mapping = dict(model.named_parameters())
+
+    model_to_use = model
     
     # map of parameter names : parameter values (without module prefix)
     params = {k: v.detach() for k, v in model_to_use.named_parameters()}
@@ -74,6 +64,9 @@ def get_per_sample_grads(model, X, y, criterion):
         # Forward pass - no no_grad() here to allow gradient computation
         predictions = functional_call(model_to_use, (params, buffers), (batch,))
         loss = criterion(predictions, targets)
+
+        print("loss", loss)
+        exit()
         return loss
     
     # Compute gradients
