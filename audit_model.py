@@ -438,6 +438,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         print(f"Epoch: {epoch} (Active samples: {int((~drop_mask).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
+            print("Global indices:", global_indices)
             # Move batch to device asynchronously
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
@@ -486,7 +487,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                                 noise = torch.zeros_like(grad)
                                 dist.broadcast(noise, src=0)
                         else:
-                            print("Adding noise:", noise_multiplier, max_grad_norm)
                             noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
                         grad.add_(noise)
                     
