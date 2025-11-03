@@ -318,8 +318,6 @@ class DDPModel(nn.Module):
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1, rank=0, world_size=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False):
-    print(f"Numpy random seed: {np.random.get_state()[1][0]}")
-    print(f"Torch random seed: {torch.initial_seed()}")
 
     # Initialize distributed training
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
@@ -444,12 +442,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
 
-            print(f"global_indices: {global_indices}")
-            print("gradient_space_audit: ", gradient_space_audit, " crafted_gradient: ", crafted_gradient)
-
-            print("curr_X[0]: ", curr_X[0])
-            print("curr_y[0]: ", curr_y[0])
-
             # Clip & accumulate gradients in memory-safe blocks
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model.module if world_size > 1 else model,  # Unwrap DDP model
@@ -483,9 +475,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                     # Get the accumulated gradient and move to device
                     grad = curr_accumulated_gradients[clean_name].to(device)
-
-                    print(f"name: {name}, grad[0]: {grad[0]}")
-                    exit()
 
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:

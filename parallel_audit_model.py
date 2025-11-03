@@ -174,9 +174,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     Train a single model on a single GPU (no DDP).
     """
 
-    print(f"Numpy random seed: {np.random.get_state()[1][0]}")
-    print(f"Torch random seed: {torch.initial_seed()}")
-
     # Move everything to the specified device
     device = torch.device(device)
     
@@ -249,13 +246,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
 
-            print(f"global_indices: {global_indices}")
-            
-            print("gradient_space_audit: ", gradient_space_audit, " crafted_gradient: ", crafted_gradient)
-
-            print("curr_X[0]: ", curr_X[0])
-            print("curr_y[0]: ", curr_y[0])
-
             # Clip & accumulate gradients (no world_size/rank needed)
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model,
@@ -274,8 +264,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 is_gradient_space_canary=gradient_space_audit,
                 crafted_gradient=crafted_gradient
             )
-
-            print(f"Sum of drop_mask: {drop_mask.sum()}")
             
             drop_mask[drop_mask == 1] = 2
 
@@ -287,10 +275,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         continue
                         
                     grad = curr_accumulated_gradients[name].to(device)
-
-                    print(f"name: {name}, grad[0]: {grad[0]}")
-                    exit()
-                    
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
