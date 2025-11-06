@@ -1,30 +1,28 @@
 """Auditing DP-SGD in black-box setting - Modified for model parallelism"""
 import os
-import sys
 import time
 import copy
-import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
-from tqdm import tqdm
 import numpy as np
 import argparse
 from opacus.accountants.utils import get_noise_multiplier
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import dill
-import pdb
-import matplotlib.pyplot as plt
 
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
-from utils.dpsgd import clip_and_accum_grads, get_per_sample_grads
-from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
-from utils.clipbkd import craft_clipbkd, choose_worstcase_label
+from utils.dpsgd import clip_and_accum_grads
+from utils.audit import compute_eps_lower_from_mia
+from utils.clipbkd import craft_clipbkd
 
-import gc
+from models.lstm import LSTM
+from opacus.grad_sample import GradSampleModule
+
+
 import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
 
@@ -149,11 +147,6 @@ def init_wideresnet(model):
             nn.init.constant_(m.bias, 0)
 
 
-def cleanup():
-    """Cleanup - no distributed operations needed"""
-    pass
-
-
 class IndexedTensorDataset(Dataset):
     """A dataset that includes the index of each sample."""
     def __init__(self, *tensors):
@@ -169,13 +162,14 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0'):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None):
     """
     Train a single model on a single GPU (no DDP).
     """
 
     # Move everything to the specified device
     device = torch.device(device)
+    torch.cuda.set_device(device)
     
     if init_model is None:
         if model_name == 'lstm':
@@ -196,6 +190,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
     # Set DP noise
+    # TODO: switch accountant
     if epsilon is not None:
         noise_multiplier = get_noise_multiplier(
             target_epsilon=epsilon,
@@ -207,7 +202,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         noise_multiplier = 0
 
-    assert block_size <= batch_size, "block_size must be smaller than batch_size"
+    block_size = min(block_size, batch_size)
 
     if len(X.shape) > 2:
         aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
@@ -223,7 +218,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         dataset,
         replacement=False,
         num_samples=None,
-        generator=torch.Generator().manual_seed(0)
+        generator=generator
     )
     
     loader = DataLoader(
@@ -233,8 +228,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         pin_memory=True,
         num_workers=4,
         persistent_workers=True,
-        drop_last=True,
-        generator=torch.Generator().manual_seed(0)
+        drop_last=False,
+        generator=dl_generator
     )
     
     for epoch in range(n_epochs):
@@ -294,7 +289,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         
         # Defense operations
         if defense:
-            print('Defense')
             k = 5
             unique_classes = torch.unique(y).cpu()
             
@@ -464,33 +458,42 @@ def main():
         print(f'[Rank {rank}] CUDA not available, using CPU')
     
     # Parse arguments
-    parser.add_argument('--local_rank', type=int, default=0)
-    parser.add_argument('--data_name', type=str, default='mnist')
-    parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()))
-    parser.add_argument('--n_reps', type=int, default=200)
-    parser.add_argument('--n_df', type=int, default=0)
-    parser.add_argument('--n_epochs', type=int, default=100)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--max_grad_norm', type=float, default=1)
-    parser.add_argument('--epsilon', type=float, default=None)
-    parser.add_argument('--delta', type=float, default=1e-5)
-    parser.add_argument('--target_type', type=str, default='blank')
-    parser.add_argument('--blank_alpha', type=float, default=0.0)
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--out', type=str, default='exp_data/')
-    parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='')
-    parser.add_argument('--block_size', type=int)
-    parser.add_argument('--batch_size', type=int)
-    parser.add_argument('--resume', action='store_true')
-    parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'])
-    parser.add_argument('--alpha', type=float, default=0.05)
-    parser.add_argument('--badnets_label', type=int, default=-1)
+    parser.add_argument('--local_rank', type=int, default=0,
+                         help='Local rank for distributed training')
+    parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
+    parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()), help='model to audit')
+    parser.add_argument('--n_reps', type=int, default=200, help='number of models')
+    parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
+    parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs to train for')
+    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
+    parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
+    parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
+    parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
+    parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
+    parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
+    parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
+    parser.add_argument('--block_size', type=int, help='process samples within a batch in blocks to conserve GPU space')
+    parser.add_argument('--batch_size', type=int, help='batch size for training')
+    parser.add_argument('--resume', action='store_true', help='skip experiment if results are present')
+    parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
+    parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
+    parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
+
+    # Options for Debugging
     parser.add_argument('--view_badnets', action='store_true')
     parser.add_argument('--store_canary_rank', action='store_true')
     parser.add_argument('--holdout_audit', action='store_true')
-    parser.add_argument('--target_class', type=int, default=0)
-    parser.add_argument('--defense', action='store_true')
-    parser.add_argument('--aug_mult', type=int, default=1)
+    
+    # Gradient-space audit options
+    parser.add_argument('--target_class', type=int, default=0,
+                        help='Target class for gradient-space audit')
+
+
+    # Options for Forgetting Canary Candidates
+    parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
+    parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
 
     args = parser.parse_args()
     if args.max_grad_norm == -1:
@@ -529,13 +532,29 @@ def main():
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
 
 
-    if init_model is not None:
-        print(f"Initializing first conv kernel: {init_model.net.conv1.weight[0]}")
-    
-
     # Craft target
     if rank == 0:
         print('Crafting target data point')
+
+
+
+    # check for data_names + target_types that don't match
+    if args.data_name == 'mnist':
+        pass # compatible with all canaries
+    elif args.data_name == 'cifar10':
+        pass # compatible with all canaries
+    elif args.data_name == 'cifar100':
+        pass # compatible with all canaries
+    elif args.data_name == 'purchase':
+        # only compatible with blank
+        if args.target_type != 'blank':
+            raise Exception("Canary type does not support tabular data.")
+    elif args.data_name == 'tiny_shakespeare':
+        if args.target_type != 'empty_sequence':
+            raise Exception("For tiny_shakespeare, only target_type='empty_sequence' is supported.")
+    elif args.target_type == 'empty_sequence':
+        raise Exception("Target type 'empty_sequence' is only valid with data_name='tiny_shakespeare'.")
+
     
     if args.target_type == 'gradient_space_canary':
         target_X = X_out[-1].unsqueeze(0)
@@ -566,15 +585,98 @@ def main():
     elif args.target_type == 'clipbkd':
         target_X, target_y = craft_clipbkd(X_out, init_model)
     elif args.target_type == 'fgsm':
-        # FGSM attack code (abbreviated for space)
-        target_X = X_out[-1].unsqueeze(0)
-        target_y = y_out[-1].unsqueeze(0)
+        print("Preparing FGSM attack by training a model on the available data...")
+        
+        # Create a new model for FGSM
+        fgsm_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+        if args.model_name == 'cnn':
+            xavier_init_model(fgsm_model)
+        else:
+            init_wideresnet(fgsm_model)
+        
+        # Train the model using the existing train_model function
+        print("Training FGSM model...")
+        
+        # Use train_model with DP disabled (delta=0, max_grad_norm=inf)
+        fgsm_model = train_model(
+            model_name=args.model_name,
+            X=X_out,
+            y=y_out,
+            X_target=None,
+            y_target=None,
+            epsilon=None,  # No DP
+            delta=None,    # No DP
+            max_grad_norm=None,  # No gradient clipping
+            n_epochs=args.n_epochs,
+            lr=args.lr,
+            block_size=args.block_size,
+            batch_size=args.batch_size,
+            init_model=fgsm_model,
+            out_dim=out_dim,
+            aug_mult=args.aug_mult,
+            rank=rank,
+            world_size=world_size,
+            gradient_space_audit=False,
+            defense=False
+        )
+        print("FGSM model training completed")
+        
+        # Get the last sample and its true label
+        original_X = X_out[-1].unsqueeze(0).to(device)
+        original_y = y_out[-1].unsqueeze(0).to(device)
+        
+        # Choose a target class different from the original
+        num_classes = out_dim
+        target_class = (original_y + 1) % num_classes  # Simple way to pick a different class
+        
+        print(f"Performing FGSM attack on sample (original class: {original_y.item()}, target class: {target_class.item()})")
+        
+        # Perform iterative FGSM attack
+        print("Running iterative FGSM attack...")
+        target_X, iters_used = fgsm_attack(
+            fgsm_model, 
+            original_X, 
+            target_class, 
+            epsilon=0.1,  # Maximum perturbation
+            max_iter=20,  # Maximum iterations
+            alpha=0.01    # Step size
+        )
+        target_y = target_class
+        print(f"FGSM attack completed in {iters_used} iterations")
+        
+        # Move back to CPU if needed
+        if not target_X.is_cpu:
+            target_X = target_X.cpu()
+        if not target_y.is_cpu:
+            target_y = target_y.cpu()
+            
+        # Clean up
+        del fgsm_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        print("FGSM attack completed")
+    elif args.target_type == 'empty_sequence':
+        # sequence length (same as existing chunks)
+        seq_len = X_out.shape[1]
+        target_X = torch.zeros((1, seq_len), dtype=torch.long)
+        target_y = torch.full((1, seq_len), 9, dtype=torch.long)
+    elif os.path.exists(args.target_type):
+        # pre-crafted target sample
+        target_X = torch.from_numpy(np.load(args.target_type))
+        if init_model is not None:
+            target_y =  choose_worstcase_label(init_model, target_X)
+        else:
+            target_y = torch.from_numpy(np.array([9]))
     else:
         raise Exception(f'Target {args.target_type} not found')
 
     # Define datasets
     X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
+
+    generator = torch.Generator().manual_seed(0)
+    dl_generator = torch.Generator().manual_seed(1)
     
     if rank == 0:
         print('Training models')
@@ -582,6 +684,7 @@ def main():
     # Resume checkpoint - each rank loads its own
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
     
+    # TODO: fix resume checkpoint to account for randomness
     outputs, losses, all_losses, train_set_accs, test_set_accs = resume_checkpoint(
         out_folder, args.fit_world_only, args.resume, rank)
     
@@ -599,6 +702,7 @@ def main():
         del temp_model
 
     # Distribute repetitions across GPUs
+    # TODO: fix distribute reps to account for reps completed
     reps_per_gpu = distribute_reps(args.n_reps // 2, world_size)
     my_reps = reps_per_gpu[rank]
     
@@ -631,7 +735,9 @@ def main():
                 aug_mult=args.aug_mult,
                 gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
                 crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,
-                device=device
+                device=device,
+                generator=generator,
+                dl_generator=dl_generator
             )
             
             # Compute outputs and losses
@@ -665,6 +771,7 @@ def main():
                 losses[world].append(loss)
             
             # Each rank saves its own checkpoint
+            # TODO: fix save_checkpoint to account for randomness
             save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only, rank)
             
             # Get test set accuracy from first 5 reps

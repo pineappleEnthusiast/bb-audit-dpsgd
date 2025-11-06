@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import threading
 import copy
 import pdb
+from opacus.grad_sample import GradSampleModule
+from models.lstm import LSTM
 
 def preaugment_batch_vectorized(X, y, aug_fn, aug_mult):
     if aug_mult == 1:
@@ -49,8 +51,18 @@ def average_grads_over_augmentations(ps_grads, batch_size, aug_mult):
 
 def get_per_sample_grads(model, X, y, criterion):
     """Compute per-sample gradients"""
-
-    model_to_use = model
+    # Check if model is DDP-wrapped
+    is_ddp = hasattr(model, 'module')
+    
+    # Get model parameters, handling DDP case
+    if is_ddp:
+        # For DDP, we need to use the module's parameters but with the original names
+        model_to_use = model.module
+        # Create a mapping from original names to parameters
+        param_mapping = {name.replace('module.', ''): param for name, param in model.named_parameters()}
+    else:
+        model_to_use = model
+        param_mapping = dict(model.named_parameters())
     
     # map of parameter names : parameter values (without module prefix)
     params = {k: v.detach() for k, v in model_to_use.named_parameters()}
@@ -102,10 +114,16 @@ def clip_per_sample_grads(per_sample_grads, max_grad_norm):
 
     return ps_grads_clipped, { 'before': ps_grad_norms.cpu().numpy(), 'after': ps_grad_norms_clipped.cpu().numpy() }
 
-
+def _get_per_sample_grads(model, X, y, criterion):
+    model.zero_grad()
+    output = model(X)
+    loss = criterion(output, y)
+    loss.backward()
+    ps_grads = {name: param.grad_sample for name, param in model.named_parameters()}
+    return ps_grads
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
-                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None):
+                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None, curr_gradient_ascent_indices=None):
     """
     Add aug_fn and aug_mult params to support augmentation multiplicity outside vmap.
 
@@ -135,12 +153,18 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             X_aug = X_aug.to(device)
             y_aug = y_aug.to(device)
 
-            ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
+            if isinstance(model_to_use, LSTM):
+                ps_grads = _get_per_sample_grads(GradSampleModule(model), X_aug, y_aug, criterion)
+            else:
+                ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
             ps_grads = average_grads_over_augmentations(ps_grads, batch_size=len(X), aug_mult=aug_mult)
         else:
             X = X.to(device)
             y = y.to(device)
-            ps_grads = get_per_sample_grads(model, X, y, criterion)
+            if isinstance(model_to_use, LSTM):
+                ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
+            else:
+                ps_grads = get_per_sample_grads(model, X, y, criterion)
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
@@ -154,9 +178,6 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     else:
         ps_grads_clipped = ps_grads
 
-    with torch.no_grad():
-        accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
-
     # last_layer_name = list(model.net.named_modules())[-1][0]
     # last_w_name = 'net.' + last_layer_name + '.weight'
     # last_b_name = 'net.' + last_layer_name + '.bias'
@@ -165,7 +186,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     all_norms = torch.zeros_like(y, dtype=torch.float32)
     for k in range(10):
         k_last_layer_grads = per_sample_flat_grads[y == k]
-        centered_k_last_layer_grads = k_last_layer_grads - k_last_layer_grads.mean(dim=0, keepdim=True)
+        centered_k_last_layer_grads = k_last_layer_grads # - k_last_layer_grads.mean(dim=0, keepdim=True)
         # take norm of each class
         centered_k_last_layer_norms = centered_k_last_layer_grads.norm(float('inf'), dim=1)
         all_norms[y == k] = centered_k_last_layer_norms
@@ -183,6 +204,13 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
     #     all_norms[y == k] = centered_k_last_layer_norms
 
+        for name in ps_grads_clipped:
+            ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
+
+
+    with torch.no_grad():
+        accum_grad_block = {name: grad.sum(dim=0) for name, grad in ps_grads_clipped.items()}
+
     return accum_grad_block, None, all_norms.cpu().numpy(), None
 
 
@@ -194,35 +222,25 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None, drop_mask=None,
                          is_gradient_space_canary=False, crafted_gradient=None):
-    """
-    Clip and accumulate gradients in blocks with support for distributed training.
-    
-    Args:
-        X: Input tensor
-        y: Target tensor
-        global_indices: Global indices of the current batch in the full dataset
-        scores: Pre-allocated array to store scores for the entire dataset
-        world_size: Number of processes in distributed training
-        is_gradient_space_canary: Whether to apply gradient-space canary to the last sample
-    """
+
     if scores is None:
         raise ValueError("scores array must be provided")
     
     if drop_mask is not None and len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
     
-    
     # Get indices of non-dropped samples
-    active_indices = torch.ones(len(X), dtype=torch.bool, device=device)
-    if drop_mask is not None:
-        active_indices = ~torch.tensor(drop_mask, device=device)
-    
+    # TODO: bug is here
+    active_indices = (torch.tensor(drop_mask, device=device) != 2)
+
+    gradient_ascent_indices = torch.tensor(drop_mask, device=device)[active_indices] == 1
+
     # Filter out dropped samples
     X = X[active_indices]
     y = y[active_indices]
     global_indices = global_indices[active_indices]
     
-    # Check if this is the last batch and we should apply gradient space canary
+    # Check if the canary is in this batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
     
     if len(X) == 0:
@@ -238,6 +256,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         curr_X = X[idx_block]
         curr_y = y[idx_block]
         curr_global_indices = global_indices[idx_block]
+
+        curr_gradient_ascent_indices = gradient_ascent_indices[idx_block]
         
         # Skip if no samples in this block
         if len(curr_X) == 0:
@@ -258,8 +278,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             device=device, aug_mult=aug_mult, aug_fn=aug_fn,
             is_gradient_space_canary=block_contains_canary,
             crafted_gradient=crafted_gradient,
-            canary_local_idx=last_sample_local_idx
+            canary_local_idx=last_sample_local_idx,
+            curr_gradient_ascent_indices=curr_gradient_ascent_indices
         )
+
         # Accumulate gradients
         if accum_grad is None:
             accum_grad = accum_grad_block
@@ -271,35 +293,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
 
-    # idx_blocks is relative to current chunk
-    # we want to map each chunk to global indices
-    # we want to store scores at global indices position
-
-
-    # if len(drop_mask) - 1 in active_global_indices:
-    #     print('Canary in this minibatch')
-    #     print(scores[np.where(active_global_indices.cpu().numpy() == (len(drop_mask) - 1))[0][0]], sorted(scores)[-5:])
-
-    # k = 5
-
-    # # gets top k indices in scores
-    # topk_idx = np.argpartition(-scores, k)[:k]
-
-    # # scores is local
-
-    # topk_global_idx = active_global_indices[topk_idx]
-
-    # if len(drop_mask) - 1 in topk_global_idx:
-    #     print('Canary is getting dumped')
-    #     exit()
-
-    # # Sum gradients across all processes
-    # if world_size > 1 and accum_grad is not None:
-    #         # Synchronize gradients
-    #         for name in accum_grad:
-    #             dist.all_reduce(accum_grad[name], op=dist.ReduceOp.SUM)
     
     return accum_grad, scores
-
 
 
