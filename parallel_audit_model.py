@@ -184,8 +184,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model).to(device)
 
-    model.train()
+    if model_name == "lstm" and not isinstance(model, GradSampleModule):
+        model = GradSampleModule(model)
 
+    model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
@@ -265,6 +267,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             # Apply the accumulated gradients
             with torch.no_grad():
                 for name, param in model.named_parameters():
+                    
                     if name not in curr_accumulated_gradients:
                         print(f"Warning: Parameter {name} not found in accumulated gradients")
                         continue
