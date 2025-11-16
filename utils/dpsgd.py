@@ -226,7 +226,13 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     if scores is None:
         raise ValueError("scores array must be provided")
     
-    if drop_mask is not None and len(drop_mask) != len(X):
+    # if drop_mask is not None and len(drop_mask) != len(X):
+    #     raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
+
+    # If not using defense, default to "keep all samples"
+    if drop_mask is None:
+        drop_mask = np.zeros(len(X), dtype=int)
+    elif len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
     
     # Get indices of non-dropped samples
