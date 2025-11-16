@@ -233,6 +233,13 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     # TODO: bug is here
     active_indices = (torch.tensor(drop_mask, device=device) != 2)
 
+    if (drop_mask[-1] == 2):
+        print(f"[DEFENSE] Canary DROPPED this epoch!")
+    elif (drop_mask[-1] == 1):
+        print(f"[DEFENSE] Canary selected for gradient ascent this epoch!")
+    else:
+        print(f"[DEFENSE] Canary retained this epoch.")
+
     gradient_ascent_indices = torch.tensor(drop_mask, device=device)[active_indices] == 1
 
     # Filter out dropped samples
