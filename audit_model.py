@@ -810,7 +810,11 @@ def main():
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
 
     if init_model is not None:
-        print(f"Initializing first conv kernel: {init_model.net.conv1.weight[0]}")
+        # print(f"Initializing first conv kernel: {init_model.net.conv1.weight[0]}")
+        if hasattr(init_model, "net"):
+            print(f"Initializing first conv kernel: {init_model.net.conv1.weight[0]}")
+        else:
+            print("Fixed initialization applied (no conv layers for this model).")
 
     # check for data_names + target_types that don't match
     if args.data_name == 'mnist':
