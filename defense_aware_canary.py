@@ -552,14 +552,28 @@ def find_first_drop_epoch(
             # Clip per-sample gradients and average (simulating DP-SGD clipping)
             # First compute per-sample gradient norms across all parameters
             with torch.no_grad():
-                per_sample_norms = torch.zeros(len(batch_X), device=device)
+                # Get actual batch size from first grad_sample we find
+                actual_batch_size = None
                 for p in grad_sample_model.parameters():
                     if hasattr(p, 'grad_sample') and p.grad_sample is not None:
                         gs = p.grad_sample
                         if isinstance(gs, list):
                             gs = gs[0] if len(gs) > 0 else None
                         if gs is not None:
-                            per_sample_norms += gs.view(len(batch_X), -1).pow(2).sum(dim=1)
+                            actual_batch_size = gs.shape[0]
+                            break
+                
+                if actual_batch_size is None:
+                    actual_batch_size = len(batch_X)
+                
+                per_sample_norms = torch.zeros(actual_batch_size, device=device)
+                for p in grad_sample_model.parameters():
+                    if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                        gs = p.grad_sample
+                        if isinstance(gs, list):
+                            gs = gs[0] if len(gs) > 0 else None
+                        if gs is not None:
+                            per_sample_norms += gs.view(actual_batch_size, -1).pow(2).sum(dim=1)
                 per_sample_norms = per_sample_norms.sqrt()
                 
                 # Clip factor per sample
