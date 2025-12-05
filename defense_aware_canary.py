@@ -465,18 +465,18 @@ def find_first_drop_epoch(
     if verbose:
         print("Scanning for first drop epoch...")
     
-    # Train model incrementally and check each epoch
-    model = Models[model_name](in_shape, out_dim=out_dim)
-    if init_model is not None:
-        model.load_state_dict(deepcopy(init_model))
-    
-    model_state_before_drop = deepcopy(model.state_dict())
+    # Store init state for creating fresh models
+    model_state_before_drop = deepcopy(init_model) if init_model is not None else None
     
     for t in range(n_epochs):
-        # Train for one more epoch
+        # Create fresh model and train for t epochs
+        model = Models[model_name](in_shape, out_dim=out_dim)
+        if init_model is not None:
+            model.load_state_dict(deepcopy(init_model))
+        
         if t > 0:
             model = train_model_for_t_epochs(
-                model, X_with_canary, y_with_canary, 1,  # Just 1 epoch
+                model, X_with_canary, y_with_canary, t,
                 batch_size, lr, epsilon, delta, n_epochs, max_grad_norm, device
             )
         
@@ -510,9 +510,10 @@ def find_first_drop_epoch(
         
         # Save state before next epoch (in case next epoch causes drop)
         model_state_before_drop = deepcopy(model_state)
-    
-    del model
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        # Clean up
+        del model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
     if verbose:
         print(f"  Canary never dropped in {n_epochs} epochs!")
