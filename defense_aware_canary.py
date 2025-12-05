@@ -449,6 +449,7 @@ def find_first_drop_epoch(
 ):
     """
     Find the first epoch where the canary would be dropped by the defense.
+    Trains model once for n_epochs and checks at each epoch checkpoint.
     
     Returns:
         first_drop_epoch: The first epoch where canary is in top-k (or n_epochs if never dropped)
@@ -463,40 +464,82 @@ def find_first_drop_epoch(
     y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
     
     if verbose:
-        print("Scanning for first drop epoch...")
+        print("Scanning for first drop epoch (single training run)...")
     
-    # Store init state for creating fresh models
-    model_state_before_drop = deepcopy(init_model) if init_model is not None else None
+    # Create model and set up for training
+    model = Models[model_name](in_shape, out_dim=out_dim)
+    model = make_opacus_compatible(model)
+    if init_model is not None:
+        model.load_state_dict(deepcopy(init_model))
+    model.to(device)
     
-    for t in range(n_epochs):
-        # Create fresh model and train for t epochs
-        model = Models[model_name](in_shape, out_dim=out_dim)
-        if init_model is not None:
-            model.load_state_dict(deepcopy(init_model))
+    # Store states at each epoch
+    model_state_before_drop = deepcopy(model.state_dict())
+    
+    # Check epoch 0 (before any training)
+    grad_norms = compute_per_sample_gradient_norms(
+        model.state_dict(), model_name, in_shape, out_dim,
+        X_with_canary, y_with_canary, device, batch_size
+    )
+    canary_grad_norm = grad_norms[canary_idx]
+    thresholds = get_top_k_threshold_per_class(grad_norms, y_with_canary.numpy(), defense_k)
+    threshold = thresholds[canary_label]
+    rank, class_size = get_canary_rank_in_class(grad_norms, y_with_canary.numpy(), canary_idx, canary_label)
+    would_be_dropped = canary_grad_norm >= threshold
+    
+    if verbose:
+        print(f"  Epoch 0: grad_norm={canary_grad_norm:.4f}, threshold={threshold:.4f}, "
+              f"rank={rank}/{class_size}, dropped={would_be_dropped}")
+    
+    if would_be_dropped:
+        del model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        return 0, model_state_before_drop
+    
+    # Set up DP-SGD training
+    dataset = TensorDataset(X_with_canary, y_with_canary)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    optimizer = optim.SGD(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+    
+    privacy_engine = PrivacyEngine()
+    model, optimizer, loader = privacy_engine.make_private(
+        module=model,
+        optimizer=optimizer,
+        data_loader=loader,
+        noise_multiplier=1.0,  # Will be adjusted by Opacus based on epsilon
+        max_grad_norm=max_grad_norm,
+        poisson_sampling=False,
+    )
+    
+    # Train epoch by epoch and check after each
+    for t in range(1, n_epochs):
+        model_state_before_drop = deepcopy(model.state_dict())
         
-        if t > 0:
-            model = train_model_for_t_epochs(
-                model, X_with_canary, y_with_canary, t,
-                batch_size, lr, epsilon, delta, n_epochs, max_grad_norm, device
-            )
+        # Train one epoch
+        model.train()
+        for batch_X, batch_y in loader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            optimizer.zero_grad()
+            output = model(batch_X)
+            loss = criterion(output, batch_y)
+            loss.backward()
+            optimizer.step()
         
-        # Check if canary would be dropped
-        model_state = model.state_dict()
+        # Check if canary would be dropped after this epoch
+        # Need to get unwrapped model state for fresh model creation
+        unwrapped_model = model._module if hasattr(model, '_module') else model
+        model_state = unwrapped_model.state_dict()
+        
         grad_norms = compute_per_sample_gradient_norms(
             model_state, model_name, in_shape, out_dim,
             X_with_canary, y_with_canary, device, batch_size
         )
         
         canary_grad_norm = grad_norms[canary_idx]
-        thresholds = get_top_k_threshold_per_class(
-            grad_norms, y_with_canary.numpy(), defense_k
-        )
+        thresholds = get_top_k_threshold_per_class(grad_norms, y_with_canary.numpy(), defense_k)
         threshold = thresholds[canary_label]
-        
-        rank, class_size = get_canary_rank_in_class(
-            grad_norms, y_with_canary.numpy(), canary_idx, canary_label
-        )
-        
+        rank, class_size = get_canary_rank_in_class(grad_norms, y_with_canary.numpy(), canary_idx, canary_label)
         would_be_dropped = canary_grad_norm >= threshold
         
         if verbose:
@@ -507,13 +550,10 @@ def find_first_drop_epoch(
             del model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
             return t, model_state_before_drop
-        
-        # Save state before next epoch (in case next epoch causes drop)
-        model_state_before_drop = deepcopy(model_state)
-        
-        # Clean up
-        del model
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    # Clean up
+    del model
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
     if verbose:
         print(f"  Canary never dropped in {n_epochs} epochs!")
