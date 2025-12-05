@@ -369,7 +369,7 @@ class ResidualBlock(nn.Module):
         self.skip_projection = None
         if stride != 1 or in_channels != out_channels:
             self.skip_projection = nn.Sequential(
-                nn.ReLU(inplace=True),
+                nn.ReLU(inplace=False),  # inplace=False required for Opacus compatibility
                 nn.GroupNorm(16, in_channels),
                 WSConv2d(in_channels, out_channels, kernel_size=1, stride=stride)
             )
