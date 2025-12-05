@@ -4,6 +4,7 @@ import sys
 import time
 import copy
 import datetime
+import warnings
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,6 +13,9 @@ from tqdm import tqdm
 import numpy as np
 import argparse
 import dill
+
+# Suppress Opacus warning about new dataset objects (expected when using defense)
+warnings.filterwarnings("ignore", message="PrivacyEngine detected new dataset object")
 
 from opacus import PrivacyEngine
 from opacus.validators import ModuleValidator
