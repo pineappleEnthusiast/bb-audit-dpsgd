@@ -61,15 +61,16 @@ def compute_per_sample_gradient_norms(model_state_dict, model_name, in_shape, ou
     # Create a completely fresh model and load weights
     fresh_model = Models[model_name](in_shape, out_dim=out_dim)
     fresh_model = make_opacus_compatible(fresh_model)
-    fresh_model.load_state_dict(model_state_dict)
+    # Load state dict with strict=False in case of minor mismatches from Opacus fixes
+    fresh_model.load_state_dict(model_state_dict, strict=False)
     fresh_model.to(device)
-    fresh_model.eval()
+    fresh_model.train()  # Must be in train mode for GradSampleModule hooks
     
     # Wrap with GradSampleModule
     grad_sample_model = GradSampleModule(fresh_model)
     
     grad_norms = np.zeros(len(X))
-    criterion = nn.CrossEntropyLoss(reduction='mean')
+    criterion = nn.CrossEntropyLoss(reduction='none')  # Per-sample loss
     
     dataset = TensorDataset(X, y, torch.arange(len(X)))
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -80,7 +81,7 @@ def compute_per_sample_gradient_norms(model_state_dict, model_name, in_shape, ou
         
         grad_sample_model.zero_grad()
         output = grad_sample_model(batch_X)
-        loss = criterion(output, batch_y)
+        loss = criterion(output, batch_y).mean()  # Mean for backward
         loss.backward()
         
         # Compute per-sample gradient norm across all parameters
@@ -234,9 +235,9 @@ def perturb_canary_to_reduce_grad_norm(
         # Create fresh model each iteration to avoid hook issues
         fresh_model = Models[model_name](in_shape, out_dim=out_dim)
         fresh_model = make_opacus_compatible(fresh_model)
-        fresh_model.load_state_dict(model_state_dict)
+        fresh_model.load_state_dict(model_state_dict, strict=False)
         fresh_model.to(device)
-        fresh_model.eval()
+        fresh_model.train()  # Must be in train mode for GradSampleModule hooks
         
         grad_model = GradSampleModule(fresh_model)
         
