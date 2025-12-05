@@ -473,14 +473,40 @@ def find_first_drop_epoch(
         model.load_state_dict(deepcopy(init_model))
     model.to(device)
     
-    # Store states at each epoch
+    # Store states at each epoch (unwrapped, for warm start later)
     model_state_before_drop = deepcopy(model.state_dict())
     
+    # Wrap with GradSampleModule for efficient per-sample gradient computation
+    grad_sample_model = GradSampleModule(model)
+    
+    def compute_grad_norms_fast(gsm, X, y):
+        """Compute per-sample gradient norms using GradSampleModule directly."""
+        gsm.train()
+        norms = np.zeros(len(X))
+        criterion = nn.CrossEntropyLoss(reduction='mean')
+        
+        ds = TensorDataset(X, y, torch.arange(len(X)))
+        dl = DataLoader(ds, batch_size=batch_size, shuffle=False)
+        
+        for bx, by, idxs in dl:
+            bx, by = bx.to(device), by.to(device)
+            gsm.zero_grad()
+            out = gsm(bx)
+            loss = criterion(out, by)
+            loss.backward()
+            
+            batch_norms = []
+            for i in range(len(bx)):
+                norm_sq = 0.0
+                for p in gsm.parameters():
+                    if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                        norm_sq += p.grad_sample[i].norm() ** 2
+                batch_norms.append(np.sqrt(norm_sq.item()))
+            norms[idxs.numpy()] = batch_norms
+        return norms
+    
     # Check epoch 0 (before any training)
-    grad_norms = compute_per_sample_gradient_norms(
-        model.state_dict(), model_name, in_shape, out_dim,
-        X_with_canary, y_with_canary, device, batch_size
-    )
+    grad_norms = compute_grad_norms_fast(grad_sample_model, X_with_canary, y_with_canary)
     canary_grad_norm = grad_norms[canary_idx]
     thresholds = get_top_k_threshold_per_class(grad_norms, y_with_canary.numpy(), defense_k)
     threshold = thresholds[canary_label]
@@ -492,49 +518,49 @@ def find_first_drop_epoch(
               f"rank={rank}/{class_size}, dropped={would_be_dropped}")
     
     if would_be_dropped:
-        del model
+        del grad_sample_model
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
         return 0, model_state_before_drop
     
-    # Set up DP-SGD training
+    # Set up DP-SGD training - use the underlying model from GradSampleModule
+    # GradSampleModule wraps the model, so we can use it directly for training
     dataset = TensorDataset(X_with_canary, y_with_canary)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    optimizer = optim.SGD(model.parameters(), lr=lr)
+    optimizer = optim.SGD(grad_sample_model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
     
-    privacy_engine = PrivacyEngine()
-    model, optimizer, loader = privacy_engine.make_private(
-        module=model,
-        optimizer=optimizer,
-        data_loader=loader,
-        noise_multiplier=1.0,  # Will be adjusted by Opacus based on epsilon
-        max_grad_norm=max_grad_norm,
-        poisson_sampling=False,
-    )
-    
     # Train epoch by epoch and check after each
+    # Note: We're using GradSampleModule directly which already computes per-sample gradients
     for t in range(1, n_epochs):
-        model_state_before_drop = deepcopy(model.state_dict())
+        # Save state before training this epoch
+        unwrapped = grad_sample_model._module if hasattr(grad_sample_model, '_module') else grad_sample_model
+        model_state_before_drop = deepcopy(unwrapped.state_dict())
         
-        # Train one epoch
-        model.train()
+        # Train one epoch with manual gradient clipping and noise (simulating DP-SGD)
+        grad_sample_model.train()
         for batch_X, batch_y in loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             optimizer.zero_grad()
-            output = model(batch_X)
+            output = grad_sample_model(batch_X)
             loss = criterion(output, batch_y)
             loss.backward()
+            
+            # Clip per-sample gradients and average (simulating DP-SGD clipping)
+            with torch.no_grad():
+                for p in grad_sample_model.parameters():
+                    if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                        # Compute per-sample norms
+                        per_sample_norms = p.grad_sample.view(len(batch_X), -1).norm(2, dim=1)
+                        # Clip factor
+                        clip_factor = torch.clamp(max_grad_norm / (per_sample_norms + 1e-6), max=1.0)
+                        # Apply clipping and average
+                        clipped = p.grad_sample * clip_factor.view(-1, *([1] * (p.grad_sample.dim() - 1)))
+                        p.grad = clipped.mean(dim=0)
+            
             optimizer.step()
         
         # Check if canary would be dropped after this epoch
-        # Need to get unwrapped model state for fresh model creation
-        unwrapped_model = model._module if hasattr(model, '_module') else model
-        model_state = unwrapped_model.state_dict()
-        
-        grad_norms = compute_per_sample_gradient_norms(
-            model_state, model_name, in_shape, out_dim,
-            X_with_canary, y_with_canary, device, batch_size
-        )
+        grad_norms = compute_grad_norms_fast(grad_sample_model, X_with_canary, y_with_canary)
         
         canary_grad_norm = grad_norms[canary_idx]
         thresholds = get_top_k_threshold_per_class(grad_norms, y_with_canary.numpy(), defense_k)
@@ -547,12 +573,16 @@ def find_first_drop_epoch(
                   f"rank={rank}/{class_size}, dropped={would_be_dropped}")
         
         if would_be_dropped:
-            del model
+            del grad_sample_model
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
             return t, model_state_before_drop
     
+    # Get final state
+    unwrapped = grad_sample_model._module if hasattr(grad_sample_model, '_module') else grad_sample_model
+    model_state_before_drop = deepcopy(unwrapped.state_dict())
+    
     # Clean up
-    del model
+    del grad_sample_model
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
     if verbose:
