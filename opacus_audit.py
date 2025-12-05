@@ -353,7 +353,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                 ds,
                 batch_size=min(batch_size, len(ds)),
                 shuffle=True,
-                drop_last=True if len(ds) > batch_size else False,
+                drop_last=True,
                 num_workers=0,
                 collate_fn=collate_augmented,
             )
@@ -363,7 +363,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                 ds,
                 batch_size=min(batch_size, len(ds)),
                 shuffle=True,
-                drop_last=True if len(ds) > batch_size else False,
+                drop_last=True,
                 num_workers=0,
                 pin_memory=True,
             )
@@ -375,19 +375,28 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     
     # Setup Opacus PrivacyEngine if epsilon is specified
     if use_private:
+        # Compute noise multiplier the same way as audit_model.py
+        sample_rate = batch_size / len(X)
+        noise_multiplier = get_noise_multiplier(
+            target_epsilon=epsilon,
+            target_delta=delta,
+            sample_rate=sample_rate,
+            epochs=n_epochs,
+            accountant='rdp'
+        )
+        print(f"Using noise multiplier: {noise_multiplier:.4f} (sample_rate={sample_rate:.4f})")
+        
         privacy_engine = PrivacyEngine()
         
-        model, optimizer, loader = privacy_engine.make_private_with_epsilon(
+        # Use make_private with pre-computed noise_multiplier for consistency with audit_model.py
+        model, optimizer, loader = privacy_engine.make_private(
             module=model,
             optimizer=optimizer,
             data_loader=loader,
-            epochs=n_epochs,
-            target_epsilon=epsilon,
-            target_delta=delta,
+            noise_multiplier=noise_multiplier,
             max_grad_norm=max_grad_norm,
+            poisson_sampling=False,  # Use fixed batch size like audit_model.py
         )
-        
-        print(f"Using noise multiplier: {optimizer.noise_multiplier:.4f}")
     
     # Training loop
     for epoch in range(n_epochs):
@@ -541,7 +550,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                         ds,
                         batch_size=min(batch_size, len(ds)),
                         shuffle=True,
-                        drop_last=True if len(ds) > batch_size else False,
+                        drop_last=True,
                         num_workers=0,
                         collate_fn=collate_augmented,
                     )
@@ -551,7 +560,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                         ds,
                         batch_size=min(batch_size, len(ds)),
                         shuffle=True,
-                        drop_last=True if len(ds) > batch_size else False,
+                        drop_last=True,
                         num_workers=0,
                     )
                 
@@ -560,7 +569,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     # Note: We need to create a fresh privacy engine for the new loader
                     # This is a limitation - the privacy accounting may not be exact
                     # For a proper implementation, we'd need to handle this differently
-                    loader = privacy_engine._prepare_data_loader(loader, distributed=False, poisson_sampling=True)
+                    loader = privacy_engine._prepare_data_loader(loader, distributed=False, poisson_sampling=False)
     
     # Report canary drop status
     if defense:
@@ -701,7 +710,7 @@ def main():
                         help='folder to write results to')
     parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', 
                         help='initialize all models to the same weights')
-    parser.add_argument('--batch_size', type=int, default=4096, 
+    parser.add_argument('--batch_size', type=int, default=4000, 
                         help='batch size for training')
     parser.add_argument('--resume', action='store_true', 
                         help='skip experiment if results are present')
