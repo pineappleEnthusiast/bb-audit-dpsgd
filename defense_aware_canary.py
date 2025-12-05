@@ -500,8 +500,12 @@ def find_first_drop_epoch(
                 norm_sq = 0.0
                 for p in gsm.parameters():
                     if hasattr(p, 'grad_sample') and p.grad_sample is not None:
-                        norm_sq += p.grad_sample[i].norm() ** 2
-                batch_norms.append(np.sqrt(norm_sq.item()))
+                        gs = p.grad_sample
+                        if isinstance(gs, list):
+                            gs = gs[0] if len(gs) > 0 else None
+                        if gs is not None:
+                            norm_sq += gs[i].norm() ** 2
+                batch_norms.append(np.sqrt(norm_sq.item() if hasattr(norm_sq, 'item') else norm_sq))
             norms[idxs.numpy()] = batch_norms
         return norms
     
@@ -546,16 +550,30 @@ def find_first_drop_epoch(
             loss.backward()
             
             # Clip per-sample gradients and average (simulating DP-SGD clipping)
+            # First compute per-sample gradient norms across all parameters
             with torch.no_grad():
+                per_sample_norms = torch.zeros(len(batch_X), device=device)
                 for p in grad_sample_model.parameters():
                     if hasattr(p, 'grad_sample') and p.grad_sample is not None:
-                        # Compute per-sample norms
-                        per_sample_norms = p.grad_sample.view(len(batch_X), -1).norm(2, dim=1)
-                        # Clip factor
-                        clip_factor = torch.clamp(max_grad_norm / (per_sample_norms + 1e-6), max=1.0)
-                        # Apply clipping and average
-                        clipped = p.grad_sample * clip_factor.view(-1, *([1] * (p.grad_sample.dim() - 1)))
-                        p.grad = clipped.mean(dim=0)
+                        gs = p.grad_sample
+                        if isinstance(gs, list):
+                            gs = gs[0] if len(gs) > 0 else None
+                        if gs is not None:
+                            per_sample_norms += gs.view(len(batch_X), -1).pow(2).sum(dim=1)
+                per_sample_norms = per_sample_norms.sqrt()
+                
+                # Clip factor per sample
+                clip_factor = torch.clamp(max_grad_norm / (per_sample_norms + 1e-6), max=1.0)
+                
+                # Apply clipping to each parameter and average
+                for p in grad_sample_model.parameters():
+                    if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                        gs = p.grad_sample
+                        if isinstance(gs, list):
+                            gs = gs[0] if len(gs) > 0 else None
+                        if gs is not None:
+                            clipped = gs * clip_factor.view(-1, *([1] * (gs.dim() - 1)))
+                            p.grad = clipped.mean(dim=0)
             
             optimizer.step()
         
