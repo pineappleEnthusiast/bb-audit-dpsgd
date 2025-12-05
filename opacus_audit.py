@@ -992,11 +992,23 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     elif os.path.exists(args.target_type):
-        target_X = torch.from_numpy(np.load(args.target_type))
-        if init_model is not None:
-            target_y = choose_worstcase_label(init_model, target_X)
+        # Check if it's a .pt file (defense-aware canary) or .npy file
+        if args.target_type.endswith('.pt'):
+            canary_data = torch.load(args.target_type)
+            target_X = canary_data['canary'].unsqueeze(0)
+            target_y = torch.tensor([canary_data['audit_label']])
+            print(f"Loaded defense-aware canary: true_label={canary_data['true_label']}, audit_label={canary_data['audit_label']}")
+            
+            # Use the same init_model if available in canary file
+            if 'init_model' in canary_data and args.fixed_init is not None:
+                print("Using init_model from canary file for consistency")
+                init_model.load_state_dict(canary_data['init_model'])
         else:
-            target_y = torch.from_numpy(np.array([9]))
+            target_X = torch.from_numpy(np.load(args.target_type))
+            if init_model is not None:
+                target_y = choose_worstcase_label(init_model, target_X)
+            else:
+                target_y = torch.from_numpy(np.array([9]))
     else:
         raise Exception(f'Target {args.target_type} not found')
     
