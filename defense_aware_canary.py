@@ -55,18 +55,15 @@ def compute_per_sample_gradient_norms(model, X, y, device, batch_size=256, max_g
     Returns:
         numpy array of per-sample gradient norms
     """
-    model.eval()
+    # Make a fresh copy of the model to avoid hook issues
+    model_copy = deepcopy(model)
+    model_copy = make_opacus_compatible(model_copy)
+    model_copy.to(device)
+    model_copy.eval()
     
-    # Wrap model to compute per-sample gradients
-    # Check if already wrapped
-    if isinstance(model, GradSampleModule):
-        grad_sample_model = model
-        was_wrapped = True
-    else:
-        grad_sample_model = GradSampleModule(model)
-        was_wrapped = False
+    # Wrap with GradSampleModule
+    grad_sample_model = GradSampleModule(model_copy)
     
-    grad_sample_model.to(device)
     grad_norms = np.zeros(len(X))
     criterion = nn.CrossEntropyLoss(reduction='mean')
     
@@ -95,12 +92,10 @@ def compute_per_sample_gradient_norms(model, X, y, device, batch_size=256, max_g
         
         grad_norms[indices.numpy()] = batch_grad_norms
     
-    # Unwrap if we wrapped it
-    if not was_wrapped:
-        # Extract the original model
-        model = grad_sample_model._module
+    # Clean up
+    del grad_sample_model
+    del model_copy
     
-    model.train()
     return grad_norms
 
 
