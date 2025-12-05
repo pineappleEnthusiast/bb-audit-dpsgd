@@ -286,7 +286,11 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     # Opacus wraps the model, so we can't compile here
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr)
+    # Scale learning rate by batch_size to match audit_model.py behavior
+    # audit_model.py uses summed gradients, Opacus uses averaged gradients
+    effective_lr = lr * batch_size
+    print(f"Scaling LR: {lr} * {batch_size} = {effective_lr}")
+    optimizer = optim.SGD(model.parameters(), lr=effective_lr)
     
     # Setup augmentation function if aug_mult > 1
     aug_fn = None
