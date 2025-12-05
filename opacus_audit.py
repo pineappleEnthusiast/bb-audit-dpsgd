@@ -20,6 +20,7 @@ warnings.filterwarnings("ignore", message="PrivacyEngine detected new dataset ob
 from opacus import PrivacyEngine
 from opacus.validators import ModuleValidator
 from opacus.accountants.utils import get_noise_multiplier
+from opacus.utils.batch_memory_manager import BatchMemoryManager
 
 import matplotlib.pyplot as plt
 
@@ -247,7 +248,7 @@ def compute_per_sample_losses(model, X, y, criterion, batch_size=512, device='cu
 def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                        n_epochs, lr, batch_size, init_model=None, out_dim=10, aug_mult=1,
                        defense=False, defense_k=5, use_wandb=False, wandb_run=None, 
-                       world='in', rep=0):
+                       world='in', rep=0, max_physical_batch_size=None, optimizer_name='sgd'):
     """
     Train a model using Opacus for DP-SGD.
     
@@ -290,11 +291,18 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     # Opacus wraps the model, so we can't compile here
     
     criterion = nn.CrossEntropyLoss()
-    # Scale learning rate by batch_size to match audit_model.py behavior
-    # audit_model.py uses summed gradients, Opacus uses averaged gradients
-    effective_lr = lr * batch_size
-    print(f"Scaling LR: {lr} * {batch_size} = {effective_lr}")
-    optimizer = optim.SGD(model.parameters(), lr=effective_lr)
+    
+    # Setup optimizer
+    if optimizer_name == 'adam':
+        # Adam doesn't need LR scaling - it normalizes by gradient moments
+        print(f"Using Adam optimizer with lr={lr}")
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+    else:
+        # Scale learning rate by batch_size to match audit_model.py behavior
+        # audit_model.py uses summed gradients, Opacus uses averaged gradients
+        effective_lr = lr * batch_size
+        print(f"Using SGD optimizer, scaling LR: {lr} * {batch_size} = {effective_lr}")
+        optimizer = optim.SGD(model.parameters(), lr=effective_lr)
     
     # Setup augmentation function if aug_mult > 1
     aug_fn = None
@@ -407,6 +415,10 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
             poisson_sampling=False,  # Use fixed batch size like audit_model.py
         )
     
+    # Set max physical batch size for gradient accumulation
+    if max_physical_batch_size is None:
+        max_physical_batch_size = batch_size
+    
     # Training loop
     for epoch in range(n_epochs):
         epoch_start = time.time()
@@ -422,49 +434,89 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
         
         if aug_mult > 1 and aug_fn is not None:
             # Training with augmentation multiplicity
-            for batch_idx, (curr_X, curr_y, _) in enumerate(loader):
-                # curr_X shape: [B, aug_mult, C, H, W]
-                B, A, C, H, W = curr_X.shape
-                
-                # Reshape to process all augmentations: [B * aug_mult, C, H, W]
-                curr_X_flat = curr_X.view(B * A, C, H, W).to(device, non_blocking=True)
-                curr_y_rep = curr_y.repeat_interleave(A).to(device, non_blocking=True)
-                
-                optimizer.zero_grad(set_to_none=True)
-                output = model(curr_X_flat)
-                loss = criterion(output, curr_y_rep)
-                loss.backward()
-                
-                # Average gradients over augmentations for each sample
-                # Opacus stores per-sample gradients, we need to average them
-                if hasattr(optimizer, 'grad_samples'):
-                    # For Opacus, we need to manually average the gradients
-                    for param in model.parameters():
-                        if hasattr(param, 'grad_sample') and param.grad_sample is not None:
-                            # grad_sample shape: [B * aug_mult, ...]
-                            gs = param.grad_sample
-                            # Reshape to [B, aug_mult, ...] and average
-                            gs_reshaped = gs.view(B, A, *gs.shape[1:])
-                            gs_avg = gs_reshaped.mean(dim=1)
-                            param.grad_sample = gs_avg
-                
-                optimizer.step()
-                
-                epoch_loss += loss.item()
-                n_batches += 1
+            # Use BatchMemoryManager for gradient accumulation if needed
+            if use_private and max_physical_batch_size < batch_size:
+                with BatchMemoryManager(
+                    data_loader=loader,
+                    max_physical_batch_size=max_physical_batch_size,
+                    optimizer=optimizer
+                ) as memory_safe_loader:
+                    for batch_idx, (curr_X, curr_y, _) in enumerate(memory_safe_loader):
+                        B, A, C, H, W = curr_X.shape
+                        curr_X_flat = curr_X.view(B * A, C, H, W).to(device, non_blocking=True)
+                        curr_y_rep = curr_y.repeat_interleave(A).to(device, non_blocking=True)
+                        
+                        optimizer.zero_grad(set_to_none=True)
+                        output = model(curr_X_flat)
+                        loss = criterion(output, curr_y_rep)
+                        loss.backward()
+                        
+                        # Average gradients over augmentations
+                        for param in model.parameters():
+                            if hasattr(param, 'grad_sample') and param.grad_sample is not None:
+                                gs = param.grad_sample
+                                gs_reshaped = gs.view(B, A, *gs.shape[1:])
+                                gs_avg = gs_reshaped.mean(dim=1)
+                                param.grad_sample = gs_avg
+                        
+                        optimizer.step()
+                        epoch_loss += loss.item()
+                        n_batches += 1
+            else:
+                for batch_idx, (curr_X, curr_y, _) in enumerate(loader):
+                    B, A, C, H, W = curr_X.shape
+                    curr_X_flat = curr_X.view(B * A, C, H, W).to(device, non_blocking=True)
+                    curr_y_rep = curr_y.repeat_interleave(A).to(device, non_blocking=True)
+                    
+                    optimizer.zero_grad(set_to_none=True)
+                    output = model(curr_X_flat)
+                    loss = criterion(output, curr_y_rep)
+                    loss.backward()
+                    
+                    # Average gradients over augmentations
+                    if hasattr(optimizer, 'grad_samples'):
+                        for param in model.parameters():
+                            if hasattr(param, 'grad_sample') and param.grad_sample is not None:
+                                gs = param.grad_sample
+                                gs_reshaped = gs.view(B, A, *gs.shape[1:])
+                                gs_avg = gs_reshaped.mean(dim=1)
+                                param.grad_sample = gs_avg
+                    
+                    optimizer.step()
+                    epoch_loss += loss.item()
+                    n_batches += 1
         else:
             # Standard training without augmentation multiplicity
-            for batch_idx, (curr_X, curr_y) in enumerate(loader):
-                curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
-                
-                optimizer.zero_grad(set_to_none=True)
-                output = model(curr_X)
-                loss = criterion(output, curr_y)
-                loss.backward()
-                optimizer.step()
-                
-                epoch_loss += loss.item()
-                n_batches += 1
+            # Use BatchMemoryManager for gradient accumulation if needed
+            if use_private and max_physical_batch_size < batch_size:
+                with BatchMemoryManager(
+                    data_loader=loader,
+                    max_physical_batch_size=max_physical_batch_size,
+                    optimizer=optimizer
+                ) as memory_safe_loader:
+                    for batch_idx, (curr_X, curr_y) in enumerate(memory_safe_loader):
+                        curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
+                        
+                        optimizer.zero_grad(set_to_none=True)
+                        output = model(curr_X)
+                        loss = criterion(output, curr_y)
+                        loss.backward()
+                        optimizer.step()
+                        
+                        epoch_loss += loss.item()
+                        n_batches += 1
+            else:
+                for batch_idx, (curr_X, curr_y) in enumerate(loader):
+                    curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
+                    
+                    optimizer.zero_grad(set_to_none=True)
+                    output = model(curr_X)
+                    loss = criterion(output, curr_y)
+                    loss.backward()
+                    optimizer.step()
+                    
+                    epoch_loss += loss.item()
+                    n_batches += 1
         
         epoch_time = time.time() - epoch_start
         avg_loss = epoch_loss / n_batches if n_batches > 0 else 0
@@ -703,6 +755,8 @@ def main():
                         help='number of epochs to train for')
     parser.add_argument('--lr', type=float, default=1.33e-4, 
                         help='learning rate')
+    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'],
+                        help='optimizer to use (sgd or adam)')
     parser.add_argument('--max_grad_norm', type=float, default=1, 
                         help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=10.0, 
@@ -733,6 +787,8 @@ def main():
     parser.add_argument('--holdout_audit', action='store_true')
     parser.add_argument('--aug_mult', type=int, default=1,
                         help='augmentation multiplier (default: 1)')
+    parser.add_argument('--max_physical_batch_size', type=int, default=None,
+                        help='max physical batch size for gradient accumulation (default: same as batch_size)')
     parser.add_argument('--linear_threshold', action='store_true',
                         help='use logistic regression to find optimal threshold instead of exhaustive search')
     parser.add_argument('--defense', action='store_true',
@@ -979,6 +1035,8 @@ def main():
                 wandb_run=wandb_run,
                 world=world,
                 rep=rep,
+                max_physical_batch_size=args.max_physical_batch_size,
+                optimizer_name=args.optimizer,
             )
             
             # Track canary drop statistics
