@@ -385,6 +385,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
             accountant='rdp'
         )
         print(f"Using noise multiplier: {noise_multiplier:.4f} (sample_rate={sample_rate:.4f})")
+        print(f"Dataset size: {len(X)}, Batch size: {batch_size}, Expected batches/epoch: {len(X) // batch_size}")
         
         privacy_engine = PrivacyEngine()
         
@@ -462,7 +463,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
         
         if use_private:
             eps_spent = privacy_engine.get_epsilon(delta)
-            print(f" | Loss={avg_loss:.4f}, Time={epoch_time:.2f}s, ε={eps_spent:.2f}")
+            print(f"Epoch {epoch}: Loss={avg_loss:.4f}, Time={epoch_time:.2f}s, ε={eps_spent:.2f}, Batches={n_batches}")
             
             # Log to wandb
             if use_wandb and wandb_run is not None:
