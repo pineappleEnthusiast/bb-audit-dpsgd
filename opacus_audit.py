@@ -683,11 +683,11 @@ def main():
                         help='|D| (0 => use full dataset)')
     parser.add_argument('--n_epochs', type=int, default=100, 
                         help='number of epochs to train for')
-    parser.add_argument('--lr', type=float, default=1e-4, 
+    parser.add_argument('--lr', type=float, default=1.33e-4, 
                         help='learning rate')
     parser.add_argument('--max_grad_norm', type=float, default=1, 
                         help='gradient clipping norm')
-    parser.add_argument('--epsilon', type=float, default=None, 
+    parser.add_argument('--epsilon', type=float, default=10.0, 
                         help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, 
                         help='privacy parameter, delta')
@@ -701,7 +701,7 @@ def main():
                         help='folder to write results to')
     parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', 
                         help='initialize all models to the same weights')
-    parser.add_argument('--batch_size', type=int, default=256, 
+    parser.add_argument('--batch_size', type=int, default=4096, 
                         help='batch size for training')
     parser.add_argument('--resume', action='store_true', 
                         help='skip experiment if results are present')
