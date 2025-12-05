@@ -430,6 +430,96 @@ def train_model_for_t_epochs(model, X, y, t, batch_size, lr, epsilon, delta,
     return model._module if hasattr(model, '_module') else model
 
 
+def find_first_drop_epoch(
+    canary,
+    canary_label,
+    X_train,
+    y_train,
+    model_name,
+    init_model,
+    n_epochs,
+    defense_k,
+    batch_size,
+    lr,
+    epsilon,
+    delta,
+    max_grad_norm,
+    device,
+    verbose=True
+):
+    """
+    Find the first epoch where the canary would be dropped by the defense.
+    
+    Returns:
+        first_drop_epoch: The first epoch where canary is in top-k (or n_epochs if never dropped)
+        model_state_at_drop: State dict of model at the epoch before first drop (for warm start)
+    """
+    in_shape = X_train.shape
+    out_dim = len(torch.unique(y_train))
+    canary_idx = len(X_train)
+    
+    canary_label_tensor = torch.tensor([canary_label])
+    X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
+    y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
+    
+    if verbose:
+        print("Scanning for first drop epoch...")
+    
+    # Train model incrementally and check each epoch
+    model = Models[model_name](in_shape, out_dim=out_dim)
+    if init_model is not None:
+        model.load_state_dict(deepcopy(init_model))
+    
+    model_state_before_drop = deepcopy(model.state_dict())
+    
+    for t in range(n_epochs):
+        # Train for one more epoch
+        if t > 0:
+            model = train_model_for_t_epochs(
+                model, X_with_canary, y_with_canary, 1,  # Just 1 epoch
+                batch_size, lr, epsilon, delta, n_epochs, max_grad_norm, device
+            )
+        
+        # Check if canary would be dropped
+        model_state = model.state_dict()
+        grad_norms = compute_per_sample_gradient_norms(
+            model_state, model_name, in_shape, out_dim,
+            X_with_canary, y_with_canary, device, batch_size
+        )
+        
+        canary_grad_norm = grad_norms[canary_idx]
+        thresholds = get_top_k_threshold_per_class(
+            grad_norms, y_with_canary.numpy(), defense_k
+        )
+        threshold = thresholds[canary_label]
+        
+        rank, class_size = get_canary_rank_in_class(
+            grad_norms, y_with_canary.numpy(), canary_idx, canary_label
+        )
+        
+        would_be_dropped = canary_grad_norm >= threshold
+        
+        if verbose:
+            print(f"  Epoch {t}: grad_norm={canary_grad_norm:.4f}, threshold={threshold:.4f}, "
+                  f"rank={rank}/{class_size}, dropped={would_be_dropped}")
+        
+        if would_be_dropped:
+            del model
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            return t, model_state_before_drop
+        
+        # Save state before next epoch (in case next epoch causes drop)
+        model_state_before_drop = deepcopy(model_state)
+    
+    del model
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    if verbose:
+        print(f"  Canary never dropped in {n_epochs} epochs!")
+    
+    return n_epochs, model_state_before_drop
+
+
 def craft_defense_aware_canary(
     base_canary,
     true_label,
@@ -446,6 +536,7 @@ def craft_defense_aware_canary(
     max_grad_norm=1.0,
     perturbation_step_size=0.01,
     perturbation_iterations=20,
+    warmup_epochs=2,  # How many epochs before first drop to start from
     device='cuda',
     verbose=True
 ):
@@ -453,13 +544,13 @@ def craft_defense_aware_canary(
     Craft a canary that evades the top-k gradient norm defense for all epochs.
     Uses untargeted attack (gradient ascent) to cause misclassification.
     
-    Strategy: For each epoch t from 0 to n_epochs-1:
-      1. Train a fresh model for t epochs (to simulate state at epoch t)
-      2. Perturb canary using gradient ascent to cause misclassification
-      3. Use the misclassified label as the canary's label
-      4. Check if canary would be in top-k gradient norms for its (wrong) class
-      5. If yes, perturb canary to reduce its gradient norm below threshold
-      6. Move to next epoch
+    Smart strategy:
+      1. First, find the epoch where the original canary first gets dropped
+      2. Start perturbations from a few epochs before that (warm start)
+      3. For each epoch from start_epoch to n_epochs-1:
+         a. Use warm-start model state (pretrained to start_epoch - warmup)
+         b. Train additional epochs to reach current epoch
+         c. Perturb canary to evade defense at this epoch
     
     Args:
         base_canary: Initial canary tensor
@@ -477,6 +568,7 @@ def craft_defense_aware_canary(
         max_grad_norm: Gradient clipping norm
         perturbation_step_size: Step size for canary perturbation
         perturbation_iterations: Max iterations for perturbation per epoch
+        warmup_epochs: Number of epochs before first drop to start perturbations
         device: Device to use
         verbose: Print progress
     
@@ -501,28 +593,65 @@ def craft_defense_aware_canary(
         print(f"  Training set size: {len(X_train)}")
         print(f"  Privacy: ε={epsilon}, δ={delta}")
     
-    # Iterate through each epoch
-    for t in range(n_epochs):
+    # Step 0: Find the first epoch where canary gets dropped
+    first_drop_epoch, warm_start_state = find_first_drop_epoch(
+        canary, canary_label, X_train, y_train, model_name, init_model,
+        n_epochs, defense_k, batch_size, lr, epsilon, delta, max_grad_norm,
+        device, verbose
+    )
+    
+    if first_drop_epoch >= n_epochs:
+        if verbose:
+            print(f"\nCanary never dropped! No perturbation needed.")
+        return canary, canary_label
+    
+    # Calculate start epoch for perturbations (a few epochs before first drop)
+    start_epoch = max(0, first_drop_epoch - warmup_epochs)
+    
+    if verbose:
+        print(f"\n=== Attack Strategy ===")
+        print(f"  First drop epoch: {first_drop_epoch}")
+        print(f"  Starting perturbations from epoch: {start_epoch}")
+        print(f"  Warm-start from epoch: {max(0, first_drop_epoch - 1)}")
+    
+    # Iterate through epochs starting from start_epoch
+    for t in range(start_epoch, n_epochs):
         if verbose:
             print(f"\n=== Epoch {t} ===")
         
-        # Train a fresh model for t epochs (using current canary label)
-        # First, create dataset with current canary and its current label
+        # Create dataset with current canary and its current label
         canary_label_tensor = torch.tensor([canary_label])
         X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
         y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
         
+        # Use warm-start: load state from epoch before first drop, then train remaining epochs
         model = Models[model_name](in_shape, out_dim=out_dim)
-        if init_model is not None:
-            model.load_state_dict(deepcopy(init_model))
         
-        if verbose and t > 0:
-            print(f"  Training fresh model for {t} epochs...")
+        # Calculate how many epochs to train from warm start
+        warm_start_epoch = max(0, first_drop_epoch - 1)
+        epochs_to_train = t - warm_start_epoch
         
-        model = train_model_for_t_epochs(
-            model, X_with_canary, y_with_canary, t,
-            batch_size, lr, epsilon, delta, n_epochs, max_grad_norm, device
-        )
+        if epochs_to_train <= 0:
+            # Before warm start epoch, train from init
+            if init_model is not None:
+                model.load_state_dict(deepcopy(init_model))
+            if t > 0:
+                if verbose:
+                    print(f"  Training from init for {t} epochs...")
+                model = train_model_for_t_epochs(
+                    model, X_with_canary, y_with_canary, t,
+                    batch_size, lr, epsilon, delta, n_epochs, max_grad_norm, device
+                )
+        else:
+            # Load warm start state and train remaining epochs
+            model.load_state_dict(deepcopy(warm_start_state))
+            if verbose:
+                print(f"  Warm-starting from epoch {warm_start_epoch}, training {epochs_to_train} more epochs...")
+            model = train_model_for_t_epochs(
+                model, X_with_canary, y_with_canary, epochs_to_train,
+                batch_size, lr, epsilon, delta, n_epochs, max_grad_norm, device
+            )
+        
         model.to(device)
         
         # Step 1: Untargeted attack - perturb canary to cause misclassification
@@ -654,6 +783,8 @@ if __name__ == "__main__":
                         help='Perturbation step size')
     parser.add_argument('--n_iterations', type=int, default=20,
                         help='Perturbation iterations per epoch')
+    parser.add_argument('--warmup_epochs', type=int, default=2,
+                        help='Number of epochs before first drop to start perturbations')
     parser.add_argument('--output', type=str, default='defense_aware_canary.pt',
                         help='Output file for canary')
     parser.add_argument('--seed', type=int, default=0)
@@ -701,6 +832,7 @@ if __name__ == "__main__":
         max_grad_norm=args.max_grad_norm,
         perturbation_step_size=args.step_size,
         perturbation_iterations=args.n_iterations,
+        warmup_epochs=args.warmup_epochs,
         device=device,
         verbose=True
     )
