@@ -286,7 +286,10 @@ def perturb_canary_to_reduce_grad_norm(
 def perturb_canary_untargeted(
     canary,
     true_label,
-    model,
+    model_state_dict,
+    model_name,
+    in_shape,
+    out_dim,
     device,
     n_iterations=20,
     step_size=0.01,
@@ -299,7 +302,10 @@ def perturb_canary_untargeted(
     Args:
         canary: Current canary tensor
         true_label: The true/original label to move away from
-        model: Model to attack
+        model_state_dict: State dict of model weights
+        model_name: Model architecture name
+        in_shape: Input shape for model
+        out_dim: Output dimension
         device: Device
         n_iterations: Number of perturbation iterations
         step_size: Step size for perturbation
@@ -312,8 +318,12 @@ def perturb_canary_untargeted(
     label_tensor = torch.tensor([true_label]).to(device)
     criterion = nn.CrossEntropyLoss()
     
-    model.eval()
+    # Create fresh model without Opacus hooks
+    model = Models[model_name](in_shape, out_dim=out_dim)
+    model = make_opacus_compatible(model)
+    model.load_state_dict(model_state_dict, strict=False)
     model.to(device)
+    model.eval()
     
     for iteration in range(n_iterations):
         canary.requires_grad = True
@@ -346,6 +356,7 @@ def perturb_canary_untargeted(
         output = model(canary.unsqueeze(0))
         final_pred = output.argmax(dim=1).item()
     
+    del model
     return canary.detach().cpu(), final_pred
 
 
@@ -518,10 +529,16 @@ def craft_defense_aware_canary(
         if verbose:
             print(f"  Performing untargeted attack (gradient ascent)...")
         
+        # Get model state dict for fresh model creation
+        model_state = model.state_dict()
+        
         canary, new_pred_label = perturb_canary_untargeted(
             canary,
             true_label,  # Always attack away from the TRUE label
-            model,
+            model_state,
+            model_name,
+            in_shape,
+            out_dim,
             device,
             n_iterations=perturbation_iterations,
             step_size=perturbation_step_size,
@@ -540,9 +557,7 @@ def craft_defense_aware_canary(
         X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
         y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
         
-        # Get model state dict for fresh model creation
-        model_state = model.state_dict()
-        
+        # model_state already obtained above
         grad_norms = compute_per_sample_gradient_norms(
             model_state, model_name, in_shape, out_dim,
             X_with_canary, y_with_canary, device, batch_size
