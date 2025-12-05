@@ -39,30 +39,34 @@ def make_opacus_compatible(model):
     return model
 
 
-def compute_per_sample_gradient_norms(model, X, y, device, batch_size=256, max_grad_norm=1.0):
+def compute_per_sample_gradient_norms(model_state_dict, model_name, in_shape, out_dim, 
+                                       X, y, device, batch_size=256):
     """
     Compute the per-sample gradient norm for each sample using Opacus.
     This is exactly what the defense uses to filter samples.
     
     Args:
-        model: The model (will be wrapped with GradSampleModule temporarily)
+        model_state_dict: State dict of the model weights
+        model_name: Name of the model architecture
+        in_shape: Input shape for model creation
+        out_dim: Output dimension for model creation
         X: Input data tensor
         y: Labels tensor
         device: Device to use
         batch_size: Batch size for computation
-        max_grad_norm: Max gradient norm (for reference, not used in computation)
     
     Returns:
         numpy array of per-sample gradient norms
     """
-    # Make a fresh copy of the model to avoid hook issues
-    model_copy = deepcopy(model)
-    model_copy = make_opacus_compatible(model_copy)
-    model_copy.to(device)
-    model_copy.eval()
+    # Create a completely fresh model and load weights
+    fresh_model = Models[model_name](in_shape, out_dim=out_dim)
+    fresh_model = make_opacus_compatible(fresh_model)
+    fresh_model.load_state_dict(model_state_dict)
+    fresh_model.to(device)
+    fresh_model.eval()
     
     # Wrap with GradSampleModule
-    grad_sample_model = GradSampleModule(model_copy)
+    grad_sample_model = GradSampleModule(fresh_model)
     
     grad_norms = np.zeros(len(X))
     criterion = nn.CrossEntropyLoss(reduction='mean')
@@ -94,7 +98,7 @@ def compute_per_sample_gradient_norms(model, X, y, device, batch_size=256, max_g
     
     # Clean up
     del grad_sample_model
-    del model_copy
+    del fresh_model
     
     return grad_norms
 
@@ -201,7 +205,10 @@ def create_dpsgd_training_setup(model, X, y, batch_size, lr, epsilon, delta, n_e
 def perturb_canary_to_reduce_grad_norm(
     canary,
     canary_label,
-    model,
+    model_state_dict,
+    model_name,
+    in_shape,
+    out_dim,
     device,
     target_grad_norm,
     n_iterations=20,
@@ -223,18 +230,16 @@ def perturb_canary_to_reduce_grad_norm(
     label_tensor = torch.tensor([canary_label]).to(device)
     criterion = nn.CrossEntropyLoss()
     
-    original_canary = canary.clone()
-    
-    # Wrap model for per-sample gradients if needed
-    if isinstance(model, GradSampleModule):
-        grad_model = model
-    else:
-        grad_model = GradSampleModule(deepcopy(model))
-        grad_model.to(device)
-    
-    grad_model.eval()
-    
     for iteration in range(n_iterations):
+        # Create fresh model each iteration to avoid hook issues
+        fresh_model = Models[model_name](in_shape, out_dim=out_dim)
+        fresh_model = make_opacus_compatible(fresh_model)
+        fresh_model.load_state_dict(model_state_dict)
+        fresh_model.to(device)
+        fresh_model.eval()
+        
+        grad_model = GradSampleModule(fresh_model)
+        
         canary.requires_grad = True
         
         # Forward pass
@@ -259,6 +264,7 @@ def perturb_canary_to_reduce_grad_norm(
         if current_grad_norm.item() <= target_grad_norm:
             if verbose:
                 print(f"    Reached target at iteration {iteration}")
+            del grad_model, fresh_model
             break
         
         # Compute gradient of grad_norm w.r.t. input
@@ -269,6 +275,9 @@ def perturb_canary_to_reduce_grad_norm(
             # Use sign of gradient (like FGSM) for more stable updates
             canary = canary - step_size * grad_of_grad_norm.sign()
             canary = canary.detach()
+        
+        # Clean up
+        del grad_model, fresh_model
     
     return canary.detach().cpu()
 
@@ -530,8 +539,12 @@ def craft_defense_aware_canary(
         X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
         y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
         
+        # Get model state dict for fresh model creation
+        model_state = model.state_dict()
+        
         grad_norms = compute_per_sample_gradient_norms(
-            model, X_with_canary, y_with_canary, device, batch_size
+            model_state, model_name, in_shape, out_dim,
+            X_with_canary, y_with_canary, device, batch_size
         )
         
         canary_grad_norm = grad_norms[canary_idx]
@@ -565,7 +578,10 @@ def craft_defense_aware_canary(
             canary = perturb_canary_to_reduce_grad_norm(
                 canary,
                 canary_label,
-                model,
+                model_state,
+                model_name,
+                in_shape,
+                out_dim,
                 device,
                 target_grad_norm=target_norm,
                 n_iterations=perturbation_iterations,
@@ -576,7 +592,8 @@ def craft_defense_aware_canary(
             # Verify new gradient norm
             X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
             new_grad_norms = compute_per_sample_gradient_norms(
-                model, X_with_canary, y_with_canary, device, batch_size
+                model_state, model_name, in_shape, out_dim,
+                X_with_canary, y_with_canary, device, batch_size
             )
             new_canary_grad_norm = new_grad_norms[canary_idx]
             new_rank, _ = get_canary_rank_in_class(
