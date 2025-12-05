@@ -248,7 +248,8 @@ def compute_per_sample_losses(model, X, y, criterion, batch_size=512, device='cu
 def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                        n_epochs, lr, batch_size, init_model=None, out_dim=10, aug_mult=1,
                        defense=False, defense_k=5, use_wandb=False, wandb_run=None, 
-                       world='in', rep=0, max_physical_batch_size=None, optimizer_name='sgd'):
+                       world='in', rep=0, max_physical_batch_size=None, optimizer_name='sgd',
+                       early_stopping_patience=None):
     """
     Train a model using Opacus for DP-SGD.
     
@@ -419,6 +420,10 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     if max_physical_batch_size is None:
         max_physical_batch_size = batch_size
     
+    # Early stopping state
+    best_loss = float('inf')
+    patience_counter = 0
+    
     # Training loop
     for epoch in range(n_epochs):
         epoch_start = time.time()
@@ -548,6 +553,17 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     f'{world}/rep_{rep}/active_samples': n_active,
                     'epoch': epoch,
                 })
+        
+        # Early stopping check
+        if early_stopping_patience is not None:
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stopping_patience:
+                    print(f"Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
+                    break
         
         # Defense: identify and drop high-loss samples per class
         if defense:
@@ -753,6 +769,8 @@ def main():
                         help='|D| (0 => use full dataset)')
     parser.add_argument('--n_epochs', type=int, default=100, 
                         help='number of epochs to train for')
+    parser.add_argument('--early_stopping', type=int, default=None,
+                        help='early stopping patience (number of epochs without improvement)')
     parser.add_argument('--lr', type=float, default=1.33e-4, 
                         help='learning rate')
     parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'],
@@ -1037,6 +1055,7 @@ def main():
                 rep=rep,
                 max_physical_batch_size=args.max_physical_batch_size,
                 optimizer_name=args.optimizer,
+                early_stopping_patience=args.early_stopping,
             )
             
             # Track canary drop statistics
