@@ -511,7 +511,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             print('Defense')
             # Find top-k samples per class for gradient ascent
             k = 5  # Number of top samples per class
-            top_k_grads = {}
+            # top_k_grads = {}
             
             # Get unique classes
             unique_classes = torch.unique(y).cpu()
@@ -533,17 +533,17 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 topk_global_indices = cls_indices[topk_indices]
                 
                 # Compute gradients for these samples
-                model.zero_grad()
+                # model.zero_grad()
                 
                 # Get the samples and their targets
-                X_topk = X[topk_global_indices].to(device)
-                y_topk = y[topk_global_indices].to(device)
+                # X_topk = X[topk_global_indices].to(device)
+                # y_topk = y[topk_global_indices].to(device)
                 
                 # Get per-sample gradients using the utility function
-                ps_grads = get_per_sample_grads(model, X_topk, y_topk, criterion)
+                # ps_grads = get_per_sample_grads(model, X_topk, y_topk, criterion)
                 
                 # Store the gradients for later use
-                top_k_grads[cls] = ps_grads
+                # top_k_grads[cls] = ps_grads
                 
                 # Mark these samples as dropped
                 dropped_indices = topk_global_indices.cpu().numpy()
@@ -555,29 +555,29 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     train_model._canary_dropped = True  # Mark that we've seen the canary drop
         
             # Perform gradient ascent step with learning rate (outside class loop)
-            if top_k_grads:
-                model.zero_grad()
+            # if top_k_grads:
+            #     model.zero_grad()
                 
-                # Sum gradients across all classes
-                sum_grads = None
-                for grads in top_k_grads.values():
-                    if sum_grads is None:
-                        sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
-                    else:
-                        for k in grads:
-                            sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
+            #     # Sum gradients across all classes
+            #     sum_grads = None
+            #     for grads in top_k_grads.values():
+            #         if sum_grads is None:
+            #             sum_grads = {k: v.sum(dim=0) for k, v in grads.items()}
+            #         else:
+            #             for k in grads:
+            #                 sum_grads[k] = sum_grads.get(k, 0) + grads[k].sum(dim=0)
                 
-                # Apply gradient ascent
-                for name, param in model.named_parameters():
-                    if name in sum_grads:
-                        if param.grad is None:
-                            param.grad = -lr * sum_grads[name]  # Negative for ascent
-                        else:
-                            param.grad.add_(-lr * sum_grads[name])
+            #     # Apply gradient ascent
+            #     for name, param in model.named_parameters():
+            #         if name in sum_grads:
+            #             if param.grad is None:
+            #                 param.grad = -lr * sum_grads[name]  # Negative for ascent
+            #             else:
+            #                 param.grad.add_(-lr * sum_grads[name])
                 
-                # Take the gradient ascent step
-                optimizer.step()
-                optimizer.zero_grad()
+            #     # Take the gradient ascent step
+            #     optimizer.step()
+            #     optimizer.zero_grad()
         
             # Update scores for the next epoch
             scores.fill(0)
