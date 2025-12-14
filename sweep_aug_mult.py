@@ -26,7 +26,6 @@ MAX_GRAD_NORM = -1.0
 OPTIMIZER = "adam"
 SEED = 0
 OUT_DIR = "sweep_results"
-N_DF = 2  # Dataset size (0 = full dataset, set to small value for testing)
 
 # Optional parameters (set to None to disable)
 MAX_PHYSICAL_BATCH_SIZE = None
@@ -54,7 +53,6 @@ def run_experiment(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, 
         "--optimizer", OPTIMIZER,
         "--seed", str(SEED),
         "--out", out_folder,
-        "--n_df", str(N_DF),
     ]
     
     # Add privacy parameters only if epsilon is set
