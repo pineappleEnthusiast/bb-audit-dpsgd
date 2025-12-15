@@ -23,7 +23,7 @@ BATCH_SIZE = 4000
 EPSILON = 10.0
 DELTA = 1e-5
 MAX_GRAD_NORM = 1.0
-OPTIMIZER = "adam"
+OPTIMIZER = "sgd"
 SEED = 0
 OUT_DIR = "sweep_results"
 

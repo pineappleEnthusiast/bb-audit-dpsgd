@@ -148,24 +148,26 @@ class AugmentedDataset(Dataset):
     Dataset wrapper that applies augmentation multiplicity.
     Each sample is repeated aug_mult times with different augmentations.
     """
-    def __init__(self, X, y, aug_fn, aug_mult=1):
+    def __init__(self, X, y, aug_fn, aug_mult=1, indices=None):
         self.X = X
         self.y = y
         self.aug_fn = aug_fn
         self.aug_mult = aug_mult
+        self.indices = indices
         
     def __getitem__(self, index):
         # Get the original sample
         x = self.X[index]
         y = self.y[index]
+        idx = int(self.indices[index]) if self.indices is not None else index
         
         if self.aug_mult > 1 and self.aug_fn is not None:
             # Apply augmentation aug_mult times and stack
             augmented = torch.stack([self.aug_fn(x) for _ in range(self.aug_mult)])
-            return augmented, y, index
+            return augmented, y, idx
         else:
             # Return with extra dimension for consistency
-            return x.unsqueeze(0), y, index
+            return x.unsqueeze(0), y, idx
     
     def __len__(self):
         return len(self.X)
@@ -314,7 +316,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     # Create DataLoader
     if aug_mult > 1 and aug_fn is not None:
         # Use custom dataset with augmentation
-        dataset = AugmentedDataset(X, y, aug_fn, aug_mult)
+        dataset = AugmentedDataset(X, y, aug_fn, aug_mult, indices=np.arange(len(X)))
         
         # Custom collate function to handle augmented batches
         def collate_augmented(batch):
@@ -333,7 +335,10 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
             collate_fn=collate_augmented,
         )
     else:
-        dataset = TensorDataset(X, y)
+        if defense:
+            dataset = TensorDataset(X, y, torch.arange(len(X), dtype=torch.long))
+        else:
+            dataset = TensorDataset(X, y)
         loader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -344,7 +349,9 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
         )
     
     # Defense state
-    drop_mask = np.zeros(len(X), dtype=bool)
+    # 0 = normal, 1 = apply gradient-ascent once, 2 = dropped
+    drop_mask = np.zeros(len(X), dtype=np.int8)
+    scores = np.zeros(len(X), dtype=np.float32)
     use_private = epsilon is not None and max_grad_norm is not None
     privacy_engine = None
     canary_dropped_epoch = None  # Track when canary is dropped
@@ -355,10 +362,12 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     def create_loader_and_engine(X_active, y_active, active_indices=None):
         """Create a new dataloader and optionally wrap with privacy engine."""
         nonlocal privacy_engine
+        if active_indices is None:
+            active_indices = np.arange(len(X_active))
         
         if aug_mult > 1 and aug_fn is not None:
             # Use augmented dataset
-            ds = AugmentedDataset(X_active, y_active, aug_fn, aug_mult)
+            ds = AugmentedDataset(X_active, y_active, aug_fn, aug_mult, indices=active_indices)
             
             def collate_augmented(batch):
                 xs = torch.stack([item[0] for item in batch])
@@ -375,7 +384,10 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                 collate_fn=collate_augmented,
             )
         else:
-            ds = TensorDataset(X_active, y_active)
+            if defense:
+                ds = TensorDataset(X_active, y_active, torch.tensor(active_indices, dtype=torch.long))
+            else:
+                ds = TensorDataset(X_active, y_active)
             ldr = DataLoader(
                 ds,
                 batch_size=min(batch_size, len(ds)),
@@ -431,8 +443,8 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
         n_batches = 0
         
         # Get active samples (not dropped by defense)
-        active_mask = ~drop_mask
-        n_active = active_mask.sum()
+        active_mask = (drop_mask != 2)
+        n_active = int(active_mask.sum())
         
         if defense:
             print(f"Epoch {epoch} (Active samples: {n_active}/{len(X)})", end='', flush=True)
@@ -446,10 +458,11 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     max_physical_batch_size=max_physical_batch_size,
                     optimizer=optimizer
                 ) as memory_safe_loader:
-                    for batch_idx, (curr_X, curr_y, _) in enumerate(memory_safe_loader):
+                    for batch_idx, (curr_X, curr_y, idxs) in enumerate(memory_safe_loader):
                         B, A, C, H, W = curr_X.shape
                         curr_X_flat = curr_X.view(B * A, C, H, W).to(device, non_blocking=True)
                         curr_y_rep = curr_y.repeat_interleave(A).to(device, non_blocking=True)
+                        idxs = idxs.to(device, non_blocking=True)
                         
                         optimizer.zero_grad(set_to_none=True)
                         output = model(curr_X_flat)
@@ -464,15 +477,42 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                                 gs_reshaped = gs.view(B, A, *gs.shape[1:])
                                 gs_agg = gs_reshaped.sum(dim=1)
                                 param.grad_sample = gs_agg
+
+                        if defense and use_private:
+                            gs_list = []
+                            for p in model.parameters():
+                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                    gs_list.append(p.grad_sample.view(p.grad_sample.shape[0], -1))
+                            if len(gs_list) > 0:
+                                per_sample_flat_grads = torch.cat(gs_list, dim=1)
+                                all_norms = torch.zeros_like(curr_y, dtype=torch.float32)
+                                for cls in torch.unique(curr_y):
+                                    cls_mask = (curr_y == cls)
+                                    if cls_mask.any():
+                                        all_norms[cls_mask] = per_sample_flat_grads[cls_mask].norm(float('inf'), dim=1)
+                                scores[idxs.detach().cpu().numpy()] = all_norms.detach().cpu().numpy()
+
+                            ascent_mask = (torch.from_numpy(drop_mask[idxs.detach().cpu().numpy()]).to(device) == 1)
+                            if ascent_mask.any():
+                                for p in model.parameters():
+                                    if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                        p.grad_sample[ascent_mask] *= -1
                         
                         optimizer.step()
+
+                        if defense:
+                            ascent_idxs = idxs.detach().cpu().numpy()[
+                                (drop_mask[idxs.detach().cpu().numpy()] == 1)
+                            ]
+                            drop_mask[ascent_idxs] = 2
                         epoch_loss += loss.item()
                         n_batches += 1
             else:
-                for batch_idx, (curr_X, curr_y, _) in enumerate(loader):
+                for batch_idx, (curr_X, curr_y, idxs) in enumerate(loader):
                     B, A, C, H, W = curr_X.shape
                     curr_X_flat = curr_X.view(B * A, C, H, W).to(device, non_blocking=True)
                     curr_y_rep = curr_y.repeat_interleave(A).to(device, non_blocking=True)
+                    idxs = idxs.to(device, non_blocking=True)
                     
                     optimizer.zero_grad(set_to_none=True)
                     output = model(curr_X_flat)
@@ -488,8 +528,34 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                                 gs_reshaped = gs.view(B, A, *gs.shape[1:])
                                 gs_agg = gs_reshaped.sum(dim=1)
                                 param.grad_sample = gs_agg
+
+                    if defense and use_private:
+                        gs_list = []
+                        for p in model.parameters():
+                            if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                gs_list.append(p.grad_sample.view(p.grad_sample.shape[0], -1))
+                        if len(gs_list) > 0:
+                            per_sample_flat_grads = torch.cat(gs_list, dim=1)
+                            all_norms = torch.zeros_like(curr_y, dtype=torch.float32)
+                            for cls in torch.unique(curr_y):
+                                cls_mask = (curr_y == cls)
+                                if cls_mask.any():
+                                    all_norms[cls_mask] = per_sample_flat_grads[cls_mask].norm(float('inf'), dim=1)
+                            scores[idxs.detach().cpu().numpy()] = all_norms.detach().cpu().numpy()
+
+                        ascent_mask = (torch.from_numpy(drop_mask[idxs.detach().cpu().numpy()]).to(device) == 1)
+                        if ascent_mask.any():
+                            for p in model.parameters():
+                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                    p.grad_sample[ascent_mask] *= -1
                     
                     optimizer.step()
+
+                    if defense:
+                        ascent_idxs = idxs.detach().cpu().numpy()[
+                            (drop_mask[idxs.detach().cpu().numpy()] == 1)
+                        ]
+                        drop_mask[ascent_idxs] = 2
                     epoch_loss += loss.item()
                     n_batches += 1
         else:
@@ -501,26 +567,90 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     max_physical_batch_size=max_physical_batch_size,
                     optimizer=optimizer
                 ) as memory_safe_loader:
-                    for batch_idx, (curr_X, curr_y) in enumerate(memory_safe_loader):
+                    for batch_idx, batch in enumerate(memory_safe_loader):
+                        if defense:
+                            curr_X, curr_y, idxs = batch
+                            idxs = idxs.to(device, non_blocking=True)
+                        else:
+                            curr_X, curr_y = batch
+                            idxs = None
                         curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
                         
                         optimizer.zero_grad(set_to_none=True)
                         output = model(curr_X)
-                        loss = criterion(output, curr_y)
+                        loss = criterion(output, curr_y).mean()
                         loss.backward()
+
+                        if defense and use_private and idxs is not None:
+                            gs_list = []
+                            for p in model.parameters():
+                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                    gs_list.append(p.grad_sample.view(p.grad_sample.shape[0], -1))
+                            if len(gs_list) > 0:
+                                per_sample_flat_grads = torch.cat(gs_list, dim=1)
+                                all_norms = torch.zeros_like(curr_y, dtype=torch.float32)
+                                for cls in torch.unique(curr_y):
+                                    cls_mask = (curr_y == cls)
+                                    if cls_mask.any():
+                                        all_norms[cls_mask] = per_sample_flat_grads[cls_mask].norm(float('inf'), dim=1)
+                                scores[idxs.detach().cpu().numpy()] = all_norms.detach().cpu().numpy()
+
+                            ascent_mask = (torch.from_numpy(drop_mask[idxs.detach().cpu().numpy()]).to(device) == 1)
+                            if ascent_mask.any():
+                                for p in model.parameters():
+                                    if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                        p.grad_sample[ascent_mask] *= -1
                         optimizer.step()
+
+                        if defense and idxs is not None:
+                            ascent_idxs = idxs.detach().cpu().numpy()[
+                                (drop_mask[idxs.detach().cpu().numpy()] == 1)
+                            ]
+                            drop_mask[ascent_idxs] = 2
                         
                         epoch_loss += loss.item()
                         n_batches += 1
             else:
-                for batch_idx, (curr_X, curr_y) in enumerate(loader):
+                for batch_idx, batch in enumerate(loader):
+                    if defense:
+                        curr_X, curr_y, idxs = batch
+                        idxs = idxs.to(device, non_blocking=True)
+                    else:
+                        curr_X, curr_y = batch
+                        idxs = None
                     curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
                     
                     optimizer.zero_grad(set_to_none=True)
                     output = model(curr_X)
                     loss = criterion(output, curr_y).mean()
                     loss.backward()
+
+                    if defense and use_private and idxs is not None:
+                        gs_list = []
+                        for p in model.parameters():
+                            if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                gs_list.append(p.grad_sample.view(p.grad_sample.shape[0], -1))
+                        if len(gs_list) > 0:
+                            per_sample_flat_grads = torch.cat(gs_list, dim=1)
+                            all_norms = torch.zeros_like(curr_y, dtype=torch.float32)
+                            for cls in torch.unique(curr_y):
+                                cls_mask = (curr_y == cls)
+                                if cls_mask.any():
+                                    all_norms[cls_mask] = per_sample_flat_grads[cls_mask].norm(float('inf'), dim=1)
+                            scores[idxs.detach().cpu().numpy()] = all_norms.detach().cpu().numpy()
+
+                        ascent_mask = (torch.from_numpy(drop_mask[idxs.detach().cpu().numpy()]).to(device) == 1)
+                        if ascent_mask.any():
+                            for p in model.parameters():
+                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                    p.grad_sample[ascent_mask] *= -1
                     optimizer.step()
+
+                    if defense and idxs is not None:
+                        ascent_idxs = idxs.detach().cpu().numpy()[
+                            (drop_mask[idxs.detach().cpu().numpy()] == 1)
+                        ]
+                        drop_mask[ascent_idxs] = 2
                     
                     epoch_loss += loss.item()
                     n_batches += 1
@@ -567,87 +697,46 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     print(f"Early stopping triggered at epoch {epoch} (patience={early_stopping_patience})")
                     break
         
-        # Defense: identify and drop high-loss samples per class
-        if defense:
-            # Compute per-sample losses on all samples (including dropped ones for scoring)
-            all_losses = compute_per_sample_losses(model, X, y, criterion, batch_size, device)
-            
-            # Find top-k highest loss samples per class (excluding already dropped)
+        # Defense: identify and mark samples for one-step gradient ascent (then drop)
+        if defense and use_private:
             unique_classes = torch.unique(y).cpu().numpy()
-            samples_to_drop = []
-            
+            samples_to_mark = []
+
             for cls in unique_classes:
-                # Get indices of samples in this class that are not yet dropped
-                cls_mask = (y.numpy() == cls) & (~drop_mask)
+                cls_mask = (y.cpu().numpy() == cls) & (drop_mask != 2)
                 cls_indices = np.where(cls_mask)[0]
-                
+
                 if len(cls_indices) == 0:
                     continue
-                
-                # Get losses for this class
-                cls_losses = all_losses[cls_indices]
-                
-                # Find top-k indices with highest losses
+
+                cls_scores = scores[cls_indices]
                 k = min(defense_k, len(cls_indices))
-                topk_local_indices = np.argsort(cls_losses)[-k:]
+                topk_local_indices = np.argsort(cls_scores)[-k:]
                 topk_global_indices = cls_indices[topk_local_indices]
-                
-                samples_to_drop.extend(topk_global_indices)
-                
-                # Check if canary was dropped
+
+                samples_to_mark.extend(topk_global_indices)
+
                 if canary_idx in topk_global_indices and canary_dropped_epoch is None:
                     canary_dropped_epoch = epoch
-                    print(f"\n[INFO] Canary (index {canary_idx}) was dropped at epoch {epoch}!")
-                    
-                    # Log canary drop to wandb
+                    print(f"\n[INFO] Canary (index {canary_idx}) was marked by defense at epoch {epoch}!")
+
                     if use_wandb and wandb_run is not None:
                         wandb_run.log({
                             f'{world}/rep_{rep}/canary_dropped_epoch': epoch,
                         })
-            
-            # Update drop mask
-            for idx in samples_to_drop:
-                drop_mask[idx] = True
-            
-            # Recreate dataloader with remaining samples
-            active_indices = np.where(~drop_mask)[0]
+
+            for idx in samples_to_mark:
+                if drop_mask[idx] == 0:
+                    drop_mask[idx] = 1
+
+            # Recreate loader with remaining (non-dropped) samples, preserving original indices
+            active_indices = np.where(drop_mask != 2)[0]
             if len(active_indices) > 0:
                 X_active = X[active_indices]
                 y_active = y[active_indices]
-                
-                # Create new loader (without privacy engine - we keep using the original wrapped model)
-                if aug_mult > 1 and aug_fn is not None:
-                    ds = AugmentedDataset(X_active, y_active, aug_fn, aug_mult)
-                    
-                    def collate_augmented(batch):
-                        xs = torch.stack([item[0] for item in batch])
-                        ys = torch.tensor([item[1] for item in batch])
-                        idxs = torch.tensor([item[2] for item in batch])
-                        return xs, ys, idxs
-                    
-                    loader = DataLoader(
-                        ds,
-                        batch_size=min(batch_size, len(ds)),
-                        shuffle=True,
-                        drop_last=True,
-                        num_workers=0,
-                        collate_fn=collate_augmented,
-                    )
-                else:
-                    ds = TensorDataset(X_active, y_active)
-                    loader = DataLoader(
-                        ds,
-                        batch_size=min(batch_size, len(ds)),
-                        shuffle=True,
-                        drop_last=True,
-                        num_workers=0,
-                    )
-                
-                # Re-wrap with Opacus if using privacy
+                loader = create_loader_and_engine(X_active, y_active, active_indices=active_indices)
+
                 if use_private:
-                    # Note: We need to create a fresh privacy engine for the new loader
-                    # This is a limitation - the privacy accounting may not be exact
-                    # For a proper implementation, we'd need to handle this differently
                     loader = privacy_engine._prepare_data_loader(loader, distributed=False, poisson_sampling=False)
     
     # Report canary drop status

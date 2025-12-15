@@ -30,6 +30,7 @@ BLOCK_SIZE = 500
 EPSILON = 10.0
 DELTA = 1e-5
 MAX_GRAD_NORM = 1.0
+OPTIMIZER = "sgd"
 SEED = 0
 OUT_DIR = "sweep_results_parallel"
 
@@ -70,6 +71,7 @@ def build_torchrun_cmd(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOC
         f"--n_reps {N_REPS}",
         f"--n_epochs {n_epochs}",
         f"--lr {LR}",
+        f"--optimizer {OPTIMIZER}",
         f"--batch_size {batch_size}",
         f"--block_size {effective_block_size}",
         f"--seed {SEED}",
@@ -223,6 +225,7 @@ def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EP
         "--n_reps", str(N_REPS),
         "--n_epochs", str(n_epochs),
         "--lr", str(LR),
+        "--optimizer", str(OPTIMIZER),
         "--batch_size", str(batch_size),
         "--block_size", str(effective_block_size),
         "--seed", str(SEED),
