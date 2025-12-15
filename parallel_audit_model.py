@@ -162,7 +162,8 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None,
+               optimizer_name='sgd'):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -189,7 +190,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     model.train()
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr)
+    if optimizer_name == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+    else:
+        optimizer = optim.SGD(model.parameters(), lr=lr)
 
     # Set DP noise
     # TODO: switch accountant
@@ -206,7 +210,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     block_size = min(block_size, batch_size)
 
-    if len(X.shape) > 2:
+    if aug_mult > 1 and len(X.shape) > 2:
         aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
     else:
         aug_fn = None
@@ -442,7 +446,6 @@ def main():
     #     print(f'[Rank {rank}] CUDA not available, using CPU')
 
 
-
     dist.init_process_group(
         backend='nccl',
         init_method='env://'
@@ -469,6 +472,8 @@ def main():
     parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
     parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs to train for')
     parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'],
+                        help='optimizer to use (sgd or adam)')
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
@@ -533,7 +538,6 @@ def main():
         else:
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
-
 
     # Craft target
     if rank == 0:
@@ -620,7 +624,8 @@ def main():
             rank=rank,
             world_size=world_size,
             gradient_space_audit=False,
-            defense=False
+            defense=False,
+            optimizer_name=args.optimizer
         )
         print("FGSM model training completed")
         
@@ -736,6 +741,7 @@ def main():
                 out_dim=out_dim, 
                 defense=args.defense,
                 aug_mult=args.aug_mult,
+                optimizer_name=args.optimizer,
                 gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
                 crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,
                 device=device,
