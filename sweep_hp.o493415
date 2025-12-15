@@ -1,0 +1,1269 @@
+Running on host c613-132.vista.tacc.utexas.edu
+CUDA_VISIBLE_DEVICES=
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Epoch 0: Loss=2.0831, Time=5.95s
+Epoch 1: Loss=1.8368, Time=0.64s
+Epoch 2: Loss=1.7245, Time=0.57s
+Epoch 3: Loss=1.6302, Time=0.57s
+Epoch 4: Loss=1.5483, Time=0.64s
+Epoch 5: Loss=1.4729, Time=0.57s
+Epoch 6: Loss=1.4036, Time=0.64s
+Epoch 7: Loss=1.3449, Time=0.57s
+Epoch 8: Loss=1.2931, Time=0.57s
+Epoch 9: Loss=1.2480, Time=0.64s
+Epoch 10: Loss=1.2135, Time=0.57s
+Epoch 11: Loss=1.1763, Time=0.64s
+Epoch 12: Loss=1.1471, Time=0.57s
+Epoch 13: Loss=1.1175, Time=0.57s
+Epoch 14: Loss=1.0932, Time=0.64s
+Epoch 15: Loss=1.0676, Time=0.57s
+Epoch 16: Loss=1.0451, Time=0.64s
+Epoch 17: Loss=1.0244, Time=0.57s
+Epoch 18: Loss=1.0054, Time=0.64s
+Epoch 19: Loss=0.9871, Time=0.58s
+Epoch 20: Loss=0.9691, Time=0.57s
+Epoch 21: Loss=0.9523, Time=0.64s
+Epoch 22: Loss=0.9346, Time=0.57s
+Epoch 23: Loss=0.9208, Time=0.64s
+Epoch 24: Loss=0.9094, Time=0.57s
+Epoch 25: Loss=0.8968, Time=0.57s
+Epoch 26: Loss=0.8834, Time=0.64s
+Epoch 27: Loss=0.8715, Time=0.57s
+Epoch 28: Loss=0.8616, Time=0.64s
+Epoch 29: Loss=0.8475, Time=0.57s
+Epoch 30: Loss=0.8408, Time=0.57s
+Epoch 31: Loss=0.8273, Time=0.64s
+Epoch 32: Loss=0.8180, Time=0.57s
+Epoch 33: Loss=0.8055, Time=0.64s
+Epoch 34: Loss=0.7981, Time=0.57s
+Epoch 35: Loss=0.7913, Time=0.64s
+Epoch 36: Loss=0.7841, Time=0.57s
+Epoch 37: Loss=0.7806, Time=0.57s
+Epoch 38: Loss=0.7669, Time=0.64s
+Epoch 39: Loss=0.7569, Time=0.57s
+Epoch 40: Loss=0.7491, Time=0.64s
+Epoch 41: Loss=0.7429, Time=0.57s
+Epoch 42: Loss=0.7345, Time=0.57s
+Epoch 43: Loss=0.7261, Time=0.64s
+Epoch 44: Loss=0.7211, Time=0.57s
+Epoch 45: Loss=0.7123, Time=0.64s
+Epoch 46: Loss=0.7055, Time=0.57s
+Epoch 47: Loss=0.6975, Time=0.57s
+Epoch 48: Loss=0.6901, Time=0.64s
+Epoch 49: Loss=0.6863, Time=0.57s
+Epoch 50: Loss=0.6798, Time=0.64s
+Epoch 51: Loss=0.6690, Time=0.57s
+Epoch 52: Loss=0.6639, Time=0.64s
+Epoch 53: Loss=0.6632, Time=0.58s
+Epoch 54: Loss=0.6513, Time=0.57s
+Epoch 55: Loss=0.6454, Time=0.64s
+Epoch 56: Loss=0.6402, Time=0.57s
+Epoch 57: Loss=0.6324, Time=0.64s
+Epoch 58: Loss=0.6276, Time=0.58s
+Epoch 59: Loss=0.6197, Time=0.57s
+Epoch 60: Loss=0.6156, Time=0.64s
+Epoch 61: Loss=0.6095, Time=0.57s
+Epoch 62: Loss=0.6033, Time=0.64s
+Epoch 63: Loss=0.5955, Time=0.57s
+Epoch 64: Loss=0.5922, Time=0.57s
+Epoch 65: Loss=0.5852, Time=0.64s
+Epoch 66: Loss=0.5797, Time=0.57s
+Epoch 67: Loss=0.5768, Time=0.64s
+Epoch 68: Loss=0.5681, Time=0.57s
+Epoch 69: Loss=0.5620, Time=0.64s
+Epoch 70: Loss=0.5583, Time=0.58s
+Epoch 71: Loss=0.5543, Time=0.57s
+Epoch 72: Loss=0.5475, Time=0.64s
+Epoch 73: Loss=0.5409, Time=0.57s
+Epoch 74: Loss=0.5364, Time=0.64s
+Epoch 75: Loss=0.5309, Time=0.58s
+Epoch 76: Loss=0.5267, Time=0.57s
+Epoch 77: Loss=0.5215, Time=0.65s
+Epoch 78: Loss=0.5161, Time=0.57s
+Epoch 79: Loss=0.5127, Time=0.64s
+Epoch 80: Loss=0.5090, Time=0.57s
+Epoch 81: Loss=0.4994, Time=0.57s
+Epoch 82: Loss=0.4963, Time=0.64s
+Epoch 83: Loss=0.4901, Time=0.57s
+Epoch 84: Loss=0.4834, Time=0.64s
+Epoch 85: Loss=0.4797, Time=0.57s
+Epoch 86: Loss=0.4764, Time=0.63s
+Epoch 87: Loss=0.4737, Time=0.57s
+Epoch 88: Loss=0.4680, Time=0.57s
+Epoch 89: Loss=0.4635, Time=0.63s
+Epoch 90: Loss=0.4592, Time=0.57s
+Epoch 91: Loss=0.4528, Time=0.63s
+Epoch 92: Loss=0.4497, Time=0.57s
+Epoch 93: Loss=0.4441, Time=0.57s
+Epoch 94: Loss=0.4381, Time=0.63s
+Epoch 95: Loss=0.4326, Time=0.57s
+Epoch 96: Loss=0.4294, Time=0.64s
+Epoch 97: Loss=0.4258, Time=0.57s
+Epoch 98: Loss=0.4197, Time=0.57s
+Epoch 99: Loss=0.4177, Time=0.63s
+Train set acc: 0.8742
+Test set acc: 0.7387
+Train set accuracy: 87.418%
+Test set accuracy: 73.870%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Epoch 0: Loss=2.0831, Time=1.49s
+Epoch 1: Loss=1.8367, Time=0.64s
+Epoch 2: Loss=1.7245, Time=0.58s
+Epoch 3: Loss=1.6302, Time=0.57s
+Epoch 4: Loss=1.5484, Time=0.64s
+Epoch 5: Loss=1.4729, Time=0.57s
+Epoch 6: Loss=1.4036, Time=0.64s
+Epoch 7: Loss=1.3450, Time=0.57s
+Epoch 8: Loss=1.2931, Time=0.57s
+Epoch 9: Loss=1.2480, Time=0.64s
+Epoch 10: Loss=1.2136, Time=0.57s
+Epoch 11: Loss=1.1764, Time=0.64s
+Epoch 12: Loss=1.1472, Time=0.57s
+Epoch 13: Loss=1.1175, Time=0.57s
+Epoch 14: Loss=1.0932, Time=0.64s
+Epoch 15: Loss=1.0677, Time=0.57s
+Epoch 16: Loss=1.0450, Time=0.64s
+Epoch 17: Loss=1.0244, Time=0.57s
+Epoch 18: Loss=1.0054, Time=0.64s
+Epoch 19: Loss=0.9871, Time=0.57s
+Epoch 20: Loss=0.9691, Time=0.57s
+Epoch 21: Loss=0.9524, Time=0.64s
+Epoch 22: Loss=0.9347, Time=0.57s
+Epoch 23: Loss=0.9207, Time=0.64s
+Epoch 24: Loss=0.9093, Time=0.57s
+Epoch 25: Loss=0.8967, Time=0.58s
+Epoch 26: Loss=0.8834, Time=0.64s
+Epoch 27: Loss=0.8714, Time=0.58s
+Epoch 28: Loss=0.8618, Time=0.64s
+Epoch 29: Loss=0.8476, Time=0.57s
+Epoch 30: Loss=0.8409, Time=0.57s
+Epoch 31: Loss=0.8273, Time=0.64s
+Epoch 32: Loss=0.8180, Time=0.57s
+Epoch 33: Loss=0.8056, Time=0.64s
+Epoch 34: Loss=0.7981, Time=0.57s
+Epoch 35: Loss=0.7915, Time=0.64s
+Epoch 36: Loss=0.7842, Time=0.58s
+Epoch 37: Loss=0.7807, Time=0.58s
+Epoch 38: Loss=0.7669, Time=0.64s
+Epoch 39: Loss=0.7570, Time=0.57s
+Epoch 40: Loss=0.7491, Time=0.64s
+Epoch 41: Loss=0.7429, Time=0.57s
+Epoch 42: Loss=0.7345, Time=0.57s
+Epoch 43: Loss=0.7261, Time=0.64s
+Epoch 44: Loss=0.7211, Time=0.57s
+Epoch 45: Loss=0.7123, Time=0.64s
+Epoch 46: Loss=0.7056, Time=0.58s
+Epoch 47: Loss=0.6976, Time=0.57s
+Epoch 48: Loss=0.6902, Time=0.64s
+Epoch 49: Loss=0.6863, Time=0.58s
+Epoch 50: Loss=0.6799, Time=0.64s
+Epoch 51: Loss=0.6691, Time=0.58s
+Epoch 52: Loss=0.6640, Time=0.64s
+Epoch 53: Loss=0.6632, Time=0.58s
+Epoch 54: Loss=0.6513, Time=0.57s
+Epoch 55: Loss=0.6454, Time=0.64s
+Epoch 56: Loss=0.6402, Time=0.58s
+Epoch 57: Loss=0.6325, Time=0.64s
+Epoch 58: Loss=0.6277, Time=0.58s
+Epoch 59: Loss=0.6197, Time=0.58s
+Epoch 60: Loss=0.6157, Time=0.64s
+Epoch 61: Loss=0.6096, Time=0.57s
+Epoch 62: Loss=0.6033, Time=0.64s
+Epoch 63: Loss=0.5955, Time=0.58s
+Epoch 64: Loss=0.5921, Time=0.57s
+Epoch 65: Loss=0.5851, Time=0.65s
+Epoch 66: Loss=0.5797, Time=0.57s
+Epoch 67: Loss=0.5768, Time=0.64s
+Epoch 68: Loss=0.5681, Time=0.57s
+Epoch 69: Loss=0.5621, Time=0.64s
+Epoch 70: Loss=0.5584, Time=0.58s
+Epoch 71: Loss=0.5542, Time=0.58s
+Epoch 72: Loss=0.5474, Time=0.64s
+Epoch 73: Loss=0.5409, Time=0.57s
+Epoch 74: Loss=0.5364, Time=0.64s
+Epoch 75: Loss=0.5309, Time=0.58s
+Epoch 76: Loss=0.5268, Time=0.58s
+Epoch 77: Loss=0.5216, Time=0.65s
+Epoch 78: Loss=0.5161, Time=0.58s
+Epoch 79: Loss=0.5126, Time=0.64s
+Epoch 80: Loss=0.5088, Time=0.57s
+Epoch 81: Loss=0.4994, Time=0.57s
+Epoch 82: Loss=0.4962, Time=0.64s
+Epoch 83: Loss=0.4900, Time=0.58s
+Epoch 84: Loss=0.4833, Time=0.64s
+Epoch 85: Loss=0.4796, Time=0.57s
+Epoch 86: Loss=0.4763, Time=0.64s
+Epoch 87: Loss=0.4736, Time=0.57s
+Epoch 88: Loss=0.4679, Time=0.57s
+Epoch 89: Loss=0.4634, Time=0.64s
+Epoch 90: Loss=0.4591, Time=0.57s
+Epoch 91: Loss=0.4527, Time=0.64s
+Epoch 92: Loss=0.4496, Time=0.57s
+Epoch 93: Loss=0.4440, Time=0.57s
+Epoch 94: Loss=0.4379, Time=0.64s
+Epoch 95: Loss=0.4325, Time=0.57s
+Epoch 96: Loss=0.4293, Time=0.64s
+Epoch 97: Loss=0.4257, Time=0.57s
+Epoch 98: Loss=0.4196, Time=0.57s
+Epoch 99: Loss=0.4175, Time=0.64s
+Train set acc: 0.8743
+Test set acc: 0.7385
+Train set accuracy: 87.428%
+Test set accuracy: 73.850%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Using augmentation multiplicity: 2
+Epoch 0: Loss=2.1087, Time=8.82s
+Epoch 1: Loss=1.8952, Time=7.24s
+Epoch 2: Loss=1.8106, Time=7.26s
+Epoch 3: Loss=1.7341, Time=7.27s
+Epoch 4: Loss=1.6629, Time=7.26s
+Epoch 5: Loss=1.5935, Time=7.27s
+Epoch 6: Loss=1.5342, Time=7.26s
+Epoch 7: Loss=1.4899, Time=7.43s
+Epoch 8: Loss=1.4467, Time=7.29s
+Epoch 9: Loss=1.4091, Time=7.27s
+Epoch 10: Loss=1.3758, Time=7.27s
+Epoch 11: Loss=1.3479, Time=7.28s
+Epoch 12: Loss=1.3250, Time=7.25s
+Epoch 13: Loss=1.3017, Time=7.29s
+Epoch 14: Loss=1.2808, Time=7.28s
+Epoch 15: Loss=1.2591, Time=7.43s
+Epoch 16: Loss=1.2379, Time=7.27s
+Epoch 17: Loss=1.2192, Time=7.28s
+Epoch 18: Loss=1.2019, Time=7.28s
+Epoch 19: Loss=1.1853, Time=7.28s
+Epoch 20: Loss=1.1701, Time=7.29s
+Epoch 21: Loss=1.1600, Time=7.30s
+Epoch 22: Loss=1.1451, Time=7.28s
+Epoch 23: Loss=1.1348, Time=7.44s
+Epoch 24: Loss=1.1222, Time=7.30s
+Epoch 25: Loss=1.1122, Time=7.23s
+Epoch 26: Loss=1.1021, Time=7.19s
+Epoch 27: Loss=1.0929, Time=7.20s
+Epoch 28: Loss=1.0817, Time=7.20s
+Epoch 29: Loss=1.0734, Time=7.23s
+Epoch 30: Loss=1.0680, Time=7.19s
+Epoch 31: Loss=1.0624, Time=7.31s
+Epoch 32: Loss=1.0516, Time=7.21s
+Epoch 33: Loss=1.0411, Time=7.20s
+Epoch 34: Loss=1.0332, Time=7.23s
+Epoch 35: Loss=1.0251, Time=7.19s
+Epoch 36: Loss=1.0163, Time=7.18s
+Epoch 37: Loss=1.0103, Time=7.22s
+Epoch 38: Loss=1.0064, Time=7.18s
+Epoch 39: Loss=1.0006, Time=7.31s
+Epoch 40: Loss=0.9981, Time=7.20s
+Epoch 41: Loss=0.9858, Time=7.20s
+Epoch 42: Loss=0.9781, Time=7.19s
+Epoch 43: Loss=0.9718, Time=7.22s
+Epoch 44: Loss=0.9684, Time=7.21s
+Epoch 45: Loss=0.9646, Time=7.21s
+Epoch 46: Loss=0.9643, Time=7.23s
+Epoch 47: Loss=0.9568, Time=7.33s
+Epoch 48: Loss=0.9481, Time=7.19s
+Epoch 49: Loss=0.9423, Time=7.21s
+Epoch 50: Loss=0.9351, Time=7.20s
+Epoch 51: Loss=0.9298, Time=7.21s
+Epoch 52: Loss=0.9263, Time=7.22s
+Epoch 53: Loss=0.9199, Time=7.23s
+Epoch 54: Loss=0.9174, Time=7.21s
+Epoch 55: Loss=0.9120, Time=7.32s
+Epoch 56: Loss=0.9115, Time=7.20s
+Epoch 57: Loss=0.9082, Time=7.21s
+Epoch 58: Loss=0.8984, Time=7.20s
+Epoch 59: Loss=0.8937, Time=7.19s
+Epoch 60: Loss=0.8881, Time=7.20s
+Epoch 61: Loss=0.8865, Time=7.19s
+Epoch 62: Loss=0.8792, Time=7.22s
+Epoch 63: Loss=0.8775, Time=7.33s
+Epoch 64: Loss=0.8687, Time=7.20s
+Epoch 65: Loss=0.8719, Time=7.22s
+Epoch 66: Loss=0.8696, Time=7.20s
+Epoch 67: Loss=0.8644, Time=7.21s
+Epoch 68: Loss=0.8601, Time=7.20s
+Epoch 69: Loss=0.8552, Time=7.20s
+Epoch 70: Loss=0.8492, Time=7.20s
+Epoch 71: Loss=0.8441, Time=7.31s
+Epoch 72: Loss=0.8411, Time=7.21s
+Epoch 73: Loss=0.8398, Time=7.21s
+Epoch 74: Loss=0.8341, Time=7.23s
+Epoch 75: Loss=0.8315, Time=7.19s
+Epoch 76: Loss=0.8278, Time=7.19s
+Epoch 77: Loss=0.8253, Time=7.22s
+Epoch 78: Loss=0.8179, Time=7.21s
+Epoch 79: Loss=0.8168, Time=7.35s
+Epoch 80: Loss=0.8209, Time=7.20s
+Epoch 81: Loss=0.8149, Time=7.20s
+Epoch 82: Loss=0.8123, Time=7.21s
+Epoch 83: Loss=0.8034, Time=7.18s
+Epoch 84: Loss=0.8024, Time=7.20s
+Epoch 85: Loss=0.7949, Time=7.18s
+Epoch 86: Loss=0.7931, Time=7.17s
+Epoch 87: Loss=0.7904, Time=7.32s
+Epoch 88: Loss=0.7861, Time=7.20s
+Epoch 89: Loss=0.7853, Time=7.19s
+Epoch 90: Loss=0.7817, Time=7.18s
+Epoch 91: Loss=0.7809, Time=7.21s
+Epoch 92: Loss=0.7767, Time=7.20s
+Epoch 93: Loss=0.7760, Time=7.20s
+Epoch 94: Loss=0.7774, Time=7.18s
+Epoch 95: Loss=0.7676, Time=7.31s
+Epoch 96: Loss=0.7671, Time=7.20s
+Epoch 97: Loss=0.7652, Time=7.21s
+Epoch 98: Loss=0.7602, Time=7.20s
+Epoch 99: Loss=0.7592, Time=7.19s
+Train set acc: 0.7728
+Test set acc: 0.7486
+Train set accuracy: 77.276%
+Test set accuracy: 74.860%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Using augmentation multiplicity: 4
+Epoch 0: Loss=2.1083, Time=16.97s
+Epoch 1: Loss=1.8949, Time=14.12s
+Epoch 2: Loss=1.8065, Time=14.15s
+Epoch 3: Loss=1.7306, Time=14.04s
+Epoch 4: Loss=1.6626, Time=14.01s
+Epoch 5: Loss=1.5944, Time=14.05s
+Epoch 6: Loss=1.5320, Time=13.90s
+Epoch 7: Loss=1.4822, Time=14.00s
+Epoch 8: Loss=1.4430, Time=14.01s
+Epoch 9: Loss=1.4072, Time=13.97s
+Epoch 10: Loss=1.3714, Time=13.97s
+Epoch 11: Loss=1.3437, Time=13.96s
+Epoch 12: Loss=1.3183, Time=13.99s
+Epoch 13: Loss=1.2995, Time=13.99s
+Epoch 14: Loss=1.2727, Time=14.04s
+Epoch 15: Loss=1.2569, Time=14.02s
+Epoch 16: Loss=1.2341, Time=14.12s
+Epoch 17: Loss=1.2169, Time=14.00s
+Epoch 18: Loss=1.2011, Time=14.02s
+Epoch 19: Loss=1.1824, Time=14.04s
+Epoch 20: Loss=1.1692, Time=13.98s
+Epoch 21: Loss=1.1569, Time=14.04s
+Epoch 22: Loss=1.1446, Time=14.03s
+Epoch 23: Loss=1.1306, Time=14.02s
+Epoch 24: Loss=1.1174, Time=14.05s
+Epoch 25: Loss=1.1071, Time=14.02s
+Epoch 26: Loss=1.1012, Time=14.07s
+Epoch 27: Loss=1.0926, Time=14.04s
+Epoch 28: Loss=1.0807, Time=14.04s
+Epoch 29: Loss=1.0719, Time=14.09s
+Epoch 30: Loss=1.0601, Time=14.05s
+Epoch 31: Loss=1.0541, Time=14.04s
+Epoch 32: Loss=1.0470, Time=14.04s
+Epoch 33: Loss=1.0367, Time=14.02s
+Epoch 34: Loss=1.0299, Time=14.02s
+Epoch 35: Loss=1.0216, Time=14.11s
+Epoch 36: Loss=1.0188, Time=13.99s
+Epoch 37: Loss=1.0068, Time=14.01s
+Epoch 38: Loss=1.0026, Time=14.03s
+Epoch 39: Loss=0.9967, Time=13.97s
+Epoch 40: Loss=0.9913, Time=14.02s
+Epoch 41: Loss=0.9898, Time=14.00s
+Epoch 42: Loss=0.9786, Time=14.05s
+Epoch 43: Loss=0.9738, Time=14.01s
+Epoch 44: Loss=0.9651, Time=14.04s
+Epoch 45: Loss=0.9595, Time=14.04s
+Epoch 46: Loss=0.9568, Time=13.98s
+Epoch 47: Loss=0.9502, Time=14.00s
+Epoch 48: Loss=0.9419, Time=13.99s
+Epoch 49: Loss=0.9345, Time=14.01s
+Epoch 50: Loss=0.9291, Time=14.03s
+Epoch 51: Loss=0.9268, Time=14.03s
+Epoch 52: Loss=0.9220, Time=14.01s
+Epoch 53: Loss=0.9173, Time=14.03s
+Epoch 54: Loss=0.9112, Time=14.15s
+Epoch 55: Loss=0.9083, Time=14.04s
+Epoch 56: Loss=0.9081, Time=14.05s
+Epoch 57: Loss=0.8967, Time=14.06s
+Epoch 58: Loss=0.8916, Time=14.02s
+Epoch 59: Loss=0.8866, Time=14.00s
+Epoch 60: Loss=0.8844, Time=14.00s
+Epoch 61: Loss=0.8792, Time=14.04s
+Epoch 62: Loss=0.8738, Time=14.06s
+Epoch 63: Loss=0.8734, Time=14.03s
+Epoch 64: Loss=0.8656, Time=14.06s
+Epoch 65: Loss=0.8643, Time=14.08s
+Epoch 66: Loss=0.8622, Time=14.03s
+Epoch 67: Loss=0.8550, Time=14.05s
+Epoch 68: Loss=0.8509, Time=14.05s
+Epoch 69: Loss=0.8475, Time=14.03s
+Epoch 70: Loss=0.8434, Time=14.04s
+Epoch 71: Loss=0.8416, Time=14.05s
+Epoch 72: Loss=0.8386, Time=14.05s
+Epoch 73: Loss=0.8341, Time=14.15s
+Epoch 74: Loss=0.8305, Time=14.05s
+Epoch 75: Loss=0.8248, Time=14.03s
+Epoch 76: Loss=0.8174, Time=14.05s
+Epoch 77: Loss=0.8189, Time=13.99s
+Epoch 78: Loss=0.8158, Time=14.06s
+Epoch 79: Loss=0.8146, Time=14.06s
+Epoch 80: Loss=0.8099, Time=14.03s
+Epoch 81: Loss=0.8088, Time=14.07s
+Epoch 82: Loss=0.8055, Time=14.02s
+Epoch 83: Loss=0.8000, Time=14.03s
+Epoch 84: Loss=0.7985, Time=14.05s
+Epoch 85: Loss=0.7935, Time=14.10s
+Epoch 86: Loss=0.7895, Time=14.04s
+Epoch 87: Loss=0.7883, Time=14.06s
+Epoch 88: Loss=0.7876, Time=14.02s
+Epoch 89: Loss=0.7793, Time=14.01s
+Epoch 90: Loss=0.7769, Time=14.08s
+Epoch 91: Loss=0.7751, Time=14.04s
+Epoch 92: Loss=0.7733, Time=14.10s
+Epoch 93: Loss=0.7734, Time=14.04s
+Epoch 94: Loss=0.7658, Time=14.05s
+Epoch 95: Loss=0.7639, Time=14.06s
+Epoch 96: Loss=0.7622, Time=14.02s
+Epoch 97: Loss=0.7569, Time=14.06s
+Epoch 98: Loss=0.7541, Time=14.07s
+Epoch 99: Loss=0.7527, Time=14.06s
+Train set acc: 0.7745
+Test set acc: 0.7499
+Train set accuracy: 77.454%
+Test set accuracy: 74.990%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Using augmentation multiplicity: 8
+Epoch 0: Loss=2.1079, Time=32.57s
+Epoch 1: Loss=1.8927, Time=27.32s
+Epoch 2: Loss=1.8027, Time=27.29s
+Epoch 3: Loss=1.7323, Time=27.30s
+Epoch 4: Loss=1.6598, Time=27.33s
+Epoch 5: Loss=1.5886, Time=27.34s
+Epoch 6: Loss=1.5331, Time=27.17s
+Epoch 7: Loss=1.4847, Time=27.18s
+Epoch 8: Loss=1.4410, Time=27.05s
+Epoch 9: Loss=1.4055, Time=27.07s
+Epoch 10: Loss=1.3697, Time=27.18s
+Epoch 11: Loss=1.3423, Time=27.12s
+Epoch 12: Loss=1.3216, Time=27.10s
+Epoch 13: Loss=1.2989, Time=27.13s
+Epoch 14: Loss=1.2761, Time=27.21s
+Epoch 15: Loss=1.2531, Time=27.11s
+Epoch 16: Loss=1.2323, Time=27.01s
+Epoch 17: Loss=1.2145, Time=27.07s
+Epoch 18: Loss=1.1980, Time=27.07s
+Epoch 19: Loss=1.1843, Time=27.09s
+Epoch 20: Loss=1.1661, Time=27.02s
+Epoch 21: Loss=1.1539, Time=27.13s
+Epoch 22: Loss=1.1404, Time=27.09s
+Epoch 23: Loss=1.1323, Time=27.03s
+Epoch 24: Loss=1.1168, Time=27.10s
+Epoch 25: Loss=1.1052, Time=27.06s
+Epoch 26: Loss=1.0977, Time=27.08s
+Epoch 27: Loss=1.0865, Time=27.13s
+Epoch 28: Loss=1.0799, Time=27.10s
+Epoch 29: Loss=1.0666, Time=27.09s
+Epoch 30: Loss=1.0575, Time=27.11s
+Epoch 31: Loss=1.0494, Time=27.07s
+Epoch 32: Loss=1.0468, Time=27.10s
+Epoch 33: Loss=1.0390, Time=27.13s
+Epoch 34: Loss=1.0294, Time=27.12s
+Epoch 35: Loss=1.0176, Time=27.13s
+Epoch 36: Loss=1.0155, Time=27.09s
+Epoch 37: Loss=1.0066, Time=27.13s
+Epoch 38: Loss=1.0011, Time=27.04s
+Epoch 39: Loss=0.9968, Time=27.10s
+Epoch 40: Loss=0.9896, Time=27.14s
+Epoch 41: Loss=0.9814, Time=27.13s
+Epoch 42: Loss=0.9750, Time=27.13s
+Epoch 43: Loss=0.9684, Time=27.08s
+Epoch 44: Loss=0.9638, Time=27.10s
+Epoch 45: Loss=0.9569, Time=27.11s
+Epoch 46: Loss=0.9515, Time=27.10s
+Epoch 47: Loss=0.9462, Time=27.16s
+Epoch 48: Loss=0.9423, Time=27.04s
+Epoch 49: Loss=0.9345, Time=27.00s
+Epoch 50: Loss=0.9312, Time=27.16s
+Epoch 51: Loss=0.9233, Time=27.03s
+Epoch 52: Loss=0.9181, Time=27.04s
+Epoch 53: Loss=0.9132, Time=27.11s
+Epoch 54: Loss=0.9115, Time=27.00s
+Epoch 55: Loss=0.9030, Time=27.06s
+Epoch 56: Loss=0.9018, Time=27.14s
+Epoch 57: Loss=0.8973, Time=27.08s
+Epoch 58: Loss=0.8902, Time=27.09s
+Epoch 59: Loss=0.8869, Time=27.08s
+Epoch 60: Loss=0.8827, Time=27.10s
+Epoch 61: Loss=0.8759, Time=27.08s
+Epoch 62: Loss=0.8737, Time=27.16s
+Epoch 63: Loss=0.8720, Time=27.15s
+Epoch 64: Loss=0.8663, Time=27.11s
+Epoch 65: Loss=0.8613, Time=27.20s
+Epoch 66: Loss=0.8562, Time=27.07s
+Epoch 67: Loss=0.8529, Time=27.07s
+Epoch 68: Loss=0.8498, Time=27.04s
+Epoch 69: Loss=0.8475, Time=27.08s
+Epoch 70: Loss=0.8437, Time=27.16s
+Epoch 71: Loss=0.8382, Time=27.09s
+Epoch 72: Loss=0.8328, Time=26.92s
+Epoch 73: Loss=0.8321, Time=27.08s
+Epoch 74: Loss=0.8306, Time=27.07s
+Epoch 75: Loss=0.8212, Time=27.20s
+Epoch 76: Loss=0.8202, Time=27.15s
+Epoch 77: Loss=0.8168, Time=27.14s
+Epoch 78: Loss=0.8151, Time=27.02s
+Epoch 79: Loss=0.8161, Time=27.11s
+Epoch 80: Loss=0.8138, Time=27.06s
+Epoch 81: Loss=0.8044, Time=27.07s
+Epoch 82: Loss=0.8011, Time=27.03s
+Epoch 83: Loss=0.7978, Time=27.10s
+Epoch 84: Loss=0.7919, Time=27.08s
+Epoch 85: Loss=0.7914, Time=27.06s
+Epoch 86: Loss=0.7873, Time=27.11s
+Epoch 87: Loss=0.7849, Time=27.06s
+Epoch 88: Loss=0.7823, Time=27.04s
+Epoch 89: Loss=0.7788, Time=27.02s
+Epoch 90: Loss=0.7751, Time=26.98s
+Epoch 91: Loss=0.7751, Time=27.04s
+Epoch 92: Loss=0.7730, Time=27.05s
+Epoch 93: Loss=0.7681, Time=27.05s
+Epoch 94: Loss=0.7661, Time=27.04s
+Epoch 95: Loss=0.7654, Time=27.08s
+Epoch 96: Loss=0.7639, Time=27.07s
+Epoch 97: Loss=0.7553, Time=27.02s
+Epoch 98: Loss=0.7532, Time=27.03s
+Epoch 99: Loss=0.7510, Time=27.14s
+Train set acc: 0.7734
+Test set acc: 0.7485
+Train set accuracy: 77.342%
+Test set accuracy: 74.850%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Using augmentation multiplicity: 16
+Epoch 0: Loss=2.1076, Time=59.73s
+Epoch 1: Loss=1.8919, Time=50.56s
+Epoch 2: Loss=1.8037, Time=50.01s
+Epoch 3: Loss=1.7265, Time=50.12s
+Epoch 4: Loss=1.6507, Time=50.43s
+Epoch 5: Loss=1.5804, Time=50.17s
+Epoch 6: Loss=1.5216, Time=50.18s
+Epoch 7: Loss=1.4725, Time=50.05s
+Epoch 8: Loss=1.4336, Time=50.28s
+Epoch 9: Loss=1.3979, Time=50.27s
+Epoch 10: Loss=1.3664, Time=50.24s
+Epoch 11: Loss=1.3357, Time=50.39s
+Epoch 12: Loss=1.3111, Time=50.23s
+Epoch 13: Loss=1.2884, Time=50.10s
+Epoch 14: Loss=1.2694, Time=50.08s
+Epoch 15: Loss=1.2508, Time=50.39s
+Epoch 16: Loss=1.2272, Time=50.38s
+Epoch 17: Loss=1.2091, Time=50.26s
+Epoch 18: Loss=1.1923, Time=50.21s
+Epoch 19: Loss=1.1776, Time=50.24s
+Epoch 20: Loss=1.1607, Time=50.23s
+Epoch 21: Loss=1.1460, Time=50.38s
+Epoch 22: Loss=1.1350, Time=50.38s
+Epoch 23: Loss=1.1232, Time=50.14s
+Epoch 24: Loss=1.1140, Time=50.43s
+Epoch 25: Loss=1.1013, Time=50.33s
+Epoch 26: Loss=1.0953, Time=50.33s
+Epoch 27: Loss=1.0859, Time=50.29s
+Epoch 28: Loss=1.0723, Time=49.98s
+Epoch 29: Loss=1.0650, Time=50.19s
+Epoch 30: Loss=1.0562, Time=50.28s
+Epoch 31: Loss=1.0479, Time=50.18s
+Epoch 32: Loss=1.0393, Time=50.09s
+Epoch 33: Loss=1.0310, Time=50.24s
+Epoch 34: Loss=1.0252, Time=50.34s
+Epoch 35: Loss=1.0139, Time=50.30s
+Epoch 36: Loss=1.0101, Time=50.24s
+Epoch 37: Loss=1.0028, Time=50.16s
+Epoch 38: Loss=0.9949, Time=50.07s
+Epoch 39: Loss=0.9906, Time=50.31s
+Epoch 40: Loss=0.9858, Time=50.15s
+Epoch 41: Loss=0.9771, Time=50.20s
+Epoch 42: Loss=0.9721, Time=50.18s
+Epoch 43: Loss=0.9638, Time=50.07s
+Epoch 44: Loss=0.9575, Time=50.20s
+Epoch 45: Loss=0.9522, Time=50.29s
+Epoch 46: Loss=0.9474, Time=50.36s
+Epoch 47: Loss=0.9418, Time=50.15s
+Epoch 48: Loss=0.9362, Time=50.33s
+Epoch 49: Loss=0.9291, Time=50.16s
+Epoch 50: Loss=0.9226, Time=50.11s
+Epoch 51: Loss=0.9185, Time=50.23s
+Epoch 52: Loss=0.9159, Time=50.27s
+Epoch 53: Loss=0.9142, Time=50.18s
+Epoch 54: Loss=0.9060, Time=50.29s
+Epoch 55: Loss=0.9038, Time=50.28s
+Epoch 56: Loss=0.8962, Time=50.10s
+Epoch 57: Loss=0.8917, Time=50.20s
+Epoch 58: Loss=0.8876, Time=50.16s
+Epoch 59: Loss=0.8817, Time=50.26s
+Epoch 60: Loss=0.8788, Time=50.29s
+Epoch 61: Loss=0.8782, Time=50.26s
+Epoch 62: Loss=0.8710, Time=50.22s
+Epoch 63: Loss=0.8664, Time=50.17s
+Epoch 64: Loss=0.8623, Time=50.05s
+Epoch 65: Loss=0.8575, Time=50.16s
+Epoch 66: Loss=0.8576, Time=50.32s
+Epoch 67: Loss=0.8531, Time=50.19s
+Epoch 68: Loss=0.8491, Time=50.30s
+Epoch 69: Loss=0.8410, Time=50.26s
+Epoch 70: Loss=0.8373, Time=50.15s
+Epoch 71: Loss=0.8312, Time=50.17s
+Epoch 72: Loss=0.8311, Time=50.30s
+Epoch 73: Loss=0.8301, Time=50.21s
+Epoch 74: Loss=0.8250, Time=50.29s
+Epoch 75: Loss=0.8198, Time=50.26s
+Epoch 76: Loss=0.8192, Time=50.22s
+Epoch 77: Loss=0.8130, Time=50.15s
+Epoch 78: Loss=0.8095, Time=50.32s
+Epoch 79: Loss=0.8076, Time=50.19s
+Epoch 80: Loss=0.8051, Time=50.15s
+Epoch 81: Loss=0.8024, Time=50.20s
+Epoch 82: Loss=0.7970, Time=50.18s
+Epoch 83: Loss=0.7946, Time=50.22s
+Epoch 84: Loss=0.7965, Time=50.22s
+Epoch 85: Loss=0.7896, Time=50.18s
+Epoch 86: Loss=0.7841, Time=50.39s
+Epoch 87: Loss=0.7816, Time=50.26s
+Epoch 88: Loss=0.7773, Time=50.19s
+Epoch 89: Loss=0.7760, Time=50.28s
+Epoch 90: Loss=0.7699, Time=50.16s
+Epoch 91: Loss=0.7701, Time=50.18s
+Epoch 92: Loss=0.7639, Time=50.17s
+Epoch 93: Loss=0.7631, Time=50.32s
+Epoch 94: Loss=0.7611, Time=50.26s
+Epoch 95: Loss=0.7571, Time=50.34s
+Epoch 96: Loss=0.7551, Time=50.36s
+Epoch 97: Loss=0.7531, Time=50.13s
+Epoch 98: Loss=0.7492, Time=50.26s
+Epoch 99: Loss=0.7451, Time=50.24s
+Train set acc: 0.7747
+Test set acc: 0.7513
+Train set accuracy: 77.472%
+Test set accuracy: 75.130%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Epoch 0: Loss=2.0831, Time=1.43s
+Epoch 1: Loss=1.8368, Time=0.63s
+Epoch 2: Loss=1.7246, Time=0.57s
+Epoch 3: Loss=1.6302, Time=0.57s
+Epoch 4: Loss=1.5484, Time=0.63s
+Epoch 5: Loss=1.4729, Time=0.57s
+Epoch 6: Loss=1.4037, Time=0.63s
+Epoch 7: Loss=1.3449, Time=0.57s
+Epoch 8: Loss=1.2931, Time=0.57s
+Epoch 9: Loss=1.2480, Time=0.63s
+Epoch 10: Loss=1.2135, Time=0.57s
+Epoch 11: Loss=1.1763, Time=0.63s
+Epoch 12: Loss=1.1471, Time=0.57s
+Epoch 13: Loss=1.1175, Time=0.57s
+Epoch 14: Loss=1.0932, Time=0.63s
+Epoch 15: Loss=1.0676, Time=0.57s
+Epoch 16: Loss=1.0450, Time=0.63s
+Epoch 17: Loss=1.0243, Time=0.57s
+Epoch 18: Loss=1.0054, Time=0.63s
+Epoch 19: Loss=0.9870, Time=0.57s
+Epoch 20: Loss=0.9690, Time=0.57s
+Epoch 21: Loss=0.9522, Time=0.63s
+Epoch 22: Loss=0.9346, Time=0.57s
+Epoch 23: Loss=0.9207, Time=0.63s
+Epoch 24: Loss=0.9093, Time=0.57s
+Epoch 25: Loss=0.8967, Time=0.57s
+Epoch 26: Loss=0.8834, Time=0.64s
+Epoch 27: Loss=0.8714, Time=0.57s
+Epoch 28: Loss=0.8617, Time=0.63s
+Epoch 29: Loss=0.8476, Time=0.57s
+Epoch 30: Loss=0.8408, Time=0.57s
+Epoch 31: Loss=0.8273, Time=0.63s
+Epoch 32: Loss=0.8179, Time=0.57s
+Epoch 33: Loss=0.8055, Time=0.63s
+Epoch 34: Loss=0.7981, Time=0.57s
+Epoch 35: Loss=0.7914, Time=0.63s
+Epoch 36: Loss=0.7842, Time=0.57s
+Epoch 37: Loss=0.7805, Time=0.57s
+Epoch 38: Loss=0.7668, Time=0.64s
+Epoch 39: Loss=0.7571, Time=0.56s
+Epoch 40: Loss=0.7491, Time=0.63s
+Epoch 41: Loss=0.7429, Time=0.57s
+Epoch 42: Loss=0.7346, Time=0.57s
+Epoch 43: Loss=0.7261, Time=0.63s
+Epoch 44: Loss=0.7212, Time=0.57s
+Epoch 45: Loss=0.7124, Time=0.63s
+Epoch 46: Loss=0.7055, Time=0.57s
+Epoch 47: Loss=0.6975, Time=0.57s
+Epoch 48: Loss=0.6901, Time=0.63s
+Epoch 49: Loss=0.6863, Time=0.56s
+Epoch 50: Loss=0.6797, Time=0.63s
+Epoch 51: Loss=0.6690, Time=0.56s
+Epoch 52: Loss=0.6640, Time=0.63s
+Epoch 53: Loss=0.6632, Time=0.57s
+Epoch 54: Loss=0.6513, Time=0.57s
+Epoch 55: Loss=0.6454, Time=0.63s
+Epoch 56: Loss=0.6402, Time=0.57s
+Epoch 57: Loss=0.6324, Time=0.63s
+Epoch 58: Loss=0.6276, Time=0.57s
+Epoch 59: Loss=0.6197, Time=0.57s
+Epoch 60: Loss=0.6156, Time=0.63s
+Epoch 61: Loss=0.6095, Time=0.57s
+Epoch 62: Loss=0.6033, Time=0.63s
+Epoch 63: Loss=0.5955, Time=0.57s
+Epoch 64: Loss=0.5922, Time=0.57s
+Epoch 65: Loss=0.5851, Time=0.63s
+Epoch 66: Loss=0.5797, Time=0.57s
+Epoch 67: Loss=0.5768, Time=0.63s
+Epoch 68: Loss=0.5681, Time=0.57s
+Epoch 69: Loss=0.5620, Time=0.63s
+Epoch 70: Loss=0.5584, Time=0.57s
+Epoch 71: Loss=0.5542, Time=0.57s
+Epoch 72: Loss=0.5474, Time=0.63s
+Epoch 73: Loss=0.5408, Time=0.57s
+Epoch 74: Loss=0.5363, Time=0.63s
+Epoch 75: Loss=0.5308, Time=0.57s
+Epoch 76: Loss=0.5267, Time=0.57s
+Epoch 77: Loss=0.5215, Time=0.63s
+Epoch 78: Loss=0.5162, Time=0.57s
+Epoch 79: Loss=0.5126, Time=0.63s
+Epoch 80: Loss=0.5088, Time=0.57s
+Epoch 81: Loss=0.4993, Time=0.57s
+Epoch 82: Loss=0.4962, Time=0.63s
+Epoch 83: Loss=0.4900, Time=0.57s
+Epoch 84: Loss=0.4833, Time=0.63s
+Epoch 85: Loss=0.4796, Time=0.56s
+Epoch 86: Loss=0.4764, Time=0.63s
+Epoch 87: Loss=0.4737, Time=0.57s
+Epoch 88: Loss=0.4679, Time=0.56s
+Epoch 89: Loss=0.4635, Time=0.63s
+Epoch 90: Loss=0.4592, Time=0.56s
+Epoch 91: Loss=0.4527, Time=0.63s
+Epoch 92: Loss=0.4496, Time=0.57s
+Epoch 93: Loss=0.4440, Time=0.56s
+Epoch 94: Loss=0.4380, Time=0.63s
+Epoch 95: Loss=0.4325, Time=0.57s
+Epoch 96: Loss=0.4294, Time=0.63s
+Epoch 97: Loss=0.4258, Time=0.56s
+Epoch 98: Loss=0.4196, Time=0.56s
+Epoch 99: Loss=0.4176, Time=0.63s
+Epoch 100: Loss=0.4111, Time=0.56s
+Epoch 101: Loss=0.4054, Time=0.63s
+Epoch 102: Loss=0.4027, Time=0.56s
+Epoch 103: Loss=0.3986, Time=0.63s
+Epoch 104: Loss=0.3920, Time=0.57s
+Epoch 105: Loss=0.3906, Time=0.57s
+Epoch 106: Loss=0.3869, Time=0.63s
+Epoch 107: Loss=0.3821, Time=0.56s
+Epoch 108: Loss=0.3780, Time=0.63s
+Epoch 109: Loss=0.3722, Time=0.56s
+Epoch 110: Loss=0.3689, Time=0.57s
+Epoch 111: Loss=0.3647, Time=0.63s
+Epoch 112: Loss=0.3606, Time=0.57s
+Epoch 113: Loss=0.3583, Time=0.63s
+Epoch 114: Loss=0.3534, Time=0.56s
+Epoch 115: Loss=0.3491, Time=0.57s
+Epoch 116: Loss=0.3428, Time=0.63s
+Epoch 117: Loss=0.3411, Time=0.56s
+Epoch 118: Loss=0.3362, Time=0.63s
+Epoch 119: Loss=0.3334, Time=0.57s
+Epoch 120: Loss=0.3308, Time=0.63s
+Epoch 121: Loss=0.3249, Time=0.57s
+Epoch 122: Loss=0.3204, Time=0.56s
+Epoch 123: Loss=0.3159, Time=0.63s
+Epoch 124: Loss=0.3136, Time=0.57s
+Epoch 125: Loss=0.3093, Time=0.63s
+Epoch 126: Loss=0.3060, Time=0.57s
+Epoch 127: Loss=0.3020, Time=0.57s
+Epoch 128: Loss=0.2990, Time=0.63s
+Epoch 129: Loss=0.2951, Time=0.57s
+Epoch 130: Loss=0.2901, Time=0.63s
+Epoch 131: Loss=0.2874, Time=0.56s
+Epoch 132: Loss=0.2819, Time=0.56s
+Epoch 133: Loss=0.2797, Time=0.63s
+Epoch 134: Loss=0.2754, Time=0.57s
+Epoch 135: Loss=0.2729, Time=0.63s
+Epoch 136: Loss=0.2691, Time=0.56s
+Epoch 137: Loss=0.2678, Time=0.63s
+Epoch 138: Loss=0.2617, Time=0.56s
+Epoch 139: Loss=0.2572, Time=0.56s
+Epoch 140: Loss=0.2532, Time=0.63s
+Epoch 141: Loss=0.2518, Time=0.56s
+Epoch 142: Loss=0.2487, Time=0.63s
+Epoch 143: Loss=0.2457, Time=0.57s
+Epoch 144: Loss=0.2414, Time=0.57s
+Epoch 145: Loss=0.2372, Time=0.63s
+Epoch 146: Loss=0.2339, Time=0.56s
+Epoch 147: Loss=0.2291, Time=0.63s
+Epoch 148: Loss=0.2265, Time=0.56s
+Epoch 149: Loss=0.2254, Time=0.56s
+Epoch 150: Loss=0.2229, Time=0.63s
+Epoch 151: Loss=0.2196, Time=0.56s
+Epoch 152: Loss=0.2163, Time=0.63s
+Epoch 153: Loss=0.2123, Time=0.56s
+Epoch 154: Loss=0.2087, Time=0.63s
+Epoch 155: Loss=0.2065, Time=0.56s
+Epoch 156: Loss=0.2034, Time=0.56s
+Epoch 157: Loss=0.2004, Time=0.63s
+Epoch 158: Loss=0.1960, Time=0.57s
+Epoch 159: Loss=0.1933, Time=0.63s
+Epoch 160: Loss=0.1902, Time=0.57s
+Epoch 161: Loss=0.1895, Time=0.56s
+Epoch 162: Loss=0.1880, Time=0.63s
+Epoch 163: Loss=0.1833, Time=0.56s
+Epoch 164: Loss=0.1797, Time=0.63s
+Epoch 165: Loss=0.1769, Time=0.56s
+Epoch 166: Loss=0.1750, Time=0.56s
+Epoch 167: Loss=0.1719, Time=0.63s
+Epoch 168: Loss=0.1684, Time=0.56s
+Epoch 169: Loss=0.1657, Time=0.63s
+Epoch 170: Loss=0.1623, Time=0.56s
+Epoch 171: Loss=0.1612, Time=0.63s
+Epoch 172: Loss=0.1589, Time=0.56s
+Epoch 173: Loss=0.1560, Time=0.56s
+Epoch 174: Loss=0.1526, Time=0.63s
+Epoch 175: Loss=0.1503, Time=0.56s
+Epoch 176: Loss=0.1475, Time=0.63s
+Epoch 177: Loss=0.1459, Time=0.56s
+Epoch 178: Loss=0.1424, Time=0.56s
+Epoch 179: Loss=0.1399, Time=0.63s
+Epoch 180: Loss=0.1380, Time=0.56s
+Epoch 181: Loss=0.1360, Time=0.63s
+Epoch 182: Loss=0.1332, Time=0.57s
+Epoch 183: Loss=0.1308, Time=0.56s
+Epoch 184: Loss=0.1293, Time=0.63s
+Epoch 185: Loss=0.1276, Time=0.56s
+Epoch 186: Loss=0.1246, Time=0.63s
+Epoch 187: Loss=0.1218, Time=0.57s
+Epoch 188: Loss=0.1211, Time=0.63s
+Epoch 189: Loss=0.1188, Time=0.57s
+Epoch 190: Loss=0.1155, Time=0.57s
+Epoch 191: Loss=0.1136, Time=0.63s
+Epoch 192: Loss=0.1122, Time=0.56s
+Epoch 193: Loss=0.1112, Time=0.63s
+Epoch 194: Loss=0.1077, Time=0.57s
+Epoch 195: Loss=0.1061, Time=0.56s
+Epoch 196: Loss=0.1051, Time=0.63s
+Epoch 197: Loss=0.1026, Time=0.57s
+Epoch 198: Loss=0.1008, Time=0.63s
+Epoch 199: Loss=0.0987, Time=0.56s
+Train set acc: 0.9923
+Test set acc: 0.7347
+Train set accuracy: 99.228%
+Test set accuracy: 73.470%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Epoch 0: Loss=1.9645, Time=1.15s
+Epoch 1: Loss=1.6922, Time=0.60s
+Epoch 2: Loss=1.5397, Time=0.60s
+Epoch 3: Loss=1.4195, Time=0.60s
+Epoch 4: Loss=1.3268, Time=0.60s
+Epoch 5: Loss=1.2499, Time=0.61s
+Epoch 6: Loss=1.1909, Time=0.61s
+Epoch 7: Loss=1.1420, Time=0.61s
+Epoch 8: Loss=1.0983, Time=0.61s
+Epoch 9: Loss=1.0609, Time=0.62s
+Epoch 10: Loss=1.0233, Time=0.61s
+Epoch 11: Loss=0.9941, Time=0.61s
+Epoch 12: Loss=0.9659, Time=0.61s
+Epoch 13: Loss=0.9427, Time=0.67s
+Epoch 14: Loss=0.9150, Time=0.61s
+Epoch 15: Loss=0.8945, Time=0.61s
+Epoch 16: Loss=0.8750, Time=0.61s
+Epoch 17: Loss=0.8582, Time=0.61s
+Epoch 18: Loss=0.8387, Time=0.61s
+Epoch 19: Loss=0.8240, Time=0.61s
+Epoch 20: Loss=0.8080, Time=0.61s
+Epoch 21: Loss=0.7955, Time=0.61s
+Epoch 22: Loss=0.7844, Time=0.61s
+Epoch 23: Loss=0.7656, Time=0.61s
+Epoch 24: Loss=0.7539, Time=0.61s
+Epoch 25: Loss=0.7421, Time=0.67s
+Epoch 26: Loss=0.7314, Time=0.61s
+Epoch 27: Loss=0.7189, Time=0.61s
+Epoch 28: Loss=0.7058, Time=0.61s
+Epoch 29: Loss=0.6922, Time=0.61s
+Epoch 30: Loss=0.6822, Time=0.61s
+Epoch 31: Loss=0.6766, Time=0.61s
+Epoch 32: Loss=0.6617, Time=0.61s
+Epoch 33: Loss=0.6503, Time=0.61s
+Epoch 34: Loss=0.6449, Time=0.61s
+Epoch 35: Loss=0.6306, Time=0.61s
+Epoch 36: Loss=0.6214, Time=0.68s
+Epoch 37: Loss=0.6124, Time=0.62s
+Epoch 38: Loss=0.6034, Time=0.61s
+Epoch 39: Loss=0.5934, Time=0.61s
+Epoch 40: Loss=0.5848, Time=0.61s
+Epoch 41: Loss=0.5792, Time=0.61s
+Epoch 42: Loss=0.5747, Time=0.61s
+Epoch 43: Loss=0.5623, Time=0.61s
+Epoch 44: Loss=0.5480, Time=0.61s
+Epoch 45: Loss=0.5392, Time=0.61s
+Epoch 46: Loss=0.5307, Time=0.61s
+Epoch 47: Loss=0.5229, Time=0.61s
+Epoch 48: Loss=0.5159, Time=0.67s
+Epoch 49: Loss=0.5087, Time=0.61s
+Epoch 50: Loss=0.5037, Time=0.61s
+Epoch 51: Loss=0.4925, Time=0.61s
+Epoch 52: Loss=0.4817, Time=0.61s
+Epoch 53: Loss=0.4734, Time=0.61s
+Epoch 54: Loss=0.4675, Time=0.61s
+Epoch 55: Loss=0.4592, Time=0.61s
+Epoch 56: Loss=0.4545, Time=0.61s
+Epoch 57: Loss=0.4454, Time=0.61s
+Epoch 58: Loss=0.4377, Time=0.61s
+Epoch 59: Loss=0.4306, Time=0.67s
+Epoch 60: Loss=0.4238, Time=0.61s
+Epoch 61: Loss=0.4168, Time=0.61s
+Epoch 62: Loss=0.4132, Time=0.61s
+Epoch 63: Loss=0.4010, Time=0.61s
+Epoch 64: Loss=0.3942, Time=0.61s
+Epoch 65: Loss=0.3881, Time=0.61s
+Epoch 66: Loss=0.3806, Time=0.61s
+Epoch 67: Loss=0.3736, Time=0.61s
+Epoch 68: Loss=0.3658, Time=0.61s
+Epoch 69: Loss=0.3606, Time=0.61s
+Epoch 70: Loss=0.3553, Time=0.61s
+Epoch 71: Loss=0.3471, Time=0.68s
+Epoch 72: Loss=0.3418, Time=0.61s
+Epoch 73: Loss=0.3361, Time=0.61s
+Epoch 74: Loss=0.3279, Time=0.61s
+Epoch 75: Loss=0.3205, Time=0.61s
+Epoch 76: Loss=0.3149, Time=0.61s
+Epoch 77: Loss=0.3100, Time=0.61s
+Epoch 78: Loss=0.3018, Time=0.61s
+Epoch 79: Loss=0.2980, Time=0.61s
+Epoch 80: Loss=0.2893, Time=0.61s
+Epoch 81: Loss=0.2840, Time=0.61s
+Epoch 82: Loss=0.2777, Time=0.67s
+Epoch 83: Loss=0.2727, Time=0.61s
+Epoch 84: Loss=0.2662, Time=0.61s
+Epoch 85: Loss=0.2594, Time=0.61s
+Epoch 86: Loss=0.2545, Time=0.61s
+Epoch 87: Loss=0.2504, Time=0.61s
+Epoch 88: Loss=0.2437, Time=0.61s
+Epoch 89: Loss=0.2386, Time=0.61s
+Epoch 90: Loss=0.2310, Time=0.61s
+Epoch 91: Loss=0.2260, Time=0.61s
+Epoch 92: Loss=0.2197, Time=0.61s
+Epoch 93: Loss=0.2144, Time=0.61s
+Epoch 94: Loss=0.2100, Time=0.68s
+Epoch 95: Loss=0.2064, Time=0.61s
+Epoch 96: Loss=0.2034, Time=0.61s
+Epoch 97: Loss=0.1952, Time=0.61s
+Epoch 98: Loss=0.1915, Time=0.61s
+Epoch 99: Loss=0.1875, Time=0.61s
+Train set acc: 0.9660
+Test set acc: 0.7437
+Train set accuracy: 96.600%
+Test set accuracy: 74.370%
+Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.
+Using device: cuda:0
+Setting random seeds for reproducibility
+Loading data
+Files already downloaded and verified
+Dataset shape: torch.Size([50000, 3, 32, 32]), Labels shape: torch.Size([50000])
+Initializing model
+Crafting target data point
+Files already downloaded and verified
+D- size: 50000, D size: 50000
+Target shape: torch.Size([1, 3, 32, 32]), Target label: tensor([9])
+Training models
+
+==================================================
+World: in, Rep 1/1
+==================================================
+Using Adam optimizer with lr=0.000133
+Epoch 0: Loss=2.0192, Time=4.80s
+Epoch 1: Loss=1.5756, Time=2.18s
+Epoch 2: Loss=1.3440, Time=2.11s
+Epoch 3: Loss=1.1958, Time=2.18s
+Epoch 4: Loss=1.0822, Time=2.11s
+Epoch 5: Loss=0.9869, Time=2.18s
+Epoch 6: Loss=0.8996, Time=2.11s
+Epoch 7: Loss=0.8207, Time=2.18s
+Epoch 8: Loss=0.7439, Time=2.19s
+Epoch 9: Loss=0.6694, Time=2.12s
+Epoch 10: Loss=0.5915, Time=2.18s
+Epoch 11: Loss=0.5156, Time=2.11s
+Epoch 12: Loss=0.4445, Time=2.18s
+Epoch 13: Loss=0.3775, Time=2.12s
+Epoch 14: Loss=0.3058, Time=2.18s
+Epoch 15: Loss=0.2415, Time=2.11s
+Epoch 16: Loss=0.1889, Time=2.19s
+Epoch 17: Loss=0.1426, Time=2.18s
+Epoch 18: Loss=0.1060, Time=2.11s
+Epoch 19: Loss=0.0781, Time=2.18s
+Epoch 20: Loss=0.0583, Time=2.12s
+Epoch 21: Loss=0.0441, Time=2.18s
+Epoch 22: Loss=0.0348, Time=2.12s
+Epoch 23: Loss=0.0283, Time=2.18s
+Epoch 24: Loss=0.0237, Time=2.11s
+Epoch 25: Loss=0.0202, Time=2.18s
+Epoch 26: Loss=0.0175, Time=2.12s
+Epoch 27: Loss=0.0153, Time=2.19s
+Epoch 28: Loss=0.0136, Time=2.18s
+Epoch 29: Loss=0.0122, Time=2.12s
+Epoch 30: Loss=0.0110, Time=2.19s
+Epoch 31: Loss=0.0100, Time=2.12s
+Epoch 32: Loss=0.0091, Time=2.18s
+Epoch 33: Loss=0.0084, Time=2.12s
+Epoch 34: Loss=0.0078, Time=2.19s
+Epoch 35: Loss=0.0072, Time=2.12s
+Epoch 36: Loss=0.0067, Time=2.18s
+Epoch 37: Loss=0.0063, Time=2.19s
+Epoch 38: Loss=0.0059, Time=2.12s
+Epoch 39: Loss=0.0055, Time=2.19s
+Epoch 40: Loss=0.0052, Time=2.12s
+Epoch 41: Loss=0.0049, Time=2.19s
+Epoch 42: Loss=0.0046, Time=2.12s
+Epoch 43: Loss=0.0044, Time=2.18s
+Epoch 44: Loss=0.0041, Time=2.12s
+Epoch 45: Loss=0.0039, Time=2.19s
+Epoch 46: Loss=0.0037, Time=2.18s
+Epoch 47: Loss=0.0036, Time=2.12s
+Epoch 48: Loss=0.0034, Time=2.18s
+Epoch 49: Loss=0.0032, Time=2.12s
+Epoch 50: Loss=0.0031, Time=2.19s
+Epoch 51: Loss=0.0030, Time=2.12s
+Epoch 52: Loss=0.0028, Time=2.19s
+Epoch 53: Loss=0.0027, Time=2.12s
+Epoch 54: Loss=0.0026, Time=2.19s
+Epoch 55: Loss=0.0025, Time=2.12s
+Epoch 56: Loss=0.0024, Time=2.19s
+Epoch 57: Loss=0.0023, Time=2.19s
+Epoch 58: Loss=0.0022, Time=2.12s
+Epoch 59: Loss=0.0022, Time=2.18s
+Epoch 60: Loss=0.0021, Time=2.12s
+Epoch 61: Loss=0.0020, Time=2.19s
+Epoch 62: Loss=0.0019, Time=2.12s
+Epoch 63: Loss=0.0019, Time=2.19s
+Epoch 64: Loss=0.0018, Time=2.12s
+Epoch 65: Loss=0.0018, Time=2.19s
+Epoch 66: Loss=0.0017, Time=2.18s
+Epoch 67: Loss=0.0017, Time=2.12s
+Epoch 68: Loss=0.0016, Time=2.19s
+Epoch 69: Loss=0.0016, Time=2.12s
+Epoch 70: Loss=0.0015, Time=2.19s
+Epoch 71: Loss=0.0015, Time=2.11s
+Epoch 72: Loss=0.0014, Time=2.19s
+Epoch 73: Loss=0.0014, Time=2.12s
+Epoch 74: Loss=0.0013, Time=2.19s
+Epoch 75: Loss=0.0013, Time=2.11s
+Epoch 76: Loss=0.0013, Time=2.18s
+Epoch 77: Loss=0.0012, Time=2.18s
+Epoch 78: Loss=0.0012, Time=2.11s
+Epoch 79: Loss=0.0012, Time=2.18s
+Epoch 80: Loss=0.0011, Time=2.11s
+Epoch 81: Loss=0.0011, Time=2.18s
+Epoch 82: Loss=0.0011, Time=2.11s
+Epoch 83: Loss=0.0011, Time=2.19s
+Epoch 84: Loss=0.0010, Time=2.18s
+Epoch 85: Loss=0.0010, Time=2.12s
+Epoch 86: Loss=0.0010, Time=2.19s
+Epoch 87: Loss=0.0010, Time=2.11s
+Epoch 88: Loss=0.0009, Time=2.18s
+Epoch 89: Loss=0.0009, Time=2.11s
+Epoch 90: Loss=0.0009, Time=2.18s
+Epoch 91: Loss=0.0009, Time=2.11s
+Epoch 92: Loss=0.0009, Time=2.18s
+Epoch 93: Loss=0.0008, Time=2.18s
+Epoch 94: Loss=0.0008, Time=2.11s
+Epoch 95: Loss=0.0008, Time=2.18s
+Epoch 96: Loss=0.0008, Time=2.11s
+Epoch 97: Loss=0.0008, Time=2.18s
+Epoch 98: Loss=0.0008, Time=2.11s
+Epoch 99: Loss=0.0007, Time=2.18s
+Train set acc: 1.0000
+Test set acc: 0.6323
+Train set accuracy: 100.000%
+Test set accuracy: 63.230%
+CIFAR10 aug_mult Sweep
+Started: 2025-12-14 14:18:28
+Testing aug_mult values: [1, 2, 4, 8, 16]
+Config: model=cnn, epochs=100, lr=0.000133, batch_size=4000, epsilon=10.0
+
+============================================================
+Running experiment: aug_mult=1
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/non_private --max_grad_norm -1 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=1
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/aug_mult_1 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=2
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 2 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/aug_mult_2 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=4
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 4 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/aug_mult_4 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=8
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 8 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/aug_mult_8 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=16
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 16 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/aug_mult_16 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=1
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 200 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/aug_mult_1_epochs_200 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=1
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 2000 --optimizer adam --seed 0 --out sweep_results/aug_mult_1_batch_2000 --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+Running experiment: aug_mult=1
+Command: /home1/09717/saloni/miniconda3/envs/bb_audit_dpsgd/bin/python opacus_audit.py --data_name cifar10 --model_name wideresnet --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer adam --seed 0 --out sweep_results/wideresnet --epsilon 10.0 --delta 1e-05 --max_grad_norm -1.0 --fit_world_only in
+============================================================
+
+
+============================================================
+SWEEP SUMMARY
+============================================================
+  aug_mult=non_private: success
+  aug_mult=aug_mult_1: success
+  aug_mult=aug_mult_2: success
+  aug_mult=aug_mult_4: success
+  aug_mult=aug_mult_8: success
+  aug_mult=aug_mult_16: success
+  aug_mult=aug_mult_1_epochs_200: success
+  aug_mult=aug_mult_1_batch_2000: success
+  aug_mult=wideresnet: success
+
+Completed: 2025-12-14 17:14:56
+Results saved to: sweep_results/
