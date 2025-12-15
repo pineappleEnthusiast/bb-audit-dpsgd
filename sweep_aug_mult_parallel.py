@@ -157,6 +157,14 @@ echo "========================================"
 def run_experiment_srun(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS,
                         batch_size=BATCH_SIZE, model_name=MODEL_NAME, max_grad_norm=MAX_GRAD_NORM):
     """Run parallel_audit_model.py via srun from within an interactive SLURM allocation."""
+    slurm_nnodes = os.environ.get("SLURM_NNODES")
+    if slurm_nnodes is None:
+        slurm_nnodes = "1"
+    try:
+        int(slurm_nnodes)
+    except ValueError:
+        raise ValueError(f"Invalid SLURM_NNODES value: {slurm_nnodes!r}. Are you inside a SLURM allocation?")
+
     run_name, args = build_torchrun_cmd(
         aug_mult=aug_mult,
         epsilon=epsilon,
@@ -180,8 +188,8 @@ def run_experiment_srun(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPO
 
     cmd = [
         "srun",
-        "--ntasks=$SLURM_NNODES",
-        "--nodes=$SLURM_NNODES",
+        f"--ntasks={slurm_nnodes}",
+        f"--nodes={slurm_nnodes}",
         "bash",
         "-c",
         bash_cmd,
