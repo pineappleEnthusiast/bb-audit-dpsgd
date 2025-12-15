@@ -60,6 +60,8 @@ def run_experiment(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, 
         cmd.extend(["--epsilon", str(epsilon)])
         cmd.extend(["--delta", str(DELTA)])
         cmd.extend(["--max_grad_norm", str(MAX_GRAD_NORM)])
+    else:
+        cmd.extend(["--max_grad_norm", "-1"])
     
     if MAX_PHYSICAL_BATCH_SIZE is not None:
         cmd.extend(["--max_physical_batch_size", str(MAX_PHYSICAL_BATCH_SIZE)])
