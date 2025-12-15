@@ -61,6 +61,8 @@ def build_torchrun_cmd(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOC
         run_name = f"aug_mult_{aug_mult}"
     out_folder = f"{OUT_DIR}/{run_name}"
     
+    effective_block_size = min(BLOCK_SIZE, get_max_physical_batch_size(aug_mult))
+
     args = [
         f"--data_name cifar10",
         f"--model_name {model_name}",
@@ -69,7 +71,7 @@ def build_torchrun_cmd(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOC
         f"--n_epochs {n_epochs}",
         f"--lr {LR}",
         f"--batch_size {batch_size}",
-        f"--block_size {BLOCK_SIZE}",
+        f"--block_size {effective_block_size}",
         f"--seed {SEED}",
         f"--out {out_folder}",
         f"--fixed_init",
@@ -83,9 +85,6 @@ def build_torchrun_cmd(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOC
     else:
         # Non-private training: disable gradient clipping
         args.append("--max_grad_norm -1")
-    
-    max_physical_batch_size = get_max_physical_batch_size(aug_mult)
-    args.append(f"--max_physical_batch_size {max_physical_batch_size}")
     
     if FIT_WORLD_ONLY is not None:
         args.append(f"--fit_world_only {FIT_WORLD_ONLY}")
@@ -211,6 +210,8 @@ def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EP
         run_name = f"aug_mult_{aug_mult}"
     out_folder = f"{OUT_DIR}/{run_name}"
     
+    effective_block_size = min(BLOCK_SIZE, get_max_physical_batch_size(aug_mult))
+
     cmd = [
         sys.executable, "-m", "torch.distributed.run",
         "--nproc_per_node", str(NPROC_PER_NODE),
@@ -223,7 +224,7 @@ def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EP
         "--n_epochs", str(n_epochs),
         "--lr", str(LR),
         "--batch_size", str(batch_size),
-        "--block_size", str(BLOCK_SIZE),
+        "--block_size", str(effective_block_size),
         "--seed", str(SEED),
         "--out", out_folder,
         "--fixed_init",
@@ -235,9 +236,6 @@ def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EP
         cmd.extend(["--max_grad_norm", str(max_grad_norm)])
     else:
         cmd.extend(["--max_grad_norm", "-1"])
-    
-    max_physical_batch_size = get_max_physical_batch_size(aug_mult)
-    cmd.extend(["--max_physical_batch_size", str(max_physical_batch_size)])
     
     if FIT_WORLD_ONLY is not None:
         cmd.extend(["--fit_world_only", FIT_WORLD_ONLY])
