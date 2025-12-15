@@ -35,6 +35,16 @@ FIT_WORLD_ONLY = "in"
 # =============================================================================
 
 
+def get_max_physical_batch_size(aug_mult):
+    """Get max physical batch size based on aug_mult."""
+    if aug_mult <= 4:
+        return 4000
+    elif aug_mult == 8:
+        return 3000
+    else:  # aug_mult >= 16
+        return 1500
+
+
 def run_experiment(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, batch_size=BATCH_SIZE, model_name=MODEL_NAME):
     """Run opacus_audit.py with a specific aug_mult value."""
     if run_name is None:
@@ -63,8 +73,8 @@ def run_experiment(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, 
     else:
         cmd.extend(["--max_grad_norm", "-1"])
     
-    if MAX_PHYSICAL_BATCH_SIZE is not None:
-        cmd.extend(["--max_physical_batch_size", str(MAX_PHYSICAL_BATCH_SIZE)])
+    max_physical_batch_size = get_max_physical_batch_size(aug_mult)
+    cmd.extend(["--max_physical_batch_size", str(max_physical_batch_size)])
     
     if EARLY_STOPPING is not None:
         cmd.extend(["--early_stopping", str(EARLY_STOPPING)])
