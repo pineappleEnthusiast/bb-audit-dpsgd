@@ -291,7 +291,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     # Note: torch.compile is applied in main() before calling this function
     # Opacus wraps the model, so we can't compile here
     
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(reduction="none")
     
     # Setup optimizer
     if optimizer_name == 'adam':
@@ -453,16 +453,17 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                         
                         optimizer.zero_grad(set_to_none=True)
                         output = model(curr_X_flat)
-                        loss = criterion(output, curr_y_rep)
+                        loss_per_view = criterion(output, curr_y_rep)  # [B*A]
+                        loss = loss_per_view.view(B, A).mean(dim=1).mean()
                         loss.backward()
                         
-                        # Average gradients over augmentations
+                        # Aggregate per-sample gradients across augmentations
                         for param in model.parameters():
                             if hasattr(param, 'grad_sample') and param.grad_sample is not None:
                                 gs = param.grad_sample
                                 gs_reshaped = gs.view(B, A, *gs.shape[1:])
-                                gs_avg = gs_reshaped.mean(dim=1)
-                                param.grad_sample = gs_avg
+                                gs_agg = gs_reshaped.sum(dim=1)
+                                param.grad_sample = gs_agg
                         
                         optimizer.step()
                         epoch_loss += loss.item()
@@ -475,17 +476,18 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     
                     optimizer.zero_grad(set_to_none=True)
                     output = model(curr_X_flat)
-                    loss = criterion(output, curr_y_rep)
+                    loss_per_view = criterion(output, curr_y_rep)  # [B*A]
+                    loss = loss_per_view.view(B, A).mean(dim=1).mean()
                     loss.backward()
                     
-                    # Average gradients over augmentations
-                    if hasattr(optimizer, 'grad_samples'):
+                    # Aggregate per-sample gradients across augmentations (Opacus only)
+                    if use_private:
                         for param in model.parameters():
                             if hasattr(param, 'grad_sample') and param.grad_sample is not None:
                                 gs = param.grad_sample
                                 gs_reshaped = gs.view(B, A, *gs.shape[1:])
-                                gs_avg = gs_reshaped.mean(dim=1)
-                                param.grad_sample = gs_avg
+                                gs_agg = gs_reshaped.sum(dim=1)
+                                param.grad_sample = gs_agg
                     
                     optimizer.step()
                     epoch_loss += loss.item()
@@ -516,7 +518,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     
                     optimizer.zero_grad(set_to_none=True)
                     output = model(curr_X)
-                    loss = criterion(output, curr_y)
+                    loss = criterion(output, curr_y).mean()
                     loss.backward()
                     optimizer.step()
                     
