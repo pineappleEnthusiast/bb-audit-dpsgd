@@ -22,13 +22,13 @@ LR = 1.33e-4
 BATCH_SIZE = 4000
 EPSILON = 10.0
 DELTA = 1e-5
-MAX_GRAD_NORM = -1.0
+MAX_GRAD_NORM = 1.0
 OPTIMIZER = "adam"
 SEED = 0
 OUT_DIR = "sweep_results"
 
 # Optional parameters (set to None to disable)
-MAX_PHYSICAL_BATCH_SIZE = None
+MAX_PHYSICAL_BATCH_SIZE = 3000
 EARLY_STOPPING = None
 FIT_WORLD_ONLY = "in"
 
@@ -60,9 +60,6 @@ def run_experiment(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, 
         cmd.extend(["--epsilon", str(epsilon)])
         cmd.extend(["--delta", str(DELTA)])
         cmd.extend(["--max_grad_norm", str(MAX_GRAD_NORM)])
-    else:
-        # Non-private training: set max_grad_norm to -1 to disable clipping
-        cmd.extend(["--max_grad_norm", "-1"])
     
     if MAX_PHYSICAL_BATCH_SIZE is not None:
         cmd.extend(["--max_physical_batch_size", str(MAX_PHYSICAL_BATCH_SIZE)])
