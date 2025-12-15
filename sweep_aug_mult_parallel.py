@@ -38,9 +38,20 @@ NPROC_PER_NODE = 1  # Number of GPUs per node
 
 # Optional parameters (set to None to disable)
 MAX_PHYSICAL_BATCH_SIZE = 3000
+EARLY_STOPPING = None
 FIT_WORLD_ONLY = "in"
 
 # =============================================================================
+
+
+def get_max_physical_batch_size(aug_mult):
+    """Get max physical batch size based on aug_mult."""
+    if aug_mult <= 4:
+        return 4000
+    elif aug_mult == 8:
+        return 3000
+    else:  # aug_mult >= 16
+        return 1500
 
 
 def build_torchrun_cmd(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, 
@@ -73,8 +84,8 @@ def build_torchrun_cmd(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOC
         # Non-private training: disable gradient clipping
         args.append("--max_grad_norm -1")
     
-    if MAX_PHYSICAL_BATCH_SIZE is not None:
-        args.append(f"--max_physical_batch_size {MAX_PHYSICAL_BATCH_SIZE}")
+    max_physical_batch_size = get_max_physical_batch_size(aug_mult)
+    args.append(f"--max_physical_batch_size {max_physical_batch_size}")
     
     if FIT_WORLD_ONLY is not None:
         args.append(f"--fit_world_only {FIT_WORLD_ONLY}")
@@ -175,8 +186,8 @@ def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EP
     else:
         cmd.extend(["--max_grad_norm", "-1"])
     
-    if MAX_PHYSICAL_BATCH_SIZE is not None:
-        cmd.extend(["--max_physical_batch_size", str(MAX_PHYSICAL_BATCH_SIZE)])
+    max_physical_batch_size = get_max_physical_batch_size(aug_mult)
+    cmd.extend(["--max_physical_batch_size", str(max_physical_batch_size)])
     
     if FIT_WORLD_ONLY is not None:
         cmd.extend(["--fit_world_only", FIT_WORLD_ONLY])
