@@ -154,6 +154,48 @@ echo "========================================"
     return script
 
 
+def run_experiment_srun(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS,
+                        batch_size=BATCH_SIZE, model_name=MODEL_NAME, max_grad_norm=MAX_GRAD_NORM):
+    """Run parallel_audit_model.py via srun from within an interactive SLURM allocation."""
+    run_name, args = build_torchrun_cmd(
+        aug_mult=aug_mult,
+        epsilon=epsilon,
+        run_name=run_name,
+        n_epochs=n_epochs,
+        batch_size=batch_size,
+        model_name=model_name,
+        max_grad_norm=max_grad_norm,
+    )
+
+    bash_cmd = (
+        "MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1); "
+        "MASTER_PORT=29500; "
+        "RANK=$SLURM_PROCID; "
+        f"torchrun --nnodes=$SLURM_NNODES --nproc_per_node={NPROC_PER_NODE} "
+        "--rdzv_backend=c10d "
+        "--rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} "
+        "parallel_audit_model.py "
+        f"{args}"
+    )
+
+    cmd = [
+        "srun",
+        "--ntasks=$SLURM_NNODES",
+        "--nodes=$SLURM_NNODES",
+        "bash",
+        "-c",
+        bash_cmd,
+    ]
+
+    print(f"\n{'='*60}")
+    print(f"Running experiment (srun): {run_name}")
+    print(f"Command: {' '.join(cmd)}")
+    print(f"{'='*60}\n")
+
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
 def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EPOCHS, 
                          batch_size=BATCH_SIZE, model_name=MODEL_NAME, max_grad_norm=MAX_GRAD_NORM):
     """Run parallel_audit_model.py locally using torchrun (single node)."""
@@ -204,10 +246,42 @@ def run_experiment_local(aug_mult, epsilon=EPSILON, run_name=None, n_epochs=N_EP
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="store_true", help="Run experiments locally instead of generating SLURM script")
+    parser.add_argument("--srun", action="store_true", help="Run experiments via srun from an interactive SLURM allocation (no sbatch)")
     parser.add_argument("--output", type=str, default="sweep_aug_mult.slurm", help="Output SLURM script filename")
     args = parser.parse_args()
     
-    if args.run:
+    if args.srun:
+        # Run via srun (expects to be inside a SLURM allocation)
+        print("CIFAR10 aug_mult Sweep (Parallel - srun)")
+        print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        os.makedirs(OUT_DIR, exist_ok=True)
+        results = {}
+
+        if RUN_NON_PRIVATE:
+            returncode = run_experiment_srun(aug_mult=1, epsilon=None, run_name="non_private")
+            results["non_private"] = "success" if returncode == 0 else f"failed (code {returncode})"
+
+        for aug_mult in AUG_MULT_VALUES:
+            returncode = run_experiment_srun(aug_mult)
+            results[f"aug_mult_{aug_mult}"] = "success" if returncode == 0 else f"failed (code {returncode})"
+
+        returncode = run_experiment_srun(aug_mult=1, epsilon=EPSILON, run_name="aug_mult_1_epochs_200", n_epochs=200)
+        results["aug_mult_1_epochs_200"] = "success" if returncode == 0 else f"failed (code {returncode})"
+
+        returncode = run_experiment_srun(aug_mult=1, epsilon=EPSILON, run_name="aug_mult_1_batch_2000", batch_size=2000)
+        results["aug_mult_1_batch_2000"] = "success" if returncode == 0 else f"failed (code {returncode})"
+
+        returncode = run_experiment_srun(aug_mult=1, epsilon=EPSILON, run_name="wideresnet", model_name="wideresnet")
+        results["wideresnet"] = "success" if returncode == 0 else f"failed (code {returncode})"
+
+        print(f"\n{'='*60}")
+        print("SWEEP SUMMARY")
+        print(f"{'='*60}")
+        for name, status in results.items():
+            print(f"  {name}: {status}")
+        print(f"\nCompleted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    elif args.run:
         # Run locally
         print("CIFAR10 aug_mult Sweep (Parallel - Local)")
         print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
