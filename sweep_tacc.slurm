@@ -22,10 +22,10 @@ conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
 # python sweep_aug_mult.py
 
-python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 4 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --max_grad_norm -1 --max_physical_batch_size 1000 --fit_world_only in
-python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 8 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --max_grad_norm -1 --max_physical_batch_size 1000 --fit_world_only in
-python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 16 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --max_grad_norm -1 --max_physical_batch_size 1000 --fit_world_only in
+python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --epsilon 10.0 --max_grad_norm 1 --max_physical_batch_size 1000 --fit_world_only in
+python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 0.5 --batch_size 4000 --optimizer sgd --seed 0 --out debug --epsilon 10.0 --max_grad_norm 1 --max_physical_batch_size 1000 --fit_world_only in
+python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 1 --n_reps 2 --n_epochs 100 --lr 1 --batch_size 4000 --optimizer sgd --seed 0 --out debug --epsilon 10.0 --max_grad_norm 1 --max_physical_batch_size 1000 --fit_world_only in
 
-python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 4 --n_reps 2 --n_epochs 200 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --max_grad_norm -1 --max_physical_batch_size 1000 --fit_world_only in
-python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 8 --n_reps 2 --n_epochs 200 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --max_grad_norm -1 --max_physical_batch_size 1000 --fit_world_only in
-python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 16 --n_reps 2 --n_epochs 200 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --max_grad_norm -1 --max_physical_batch_size 1000 --fit_world_only in
+python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 4 --n_reps 2 --n_epochs 100 --lr 0.000133 --batch_size 4000 --optimizer sgd --seed 0 --out debug --epsilon 10.0 --max_grad_norm 1 --max_physical_batch_size 1000 --fit_world_only in
+python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 4 --n_reps 2 --n_epochs 100 --lr 0.5 --batch_size 4000 --optimizer sgd --seed 0 --out debug --epsilon 10.0 --max_grad_norm 1 --max_physical_batch_size 1000 --fit_world_only in
+python opacus_audit.py --data_name cifar10 --model_name cnn --aug_mult 4 --n_reps 2 --n_epochs 100 --lr 1 --batch_size 4000 --optimizer sgd --seed 0 --out debug --epsilon 10.0 --max_grad_norm 1 --max_physical_batch_size 1000 --fit_world_only in
