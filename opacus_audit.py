@@ -295,19 +295,13 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     
     criterion = nn.CrossEntropyLoss(reduction="none")
     
+    use_private = epsilon is not None and max_grad_norm is not None
+    
     # Setup optimizer
     if optimizer_name == 'adam':
-        # Scale learning rate by batch_size to match audit_model.py behavior
-        # audit_model.py uses summed gradients, Opacus uses averaged gradients
-        effective_lr = lr * batch_size
-        print(f"Using Adam optimizer, scaling LR: {lr} * {batch_size} = {effective_lr}")
-        optimizer = optim.Adam(model.parameters(), lr=effective_lr)
+        optimizer = optim.Adam(model.parameters(), lr=lr)
     else:
-        # Scale learning rate by batch_size to match audit_model.py behavior
-        # audit_model.py uses summed gradients, Opacus uses averaged gradients
-        effective_lr = lr * batch_size
-        print(f"Using SGD optimizer, scaling LR: {lr} * {batch_size} = {effective_lr}")
-        optimizer = optim.SGD(model.parameters(), lr=effective_lr)
+        optimizer = optim.SGD(model.parameters(), lr=lr)
     
     # Setup augmentation function if aug_mult > 1
     aug_fn = None
@@ -477,7 +471,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                             if hasattr(param, 'grad_sample') and param.grad_sample is not None:
                                 gs = param.grad_sample
                                 gs_reshaped = gs.view(B, A, *gs.shape[1:])
-                                gs_agg = gs_reshaped.sum(dim=1)
+                                gs_agg = gs_reshaped.mean(dim=1)
                                 param.grad_sample = gs_agg
 
                         if defense and use_private:
@@ -528,7 +522,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                             if hasattr(param, 'grad_sample') and param.grad_sample is not None:
                                 gs = param.grad_sample
                                 gs_reshaped = gs.view(B, A, *gs.shape[1:])
-                                gs_agg = gs_reshaped.sum(dim=1)
+                                gs_agg = gs_reshaped.mean(dim=1)
                                 param.grad_sample = gs_agg
 
                     if defense and use_private:

@@ -163,7 +163,7 @@ class IndexedTensorDataset(Dataset):
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None,
-               optimizer_name='sgd'):
+               optimizer_name='sgd', rank=0):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -205,6 +205,16 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             epochs=n_epochs,
             accountant='rdp'
         )
+        if rank == 0:
+            expected_noise_std = None
+            if max_grad_norm is not None:
+                expected_noise_std = float(noise_multiplier * max_grad_norm)
+            print(
+                f"[Rank {rank}] noise_multiplier={noise_multiplier:.6f} "
+                f"(epsilon={epsilon}, delta={delta}, sample_rate={batch_size / len(X):.6f}, epochs={n_epochs}) "
+                f"max_grad_norm={max_grad_norm} expected_noise_std={expected_noise_std}",
+                flush=True,
+            )
     else:
         noise_multiplier = 0
 
@@ -287,9 +297,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         param.grad = grad.clone()
                     else:
                         param.grad.copy_(grad)
-            
-            optimizer.step()
-            optimizer.zero_grad()
+
+                optimizer.step()
+                optimizer.zero_grad()
         
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
@@ -497,7 +507,6 @@ def main():
     # Gradient-space audit options
     parser.add_argument('--target_class', type=int, default=0,
                         help='Target class for gradient-space audit')
-
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
@@ -746,7 +755,8 @@ def main():
                 crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,
                 device=device,
                 generator=generator,
-                dl_generator=dl_generator
+                dl_generator=dl_generator,
+                rank=rank,
             )
             
             # Compute outputs and losses

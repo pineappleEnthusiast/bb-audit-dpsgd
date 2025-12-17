@@ -228,6 +228,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     
     if drop_mask is not None and len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
+
+    # Original batch size (including samples that may be dropped).
+    # Dropped samples are treated as sentinel samples with zero gradient, so they
+    # should still be counted in the averaging denominator.
+    batch_size_in = len(X)
     
     # Get indices of non-dropped samples
     # TODO: bug is here
@@ -239,12 +244,20 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     X = X[active_indices]
     y = y[active_indices]
     global_indices = global_indices[active_indices]
+
+    n_active_samples = len(X)
     
     # Check if the canary is in this batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
     
     if len(X) == 0:
-        return None, scores
+        # All samples were dropped. Treat as a full batch of sentinel samples
+        # whose gradients are zero.
+        zeros_grad = {
+            name: torch.zeros_like(param, device=device)
+            for name, param in model.named_parameters()
+        }
+        return zeros_grad, scores
     
     # Process in blocks for memory efficiency
     accum_grad = None
@@ -293,7 +306,15 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
 
-    
+
+    # Convert sum over samples to mean over samples (Option A convention)
+    # This makes downstream noise addition with std=noise_multiplier*max_grad_norm
+    # align with standard DP-SGD accounting.
+    if accum_grad is not None and batch_size_in > 0:
+        with torch.no_grad():
+            for name in accum_grad:
+                accum_grad[name] = accum_grad[name] / float(batch_size_in)
+
     return accum_grad, scores
 
 
