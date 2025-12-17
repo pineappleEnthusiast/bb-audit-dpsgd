@@ -297,9 +297,11 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     
     # Setup optimizer
     if optimizer_name == 'adam':
-        # Adam doesn't need LR scaling - it normalizes by gradient moments
-        print(f"Using Adam optimizer with lr={lr}")
-        optimizer = optim.Adam(model.parameters(), lr=lr)
+        # Scale learning rate by batch_size to match audit_model.py behavior
+        # audit_model.py uses summed gradients, Opacus uses averaged gradients
+        effective_lr = lr * batch_size
+        print(f"Using Adam optimizer, scaling LR: {lr} * {batch_size} = {effective_lr}")
+        optimizer = optim.Adam(model.parameters(), lr=effective_lr)
     else:
         # Scale learning rate by batch_size to match audit_model.py behavior
         # audit_model.py uses summed gradients, Opacus uses averaged gradients
