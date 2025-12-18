@@ -8,7 +8,6 @@
 #SBATCH -t 20:00:00                # Run time (hh:mm:ss)
 #SBATCH -A CCR23048                # Allocation/Project ID (required on TACC)
 #SBATCH --mail-user=saloni.a.modi@utexas.edu
-#SBATCH --array=0-59
 
 # Print some info
 echo "Running on host $(hostname)"
