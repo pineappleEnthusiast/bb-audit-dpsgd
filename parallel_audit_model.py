@@ -162,8 +162,7 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None,
-               optimizer_name='sgd', rank=0):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -190,10 +189,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     model.train()
     criterion = nn.CrossEntropyLoss()
-    if optimizer_name == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=lr)
-    else:
-        optimizer = optim.SGD(model.parameters(), lr=lr)
+    optimizer = optim.SGD(model.parameters(), lr=lr)
 
     # Set DP noise
     # TODO: switch accountant
@@ -205,22 +201,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             epochs=n_epochs,
             accountant='rdp'
         )
-        if rank == 0:
-            expected_noise_std = None
-            if max_grad_norm is not None:
-                expected_noise_std = float(noise_multiplier * max_grad_norm / float(batch_size))
-            print(
-                f"[Rank {rank}] noise_multiplier={noise_multiplier:.6f} "
-                f"(epsilon={epsilon}, delta={delta}, sample_rate={batch_size / len(X):.6f}, epochs={n_epochs}) "
-                f"max_grad_norm={max_grad_norm} expected_noise_std={expected_noise_std}",
-                flush=True,
-            )
     else:
         noise_multiplier = 0
 
     block_size = min(block_size, batch_size)
 
-    if aug_mult > 1 and len(X.shape) > 2:
+    if len(X.shape) > 2:
         aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
     else:
         aug_fn = None
@@ -228,7 +214,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # Create Dataset + DataLoader (no DDP sampler)
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=np.int8)
+    drop_mask = np.zeros(len(dataset), dtype=bool)
     
     sampler = torch.utils.data.RandomSampler(
         dataset,
@@ -251,7 +237,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     for epoch in range(n_epochs):
         epoch_start = time.time()
         optimizer.zero_grad()
-        print(f"Epoch: {epoch} (Active samples: {int((drop_mask != 2).sum())}/{len(drop_mask)})", end='', flush=True)
+        print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
@@ -276,10 +262,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 crafted_gradient=crafted_gradient
             )
             
-            batch_global_indices = global_indices.detach().cpu().numpy()
-            batch_marked = (drop_mask[batch_global_indices] == 1)
-            if np.any(batch_marked):
-                drop_mask[batch_global_indices[batch_marked]] = 2
+            drop_mask[drop_mask == 1] = 2
 
             # Apply the accumulated gradients
             with torch.no_grad():
@@ -293,18 +276,16 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
-                        batch_size_in = int(curr_X.shape[0])
-                        noise_std = noise_multiplier * max_grad_norm / float(batch_size_in)
-                        noise = noise_std * torch.randn_like(grad)
+                        noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
                         grad.add_(noise)
                     
                     if param.grad is None:
                         param.grad = grad.clone()
                     else:
                         param.grad.copy_(grad)
-
-                optimizer.step()
-                optimizer.zero_grad()
+            
+            optimizer.step()
+            optimizer.zero_grad()
         
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
@@ -461,6 +442,7 @@ def main():
     #     print(f'[Rank {rank}] CUDA not available, using CPU')
 
 
+
     dist.init_process_group(
         backend='nccl',
         init_method='env://'
@@ -487,8 +469,6 @@ def main():
     parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
     parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs to train for')
     parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'],
-                        help='optimizer to use (sgd or adam)')
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
@@ -512,6 +492,7 @@ def main():
     # Gradient-space audit options
     parser.add_argument('--target_class', type=int, default=0,
                         help='Target class for gradient-space audit')
+
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
@@ -552,6 +533,7 @@ def main():
         else:
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
+
 
     # Craft target
     if rank == 0:
@@ -638,8 +620,7 @@ def main():
             rank=rank,
             world_size=world_size,
             gradient_space_audit=False,
-            defense=False,
-            optimizer_name=args.optimizer
+            defense=False
         )
         print("FGSM model training completed")
         
@@ -755,13 +736,11 @@ def main():
                 out_dim=out_dim, 
                 defense=args.defense,
                 aug_mult=args.aug_mult,
-                optimizer_name=args.optimizer,
                 gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
                 crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,
                 device=device,
                 generator=generator,
-                dl_generator=dl_generator,
-                rank=rank,
+                dl_generator=dl_generator
             )
             
             # Compute outputs and losses
