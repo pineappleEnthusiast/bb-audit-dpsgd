@@ -640,6 +640,11 @@ def main():
 
     device = setup_device(local_rank)
 
+    print(
+        f"[Rank {rank}] world_size={world_size} local_rank={local_rank} device={device}",
+        flush=True,
+    )
+
     if args.max_grad_norm == -1:
         args.max_grad_norm = None
 
@@ -652,7 +657,7 @@ def main():
         os.makedirs(out_folder, exist_ok=True)
         os.makedirs(f'{out_folder}/models', exist_ok=True)
 
-    dist.barrier()
+    dist.barrier(device_ids=[local_rank] if torch.cuda.is_available() else None)
 
     if args.n_df == 1:
         X_out, y_out, out_dim = load_data(args.data_name, 1)
@@ -777,6 +782,8 @@ def main():
     for world in worlds:
         curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
         for rep in my_reps:
+            rep_start = time.time()
+            print(f"[Rank {rank}] START world={world} rep={rep}", flush=True)
             rep_seed = args.seed + rank * 100000 + rep
             np.random.seed(rep_seed)
             torch.manual_seed(rep_seed)
@@ -822,6 +829,11 @@ def main():
                 train_acc = test_model(model, X_in, y_in, device=device)
                 test_acc = test_model(model, X_test, y_test, device=device)
                 local_accs.append((rep, float(train_acc), float(test_acc)))
+
+            print(
+                f"[Rank {rank}] END world={world} rep={rep} elapsed_s={time.time() - rep_start:.2f}",
+                flush=True,
+            )
 
     gathered = _gather_list_of_dicts(local_results, world_size, rank)
     gathered_drop = _gather_list_of_dicts(local_drop_epochs, world_size, rank)
@@ -931,7 +943,7 @@ def main():
             print(f'Theoretical eps: {args.epsilon}')
             print(f'Empirical eps: {emp_eps_loss}')
 
-    dist.barrier()
+    dist.barrier(device_ids=[local_rank] if torch.cuda.is_available() else None)
     dist.destroy_process_group()
 
 
