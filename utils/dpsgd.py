@@ -229,6 +229,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     if drop_mask is not None and len(drop_mask) != len(X):
         raise ValueError(f"drop_mask length ({len(drop_mask)}) must match X length ({len(X)})")
     
+    batch_size_in = len(X)
+
     # Get indices of non-dropped samples
     # TODO: bug is here
     active_indices = (torch.tensor(drop_mask, device=device) != 2)
@@ -293,7 +295,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         # Update scores for this block
         scores[curr_global_indices.cpu().numpy()] = last_layer_norms
 
-    
+    if accum_grad is not None and batch_size_in > 0:
+        with torch.no_grad():
+            for name in accum_grad:
+                accum_grad[name] = accum_grad[name] / float(batch_size_in)
+
     return accum_grad, scores
 
 
