@@ -208,7 +208,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         if rank == 0:
             expected_noise_std = None
             if max_grad_norm is not None:
-                expected_noise_std = float(noise_multiplier * max_grad_norm)
+                expected_noise_std = float(noise_multiplier * max_grad_norm / float(batch_size))
             print(
                 f"[Rank {rank}] noise_multiplier={noise_multiplier:.6f} "
                 f"(epsilon={epsilon}, delta={delta}, sample_rate={batch_size / len(X):.6f}, epochs={n_epochs}) "
@@ -290,7 +290,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                     
                     # Add DP noise if needed
                     if noise_multiplier > 0 and max_grad_norm is not None:
-                        noise = noise_multiplier * max_grad_norm * torch.randn_like(grad)
+                        batch_size_in = int(curr_X.shape[0])
+                        noise_std = noise_multiplier * max_grad_norm / float(batch_size_in)
+                        noise = noise_std * torch.randn_like(grad)
                         grad.add_(noise)
                     
                     if param.grad is None:
