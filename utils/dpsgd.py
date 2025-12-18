@@ -244,8 +244,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     X = X[active_indices]
     y = y[active_indices]
     global_indices = global_indices[active_indices]
-
-    n_active_samples = len(X)
     
     # Check if the canary is in this batch and we should apply gradient space canary
     apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
