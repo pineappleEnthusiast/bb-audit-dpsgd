@@ -510,6 +510,20 @@ def train_model_opacus(
 
         avg_loss = epoch_loss / n_batches if n_batches > 0 else 0.0
 
+        epoch_time = time.time() - epoch_start
+        if defense:
+            print(
+                f"[world={world} rep={rep}] Epoch: {epoch} (Active samples: {n_active}/{len(drop_mask)})"
+                f" | Avg loss: {avg_loss:.6f} | Time: {epoch_time:.2f}s",
+                flush=True,
+            )
+        else:
+            print(
+                f"[world={world} rep={rep}] Epoch: {epoch}"
+                f" | Avg loss: {avg_loss:.6f} | Time: {epoch_time:.2f}s",
+                flush=True,
+            )
+
         if early_stopping_patience is not None:
             if avg_loss < best_loss:
                 best_loss = avg_loss
@@ -517,6 +531,10 @@ def train_model_opacus(
             else:
                 patience_counter += 1
                 if patience_counter >= early_stopping_patience:
+                    print(
+                        f"[world={world} rep={rep}] Early stopping at epoch {epoch} (patience={early_stopping_patience})",
+                        flush=True,
+                    )
                     break
 
         if defense and use_private:
@@ -583,6 +601,8 @@ def test_model(model, X, y, device, batch_size=512):
 
 
 def _gather_list_of_dicts(local_obj, world_size: int, rank: int):
+    if not dist.is_available() or not dist.is_initialized() or world_size == 1:
+        return [local_obj]
     gathered = [None for _ in range(world_size)] if rank == 0 else None
     dist.gather_object(local_obj, gathered, dst=0)
     return gathered
@@ -633,10 +653,26 @@ def main():
 
     args = parser.parse_args()
 
-    dist.init_process_group(backend='nccl', init_method='env://')
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    rank = int(os.environ.get('RANK', 0))
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    world_size_env = os.environ.get('WORLD_SIZE', None)
+    rank_env = os.environ.get('RANK', None)
+    local_rank_env = os.environ.get('LOCAL_RANK', None)
+
+    use_distributed = (
+        world_size_env is not None
+        and rank_env is not None
+        and local_rank_env is not None
+        and int(world_size_env) > 1
+    )
+
+    if use_distributed:
+        dist.init_process_group(backend='nccl', init_method='env://')
+        local_rank = int(local_rank_env)
+        rank = int(rank_env)
+        world_size = int(world_size_env)
+    else:
+        local_rank = 0
+        rank = 0
+        world_size = 1
 
     device = setup_device(local_rank)
 
@@ -657,7 +693,8 @@ def main():
         os.makedirs(out_folder, exist_ok=True)
         os.makedirs(f'{out_folder}/models', exist_ok=True)
 
-    dist.barrier(device_ids=[local_rank] if torch.cuda.is_available() else None)
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        dist.barrier(device_ids=[local_rank] if torch.cuda.is_available() else None)
 
     if args.n_df == 1:
         X_out, y_out, out_dim = load_data(args.data_name, 1)
@@ -943,8 +980,9 @@ def main():
             print(f'Theoretical eps: {args.epsilon}')
             print(f'Empirical eps: {emp_eps_loss}')
 
-    dist.barrier(device_ids=[local_rank] if torch.cuda.is_available() else None)
-    dist.destroy_process_group()
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        dist.barrier(device_ids=[local_rank] if torch.cuda.is_available() else None)
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
