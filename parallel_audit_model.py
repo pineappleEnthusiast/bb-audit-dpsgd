@@ -228,7 +228,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # Create Dataset + DataLoader (no DDP sampler)
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=bool)
+    drop_mask = np.zeros(len(dataset), dtype=np.int8)
     
     sampler = torch.utils.data.RandomSampler(
         dataset,
@@ -251,7 +251,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     for epoch in range(n_epochs):
         epoch_start = time.time()
         optimizer.zero_grad()
-        print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
+        print(f"Epoch: {epoch} (Active samples: {int((drop_mask != 2).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
@@ -276,7 +276,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 crafted_gradient=crafted_gradient
             )
             
-            drop_mask[drop_mask == 1] = 2
+            batch_global_indices = global_indices.detach().cpu().numpy()
+            batch_marked = (drop_mask[batch_global_indices] == 1)
+            if np.any(batch_marked):
+                drop_mask[batch_global_indices[batch_marked]] = 2
 
             # Apply the accumulated gradients
             with torch.no_grad():
