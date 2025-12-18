@@ -450,6 +450,10 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
         active_mask = (drop_mask != 2)
         n_active = int(active_mask.sum())
 
+        if defense and n_active == 0:
+            print(f"Epoch {epoch} (Active samples: 0/{len(X)}) - stopping early (all samples dropped by defense)")
+            break
+
         if defense:
             print(f"Epoch {epoch} (Active samples: {n_active}/{len(X)})", end='', flush=True)
 
@@ -751,6 +755,8 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
         if defense and use_private:
             unique_classes = torch.unique(y).cpu().numpy()
             samples_to_mark = []
+            prev_drop_mask = drop_mask.copy()
+            newly_marked_canaries = np.array([], dtype=np.int64)
 
             for cls in unique_classes:
                 cls_mask = (y.cpu().numpy() == cls) & (drop_mask != 2)
@@ -769,11 +775,21 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                 if canary_drop_epochs is not None:
                     marked_canaries = np.intersect1d(topk_global_indices, canary_indices, assume_unique=False)
                     if marked_canaries.size > 0:
-                        print(f"\n[INFO] {marked_canaries.size}/{len(canary_indices)} canaries were marked by defense at epoch {epoch}!")
+                        # Compute newly-marked canaries relative to state at the start of the marking phase
+                        newly_marked = marked_canaries[prev_drop_mask[marked_canaries] == 0]
+                        if newly_marked.size > 0:
+                            newly_marked_canaries = np.unique(
+                                np.concatenate([newly_marked_canaries, newly_marked.astype(np.int64)])
+                            )
 
             for idx in samples_to_mark:
                 if drop_mask[idx] == 0:
                     drop_mask[idx] = 1
+
+            if canary_drop_epochs is not None and newly_marked_canaries.size > 0:
+                print(
+                    f"\n[DEFENSE] Newly marked canaries this epoch: {newly_marked_canaries.size}/{len(canary_indices)} (epoch {epoch})"
+                )
 
             # Recreate loader with remaining (non-dropped) samples, preserving original indices
             active_indices = np.where(drop_mask != 2)[0]
@@ -784,6 +800,9 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
 
                 if use_private:
                     loader = privacy_engine._prepare_data_loader(loader, distributed=False, poisson_sampling=False)
+            else:
+                print(f"[DEFENSE] All samples dropped after epoch {epoch}; stopping training")
+                break
 
     # Report canary drop status
     if defense and canary_drop_epochs is not None:
