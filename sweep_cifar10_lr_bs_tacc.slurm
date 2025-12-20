@@ -6,7 +6,7 @@
 #SBATCH -N 1                       # Number of nodes
 #SBATCH -n 1                       # Number of tasks (MPI ranks)
 #SBATCH -t 20:00:00                # Run time (hh:mm:ss)
-#SBATCH -A CCR23048                # Allocation/Project ID (required on TACC)
+#SBATCH -A ASC25081                # Allocation/Project ID (required on TACC)
 #SBATCH --mail-user=saloni.a.modi@utexas.edu
 
 # Print some info
