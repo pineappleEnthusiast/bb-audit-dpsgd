@@ -349,6 +349,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     drop_mask = np.zeros(len(X), dtype=np.int8)
     scores = np.zeros(len(X), dtype=np.float32)
     use_private = epsilon is not None and max_grad_norm is not None
+    print('use_private', use_private)
     privacy_engine = None
     canary_dropped_epoch = None  # Track when canary is dropped
     canary_idx = len(X) - 1  # Canary is always the last sample
