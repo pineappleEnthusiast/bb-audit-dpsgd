@@ -4,9 +4,7 @@
 #SBATCH -e pa_c10_5gpu.e%j
 #SBATCH -p gh
 #SBATCH -N 5
-#SBATCH -n 5
-#SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-task=1
+#SBATCH -n 1
 #SBATCH -t 00:30:00
 #SBATCH -A ASC25081
 #SBATCH --mail-user=saloni.a.modi@utexas.edu
