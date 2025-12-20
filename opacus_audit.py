@@ -577,6 +577,31 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                         loss = criterion(output, curr_y).mean()
                         loss.backward()
 
+                        # Gradient verification for private training
+                        if use_private and batch_idx % 10 == 0:  # Log every 10 batches to avoid too much output
+                            # Calculate gradient norms before clipping
+                            total_norm = 0.0
+                            for p in model.parameters():
+                                if p.grad is not None:
+                                    param_norm = p.grad.data.norm(2)
+                                    total_norm += param_norm.item() ** 2
+                            total_norm = total_norm ** 0.5
+                            
+                            # Calculate per-sample gradient norms (what Opacus will clip)
+                            per_sample_grad_norms = []
+                            for p in model.parameters():
+                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                    norms = p.grad_sample.view(p.grad_sample.shape[0], -1).norm(2, dim=1)
+                                    per_sample_grad_norms.append(norms)
+                            
+                            if per_sample_grad_norms:
+                                all_norms = torch.stack(per_sample_grad_norms, dim=1).norm(2, dim=1)
+                                max_norm = all_norms.max().item()
+                                mean_norm = all_norms.mean().item()
+                                print(f"Batch {batch_idx}: Grad norm before clip - Total: {total_norm:.4f}, "
+                                      f"Per-sample - Max: {max_norm:.4f}, Mean: {mean_norm:.4f}, "
+                                      f"Clip threshold: {max_grad_norm}")
+
                         if defense and use_private and idxs is not None:
                             gs_list = []
                             for p in model.parameters():
@@ -596,7 +621,24 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                                 for p in model.parameters():
                                     if hasattr(p, 'grad_sample') and p.grad_sample is not None:
                                         p.grad_sample[ascent_mask] *= -1
+                        
+                        # Take an optimization step (this is where Opacus applies clipping and adds noise)
                         optimizer.step()
+                        
+                        # Verify clipping after the step
+                        if use_private and batch_idx % 10 == 0:  # Log every 10 batches
+                            per_sample_grad_norms = []
+                            for p in model.parameters():
+                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                                    norms = p.grad_sample.view(p.grad_sample.shape[0], -1).norm(2, dim=1)
+                                    per_sample_grad_norms.append(norms)
+                            
+                            if per_sample_grad_norms:
+                                all_norms = torch.stack(per_sample_grad_norms, dim=1).norm(2, dim=1)
+                                max_norm = all_norms.max().item()
+                                mean_norm = all_norms.mean().item()
+                                print(f"Batch {batch_idx}: Grad norm after clip - Per-sample - Max: {max_norm:.4f}, Mean: {mean_norm:.4f}")
+                                print("-" * 80)
 
                         if defense and idxs is not None:
                             ascent_idxs = idxs.detach().cpu().numpy()[
