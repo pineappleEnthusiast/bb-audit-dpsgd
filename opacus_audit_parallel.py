@@ -867,6 +867,9 @@ def main():
                 test_acc = test_model(model, X_test, y_test, device=device)
                 local_accs.append((rep, float(train_acc), float(test_acc)))
 
+                print(f'Train set acc: {train_acc:.4f}', flush=True)
+                print(f'Test set acc: {test_acc:.4f}', flush=True)
+
             print(
                 f"[Rank {rank}] END world={world} rep={rep} elapsed_s={time.time() - rep_start:.2f}",
                 flush=True,
@@ -907,6 +910,11 @@ def main():
 
         np.save(f'{out_folder}/train_set_accs.npy', np.asarray(train_set_accs, dtype=np.float32))
         np.save(f'{out_folder}/test_set_accs.npy', np.asarray(test_set_accs, dtype=np.float32))
+
+        if len(train_set_accs) > 0:
+            print(f'Train set accuracy: {np.mean(train_set_accs) * 100:.3f}%')
+        if len(test_set_accs) > 0:
+            print(f'Test set accuracy: {np.mean(test_set_accs) * 100:.3f}%')
 
         np.save(f'{out_folder}/outputs_in.npy', outputs.get('in', np.zeros((0, out_dim), dtype=np.float32)))
         np.save(f'{out_folder}/outputs_out.npy', outputs.get('out', np.zeros((0, out_dim), dtype=np.float32)))
