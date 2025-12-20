@@ -556,6 +556,10 @@ def train_model_opacus(
 
                 if canary_idx in topk_global_indices and canary_dropped_epoch is None:
                     canary_dropped_epoch = epoch
+                    print(
+                        f"\n[INFO] Canary (index {canary_idx}) was marked by defense at epoch {epoch}!",
+                        flush=True,
+                    )
 
             for idx in samples_to_mark:
                 if drop_mask[idx] == 0:
@@ -570,6 +574,13 @@ def train_model_opacus(
                     loader = privacy_engine._prepare_data_loader(loader, distributed=False, poisson_sampling=False)
             else:
                 break
+
+    # Report canary drop status (matches opacus_audit.py logging)
+    if defense:
+        if canary_dropped_epoch is not None:
+            print(f"[DEFENSE] Canary was dropped at epoch {canary_dropped_epoch}/{n_epochs}")
+        else:
+            print(f"[DEFENSE] Canary was NOT dropped during training")
 
     return model, canary_dropped_epoch if defense else None
 

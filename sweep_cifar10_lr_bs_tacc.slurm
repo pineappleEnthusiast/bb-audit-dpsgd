@@ -43,13 +43,20 @@ N_LRS=${#LRS[@]}
 N_BS=${#BATCH_SIZES[@]}
 N_COMBOS=$((N_OPTIMIZERS * N_LRS * N_BS))
 
-if [ "$SLURM_ARRAY_TASK_ID" -ge "$N_COMBOS" ]; then
-  echo "Error: SLURM_ARRAY_TASK_ID ($SLURM_ARRAY_TASK_ID) >= N_COMBOS ($N_COMBOS)"
+# If this wasn't submitted as an array job, SLURM_ARRAY_TASK_ID can be empty.
+TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+if ! [[ "$TASK_ID" =~ ^[0-9]+$ ]]; then
+  echo "Error: SLURM_ARRAY_TASK_ID ($SLURM_ARRAY_TASK_ID) is not an integer"
   exit 1
 fi
 
-OPT_IDX=$((SLURM_ARRAY_TASK_ID / (N_LRS * N_BS)))
-REM=$((SLURM_ARRAY_TASK_ID % (N_LRS * N_BS)))
+if [ "$TASK_ID" -ge "$N_COMBOS" ]; then
+  echo "Error: SLURM_ARRAY_TASK_ID ($TASK_ID) >= N_COMBOS ($N_COMBOS)"
+  exit 1
+fi
+
+OPT_IDX=$((TASK_ID / (N_LRS * N_BS)))
+REM=$((TASK_ID % (N_LRS * N_BS)))
 LR_IDX=$((REM / N_BS))
 BS_IDX=$((REM % N_BS))
 
