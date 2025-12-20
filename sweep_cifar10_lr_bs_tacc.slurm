@@ -2,7 +2,7 @@
 #SBATCH -J sweep_cifar10_lr_bs     # Job name
 #SBATCH -o sweep_cifar10_lr_bs.o%j # Output file (%j = job ID)
 #SBATCH -e sweep_cifar10_lr_bs.e%j # Error file
-#SBATCH -p gpu-a100                # Partition (queue) name
+#SBATCH -p gh                # Partition (queue) name
 #SBATCH -N 1                       # Number of nodes
 #SBATCH -n 1                       # Number of tasks (MPI ranks)
 #SBATCH -t 20:00:00                # Run time (hh:mm:ss)
