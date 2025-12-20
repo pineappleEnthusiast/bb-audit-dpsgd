@@ -38,48 +38,45 @@ OPTIMIZERS=(sgd adam)
 LRS=(0.5 1 3 5 7 9)
 BATCH_SIZES=(500 1000 2000 4000 8000)
 
-N_OPTIMIZERS=${#OPTIMIZERS[@]}
-N_LRS=${#LRS[@]}
-N_BS=${#BATCH_SIZES[@]}
-N_COMBOS=$((N_OPTIMIZERS * N_LRS * N_BS))
+echo "Beginning nested sweep over ${#OPTIMIZERS[@]} optimizers x ${#LRS[@]} lrs x ${#BATCH_SIZES[@]} batch_sizes"
 
-# If this wasn't submitted as an array job, SLURM_ARRAY_TASK_ID can be empty.
-TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
-if ! [[ "$TASK_ID" =~ ^[0-9]+$ ]]; then
-  echo "Error: SLURM_ARRAY_TASK_ID ($SLURM_ARRAY_TASK_ID) is not an integer"
-  exit 1
-fi
+for OPTIMIZER in "${OPTIMIZERS[@]}"; do
+  for LR in "${LRS[@]}"; do
+    for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
+      OUT_DIR="hp_tune/${DATA_NAME}_${MODEL_NAME}_lr${LR}_bs${BATCH_SIZE}_ep${N_EPOCHS}_eps${EPSILON}_${OPTIMIZER}"
+      mkdir -p "${OUT_DIR}"
 
-if [ "$TASK_ID" -ge "$N_COMBOS" ]; then
-  echo "Error: SLURM_ARRAY_TASK_ID ($TASK_ID) >= N_COMBOS ($N_COMBOS)"
-  exit 1
-fi
+      echo ""
+      echo "=================================================="
+      echo "Running: data=${DATA_NAME} model=${MODEL_NAME} lr=${LR} batch_size=${BATCH_SIZE} optimizer=${OPTIMIZER} out=${OUT_DIR}"
+      echo "=================================================="
 
-OPT_IDX=$((TASK_ID / (N_LRS * N_BS)))
-REM=$((TASK_ID % (N_LRS * N_BS)))
-LR_IDX=$((REM / N_BS))
-BS_IDX=$((REM % N_BS))
+      set +e
+      python opacus_audit.py \
+        --data_name ${DATA_NAME} \
+        --model_name ${MODEL_NAME} \
+        --aug_mult ${AUG_MULT} \
+        --n_reps ${N_REPS} \
+        --n_epochs ${N_EPOCHS} \
+        --lr ${LR} \
+        --batch_size ${BATCH_SIZE} \
+        --optimizer ${OPTIMIZER} \
+        --seed ${SEED} \
+        --out ${OUT_DIR} \
+        --epsilon ${EPSILON} \
+        --max_grad_norm ${MAX_GRAD_NORM} \
+        --max_physical_batch_size ${MAX_PHYSICAL_BATCH_SIZE} \
+        --fit_world_only ${FIT_WORLD_ONLY}
+      rc=$?
+      set -e
 
-OPTIMIZER=${OPTIMIZERS[$OPT_IDX]}
-LR=${LRS[$LR_IDX]}
-BATCH_SIZE=${BATCH_SIZES[$BS_IDX]}
+      if [ $rc -ne 0 ]; then
+        echo "[WARN] Run failed (rc=$rc): optimizer=${OPTIMIZER} lr=${LR} batch_size=${BATCH_SIZE}"
+      else
+        echo "[OK] Completed: optimizer=${OPTIMIZER} lr=${LR} batch_size=${BATCH_SIZE}"
+      fi
+    done
+  done
+done
 
-OUT_DIR="hp_tune/${DATA_NAME}_${MODEL_NAME}_lr${LR}_bs${BATCH_SIZE}_ep${N_EPOCHS}_eps${EPSILON}_${OPTIMIZER}"
-
-echo "Running: data=${DATA_NAME} model=${MODEL_NAME} lr=${LR} batch_size=${BATCH_SIZE} out=${OUT_DIR}"
-
-python opacus_audit.py \
-  --data_name ${DATA_NAME} \
-  --model_name ${MODEL_NAME} \
-  --aug_mult ${AUG_MULT} \
-  --n_reps ${N_REPS} \
-  --n_epochs ${N_EPOCHS} \
-  --lr ${LR} \
-  --batch_size ${BATCH_SIZE} \
-  --optimizer ${OPTIMIZER} \
-  --seed ${SEED} \
-  --out ${OUT_DIR} \
-  --epsilon ${EPSILON} \
-  --max_grad_norm ${MAX_GRAD_NORM} \
-  --max_physical_batch_size ${MAX_PHYSICAL_BATCH_SIZE} \
-  --fit_world_only ${FIT_WORLD_ONLY}
+echo "Nested sweep complete."
