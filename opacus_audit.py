@@ -432,6 +432,39 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
     # Early stopping state
     best_loss = float('inf')
     patience_counter = 0
+
+    def _log_dp_clip_stats(batch_idx: int, prefix: str = ""):
+        if not use_private:
+            return
+        if batch_idx % 10 != 0:
+            return
+        per_sample_norm_sqs = None
+        for p in model.parameters():
+            if hasattr(p, 'grad_sample') and p.grad_sample is not None:
+                gs = p.grad_sample
+                gs_flat = gs.view(gs.shape[0], -1)
+                norm_sqs = (gs_flat ** 2).sum(dim=1)
+                per_sample_norm_sqs = norm_sqs if per_sample_norm_sqs is None else (per_sample_norm_sqs + norm_sqs)
+
+        if per_sample_norm_sqs is None:
+            print(f"{prefix}Batch {batch_idx}: grad_sample missing (Opacus not attached or grad_sample cleared)")
+            return
+
+        per_sample_norms = per_sample_norm_sqs.sqrt()
+        max_before = per_sample_norms.max().item()
+        mean_before = per_sample_norms.mean().item()
+        num_clipped = int((per_sample_norms > float(max_grad_norm)).sum().item())
+        total = int(per_sample_norms.numel())
+
+        clipped_norms = torch.clamp(per_sample_norms, max=float(max_grad_norm))
+        max_after = clipped_norms.max().item()
+        mean_after = clipped_norms.mean().item()
+
+        print(
+            f"{prefix}Batch {batch_idx}: per-sample grad L2 norm before clip max={max_before:.4f} mean={mean_before:.4f} "
+            f"| clipped {num_clipped}/{total} | after clip max={max_after:.4f} mean={mean_after:.4f} "
+            f"| max_grad_norm={max_grad_norm}"
+        )
     
     # Training loop
     for epoch in range(n_epochs):
@@ -466,6 +499,8 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                         loss_per_view = criterion(output, curr_y_rep)  # [B*A]
                         loss = loss_per_view.view(B, A).mean(dim=1).mean()
                         loss.backward()
+
+                        _log_dp_clip_stats(batch_idx, prefix="[aug|mem] ")
                         
                         # Aggregate per-sample gradients across augmentations
                         for param in model.parameters():
@@ -516,6 +551,8 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     loss_per_view = criterion(output, curr_y_rep)  # [B*A]
                     loss = loss_per_view.view(B, A).mean(dim=1).mean()
                     loss.backward()
+
+                    _log_dp_clip_stats(batch_idx, prefix="[aug] ")
                     
                     # Aggregate per-sample gradients across augmentations (Opacus only)
                     if use_private:
@@ -578,30 +615,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                         loss = criterion(output, curr_y).mean()
                         loss.backward()
 
-                        # Gradient verification for private training
-                        if use_private and batch_idx % 10 == 0:  # Log every 10 batches to avoid too much output
-                            # Calculate gradient norms before clipping
-                            total_norm = 0.0
-                            for p in model.parameters():
-                                if p.grad is not None:
-                                    param_norm = p.grad.data.norm(2)
-                                    total_norm += param_norm.item() ** 2
-                            total_norm = total_norm ** 0.5
-                            
-                            # Calculate per-sample gradient norms (what Opacus will clip)
-                            per_sample_grad_norms = []
-                            for p in model.parameters():
-                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
-                                    norms = p.grad_sample.view(p.grad_sample.shape[0], -1).norm(2, dim=1)
-                                    per_sample_grad_norms.append(norms)
-                            
-                            if per_sample_grad_norms:
-                                all_norms = torch.stack(per_sample_grad_norms, dim=1).norm(2, dim=1)
-                                max_norm = all_norms.max().item()
-                                mean_norm = all_norms.mean().item()
-                                print(f"Batch {batch_idx}: Grad norm before clip - Total: {total_norm:.4f}, "
-                                      f"Per-sample - Max: {max_norm:.4f}, Mean: {mean_norm:.4f}, "
-                                      f"Clip threshold: {max_grad_norm}")
+                        _log_dp_clip_stats(batch_idx, prefix="[mem] ")
 
                         if defense and use_private and idxs is not None:
                             gs_list = []
@@ -623,23 +637,7 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                                     if hasattr(p, 'grad_sample') and p.grad_sample is not None:
                                         p.grad_sample[ascent_mask] *= -1
                         
-                        # Take an optimization step (this is where Opacus applies clipping and adds noise)
                         optimizer.step()
-                        
-                        # Verify clipping after the step
-                        if use_private and batch_idx % 10 == 0:  # Log every 10 batches
-                            per_sample_grad_norms = []
-                            for p in model.parameters():
-                                if hasattr(p, 'grad_sample') and p.grad_sample is not None:
-                                    norms = p.grad_sample.view(p.grad_sample.shape[0], -1).norm(2, dim=1)
-                                    per_sample_grad_norms.append(norms)
-                            
-                            if per_sample_grad_norms:
-                                all_norms = torch.stack(per_sample_grad_norms, dim=1).norm(2, dim=1)
-                                max_norm = all_norms.max().item()
-                                mean_norm = all_norms.mean().item()
-                                print(f"Batch {batch_idx}: Grad norm after clip - Per-sample - Max: {max_norm:.4f}, Mean: {mean_norm:.4f}")
-                                print("-" * 80)
 
                         if defense and idxs is not None:
                             ascent_idxs = idxs.detach().cpu().numpy()[
@@ -663,6 +661,8 @@ def train_model_opacus(model_name, X, y, X_target, y_target, epsilon, delta, max
                     output = model(curr_X)
                     loss = criterion(output, curr_y).mean()
                     loss.backward()
+
+                    _log_dp_clip_stats(batch_idx, prefix="")
 
                     if defense and use_private and idxs is not None:
                         gs_list = []
