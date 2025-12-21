@@ -5,7 +5,7 @@
 #SBATCH -p gh
 #SBATCH -N 20
 #SBATCH -n 1
-#SBATCH -t 00:30:00
+#SBATCH -t 01:00:00
 #SBATCH -A ASC25081
 #SBATCH --mail-user=saloni.a.modi@utexas.edu
 
