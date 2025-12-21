@@ -3,7 +3,7 @@
 #SBATCH -o pa_c10_5gpu.o%j
 #SBATCH -e pa_c10_5gpu.e%j
 #SBATCH -p gh
-#SBATCH -N 5
+#SBATCH -N 20
 #SBATCH -n 1
 #SBATCH -t 00:30:00
 #SBATCH -A ASC25081
@@ -27,7 +27,7 @@ srun --ntasks=$SLURM_NNODES --nodes=$SLURM_NNODES bash -c '
     parallel_audit_model.py \
     --data_name cifar10 \
     --model_name cnn \
-    --n_reps 10 \
+    --n_reps 200 \
     --n_epochs 100 \
     --lr 3 \
     --batch_size 3125 \
@@ -37,5 +37,4 @@ srun --ntasks=$SLURM_NNODES --nodes=$SLURM_NNODES bash -c '
     --delta 1e-5 \
     --max_grad_norm 1 \
     --aug_mult 1 \
-    --fit_world_only in \
     --out debug'
