@@ -3,8 +3,10 @@
 #SBATCH -o pa_c10_5gpu.o%j
 #SBATCH -e pa_c10_5gpu.e%j
 #SBATCH -p gh
-#SBATCH -N 20
-#SBATCH -n 1
+#SBATCH -N 5
+#SBATCH -n 5
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-task=1
 #SBATCH -t 01:00:00
 #SBATCH -A ASC25081
 #SBATCH --mail-user=saloni.a.modi@utexas.edu
@@ -17,11 +19,11 @@ eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
 
-srun --ntasks=$SLURM_NNODES --nodes=$SLURM_NNODES bash -c '
+srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
   MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
   MASTER_PORT=29500;
   RANK=$SLURM_PROCID;
-  torchrun --nnodes=$SLURM_NNODES --nproc_per_node=1 \
+  torchrun --nnodes=$SLURM_JOB_NUM_NODES --nproc_per_node=1 \
     --rdzv_backend=c10d \
     --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
     parallel_audit_model.py \
