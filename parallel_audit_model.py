@@ -216,8 +216,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
     # Create Dataset + DataLoader (no DDP sampler)
     dataset = IndexedTensorDataset(X, y)
-    scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=bool)
+    scores = np.zeros(len(dataset), dtype=np.float32)
+    # 0 = active, 1 = apply gradient ascent, 2 = inactive (dropped)
+    # Must be integer (NOT bool) because we rely on the 3-state semantics downstream.
+    drop_mask = np.zeros(len(dataset), dtype=np.int8)
     
     sampler = torch.utils.data.RandomSampler(
         dataset,

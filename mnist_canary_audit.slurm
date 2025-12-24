@@ -6,7 +6,7 @@
 #SBATCH -N 5
 #SBATCH -n 5
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 06:00:00
+#SBATCH -t 10:00:00
 #SBATCH -A ASC25081
 #SBATCH --mail-user=saloni.a.modi@utexas.edu
 
