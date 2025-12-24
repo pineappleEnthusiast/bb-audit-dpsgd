@@ -703,6 +703,7 @@ def craft_defense_aware_canary(
     epsilon=10.0,
     delta=1e-5,
     max_grad_norm=1.0,
+    max_iter=20,
     perturbation_step_size=0.01,
     perturbation_iterations=20,
     lambda_drop=1.0,
@@ -747,76 +748,78 @@ def craft_defense_aware_canary(
     canary_label = target_label
     
     if verbose:
-        print(f"Crafting defense-aware canary (untargeted attack)")
+        print(f"Crafting defense-aware canary (targeted + defense evasion)")
         print(f"  Model: {model_name}")
         print(f"  Epochs to evade: {n_epochs}")
         print(f"  Defense k: {defense_k}")
         print(f"  True label: {true_label}")
         print(f"  Target label: {target_label}")
+        print(f"  Max canary update iterations: {max_iter}")
         print(f"  Training set size: {len(X_train)}")
         print(f"  Privacy: ε={epsilon}, δ={delta}")
-    
-    # Iterate through epochs starting from 0
-    for t in range(n_epochs):
+
+    for it in range(int(max_iter)):
         if verbose:
-            print(f"\n=== Epoch {t} ===")
-        
-        # Create dataset with current canary and its fixed target label
+            print(f"\n=== Canary update iter {it}/{int(max_iter) - 1} ===")
+
         canary_label_tensor = torch.tensor([canary_label])
         X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
         y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
-        
-        # Train fresh model for t epochs
+
         model = Models[model_name](in_shape, out_dim=out_dim)
         if init_model is not None:
             model.load_state_dict(deepcopy(init_model))
-        
-        if t > 0:
-            if verbose:
-                print(f"  Training fresh model for {t} epochs with defense...")
-            
-            # Use the defense-aware training function
-            model, drop_epoch = train_model_with_defense(
-                model_name=model_name,
-                X=X_with_canary,
-                y=y_with_canary,
-                epsilon=epsilon,
-                delta=delta,
-                max_grad_norm=max_grad_norm,
-                n_epochs=t,
-                lr=lr,
-                batch_size=batch_size,
-                init_model=model,
-                out_dim=out_dim,
-                aug_mult=1,
-                defense=True,
-                defense_k=defense_k,
-                device=device
-            )
-            
-            if verbose:
-                if drop_epoch >= 0:
-                    print(f"  Model trained with defense for {t} epochs (canary dropped at epoch {drop_epoch})")
-                else:
-                    print(f"  Model trained with defense for {t} epochs (canary never dropped)")
-        
-        model.to(device)
-        
+
         if verbose:
-            print(f"  Performing unified perturbation (maximize loss, minimize grad norm)...")
+            print(f"  Training model for full {n_epochs} epochs with defense...")
+
+        model, drop_epoch = train_model_with_defense(
+            model_name=model_name,
+            X=X_with_canary,
+            y=y_with_canary,
+            epsilon=epsilon,
+            delta=delta,
+            max_grad_norm=max_grad_norm,
+            n_epochs=n_epochs,
+            lr=lr,
+            batch_size=batch_size,
+            init_model=model,
+            out_dim=out_dim,
+            aug_mult=1,
+            defense=True,
+            defense_k=defense_k,
+            device=device,
+        )
+
+        model.to(device)
+        with torch.no_grad():
+            final_pred = model(canary.unsqueeze(0).to(device)).argmax(dim=1).item()
+
+        success = (final_pred == target_label) and (drop_epoch == -1)
+
+        if verbose:
+            print(f"  Final pred on canary: {final_pred} (target={target_label})")
+            print(f"  Canary ever dropped: {drop_epoch != -1}")
+
+        if success:
+            del model
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            break
 
         model_state = model.state_dict()
-
-        grad_norms_pre = compute_per_sample_gradient_norms(
+        grad_norms = compute_per_sample_gradient_norms(
             model_state, model_name, in_shape, out_dim,
             X_with_canary, y_with_canary, device, batch_size
         )
-        thresholds_pre = get_top_k_threshold_per_class(
-            grad_norms_pre, y_with_canary.numpy(), defense_k
+        thresholds = get_top_k_threshold_per_class(
+            grad_norms, y_with_canary.numpy(), defense_k
         )
-        drop_threshold = thresholds_pre[canary_label]
+        drop_threshold = thresholds[canary_label]
 
-        canary, new_pred_label = perturb_canary_unified(
+        if verbose:
+            print(f"  Updating canary with targeted + drop-penalty objective...")
+
+        canary, _ = perturb_canary_unified(
             canary,
             target_label,
             model_state,
@@ -831,47 +834,7 @@ def craft_defense_aware_canary(
             lambda_drop=lambda_drop,
             verbose=verbose,
         )
-        
-        # Step 2: Check if canary would be dropped by defense
-        # Recompute with updated canary
-        canary_label_tensor = torch.tensor([canary_label])
-        X_with_canary = torch.cat([X_train, canary.unsqueeze(0)], dim=0)
-        y_with_canary = torch.cat([y_train, canary_label_tensor], dim=0)
-        
-        # model_state already obtained above
-        grad_norms = compute_per_sample_gradient_norms(
-            model_state, model_name, in_shape, out_dim,
-            X_with_canary, y_with_canary, device, batch_size
-        )
-        
-        canary_grad_norm = grad_norms[canary_idx]
-        
-        # Get threshold for canary's (misclassified) class
-        thresholds = get_top_k_threshold_per_class(
-            grad_norms, y_with_canary.numpy(), defense_k
-        )
-        threshold = thresholds[canary_label]
-        
-        rank, class_size = get_canary_rank_in_class(
-            grad_norms, y_with_canary.numpy(), canary_idx, canary_label
-        )
-        
-        would_be_dropped = canary_grad_norm >= threshold
-        
-        if verbose:
-            print(f"  Canary label: {canary_label} (true: {true_label})")
-            print(f"  Canary grad norm: {canary_grad_norm:.4f}")
-            print(f"  Class {canary_label} threshold (top-{defense_k}): {threshold:.4f}")
-            print(f"  Canary rank in class: {rank}/{class_size}")
-            print(f"  Would be dropped: {would_be_dropped}")
-            print(f"  Model pred on canary: {new_pred_label}")
 
-        if (new_pred_label == target_label) and (not would_be_dropped):
-            del model
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            break
-        
-        # Clean up model to free memory
         del model
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
@@ -908,6 +871,8 @@ if __name__ == "__main__":
                         help='Perturbation step size')
     parser.add_argument('--n_iterations', type=int, default=20,
                         help='Perturbation iterations per epoch')
+    parser.add_argument('--max_iter', type=int, default=20,
+                        help='Max number of canary update iterations (each trains a fresh model for full n_epochs)')
     parser.add_argument('--lambda_drop', type=float, default=1.0,
                         help='Weight on drop-penalty term in unified canary objective')
     parser.add_argument('--tau_drop', type=float, default=0.1,
@@ -965,6 +930,7 @@ if __name__ == "__main__":
         epsilon=args.epsilon,
         delta=args.delta,
         max_grad_norm=args.max_grad_norm,
+        max_iter=args.max_iter,
         perturbation_step_size=args.step_size,
         perturbation_iterations=args.n_iterations,
         lambda_drop=args.lambda_drop,
