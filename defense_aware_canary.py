@@ -36,6 +36,11 @@ import time
 import torchvision.transforms.v2 as v2
 from torch.utils.data import Dataset
 
+try:
+    from torch.func import functional_call as _functional_call
+except Exception:
+    from torch.nn.utils.stateless import functional_call as _functional_call
+
 # Enable performance optimizations
 torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -54,6 +59,151 @@ def make_opacus_compatible(model):
     if not ModuleValidator.is_valid(model):
         model = ModuleValidator.fix(model)
     return model
+
+
+def _state_dict_to_param_dict(state_dict, device):
+    return {k: v.detach().clone().to(device).requires_grad_(True) for k, v in state_dict.items()}
+
+
+def _param_dict_to_state_dict(param_dict):
+    return {k: v.detach().cpu() for k, v in param_dict.items()}
+
+
+def _unrolled_clipped_sgd(
+    base_model,
+    X,
+    y,
+    init_state_dict,
+    steps,
+    lr,
+    clip_threshold,
+    inner_batch_size,
+    device,
+    include_canary,
+    x_canary,
+    y_canary,
+):
+    params = _state_dict_to_param_dict(init_state_dict, device)
+    criterion = nn.CrossEntropyLoss()
+    n = int(X.shape[0])
+    for _ in range(int(steps)):
+        bs = int(inner_batch_size)
+        idx = torch.randint(0, n, (bs,), device=device)
+        batch_x = X[idx].to(device)
+        batch_y = y[idx].to(device)
+        xs = [batch_x[i] for i in range(bs)]
+        ys = [batch_y[i] for i in range(bs)]
+        if include_canary:
+            xs.append(x_canary)
+            ys.append(torch.as_tensor(y_canary, device=device, dtype=batch_y.dtype))
+
+        clipped_grads_sum = {k: torch.zeros_like(v) for k, v in params.items()}
+        for xi, yi in zip(xs, ys):
+            out = _functional_call(base_model, params, (xi.unsqueeze(0),))
+            loss = criterion(out, yi.view(1))
+            grads = torch.autograd.grad(loss, tuple(params.values()), create_graph=True, retain_graph=True)
+            grad_norm_sq = torch.zeros((), device=device)
+            for g in grads:
+                grad_norm_sq = grad_norm_sq + g.pow(2).sum()
+            grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
+            scale = torch.clamp(float(clip_threshold) / (grad_norm + 1e-12), max=1.0)
+            for (name, _), g in zip(params.items(), grads):
+                clipped_grads_sum[name] = clipped_grads_sum[name] + scale * g
+
+        denom = float(len(xs))
+        params = {k: (v - float(lr) * (clipped_grads_sum[k] / denom)) for k, v in params.items()}
+    return params
+
+
+def defense_aware_canary_attack_meta(
+    X_train,
+    y_train,
+    base_canary,
+    y_canary,
+    model_name,
+    init_state_dict,
+    out_dim,
+    clip_threshold,
+    lambda_det,
+    det_frac,
+    t_outer,
+    t_inner,
+    inner_lr,
+    outer_lr,
+    inner_batch_size,
+    device,
+    outer_use_sign=True,
+    verbose=True,
+):
+    device = torch.device(device)
+    base_model = Models[model_name](X_train.shape, out_dim=out_dim)
+    base_model = make_opacus_compatible(base_model)
+    base_model.to(device)
+    base_model.train()
+
+    x_canary = base_canary.clone().detach().to(device).requires_grad_(True)
+    y_canary_tensor = torch.as_tensor([y_canary], device=device, dtype=y_train.dtype)
+    criterion = nn.CrossEntropyLoss()
+
+    for t in range(int(t_outer)):
+        params_with = _unrolled_clipped_sgd(
+            base_model=base_model,
+            X=X_train,
+            y=y_train,
+            init_state_dict=init_state_dict,
+            steps=t_inner,
+            lr=inner_lr,
+            clip_threshold=clip_threshold,
+            inner_batch_size=inner_batch_size,
+            device=device,
+            include_canary=True,
+            x_canary=x_canary,
+            y_canary=y_canary,
+        )
+        params_without = _unrolled_clipped_sgd(
+            base_model=base_model,
+            X=X_train,
+            y=y_train,
+            init_state_dict=init_state_dict,
+            steps=t_inner,
+            lr=inner_lr,
+            clip_threshold=clip_threshold,
+            inner_batch_size=inner_batch_size,
+            device=device,
+            include_canary=False,
+            x_canary=x_canary,
+            y_canary=y_canary,
+        )
+
+        out_with = _functional_call(base_model, params_with, (x_canary.unsqueeze(0),))
+        out_without = _functional_call(base_model, params_without, (x_canary.unsqueeze(0),))
+        loss_with = criterion(out_with, y_canary_tensor)
+        loss_without = criterion(out_without, y_canary_tensor)
+        audit_advantage = torch.abs(loss_without - loss_with)
+
+        grads_with = torch.autograd.grad(loss_with, tuple(params_with.values()), create_graph=True, retain_graph=True)
+        grad_norm_sq = torch.zeros((), device=device)
+        for g in grads_with:
+            grad_norm_sq = grad_norm_sq + g.pow(2).sum()
+        grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
+
+        det_thresh = float(det_frac) * float(clip_threshold)
+        detection_penalty = torch.relu(grad_norm - det_thresh)
+
+        objective = audit_advantage - float(lambda_det) * detection_penalty
+        grad_x = torch.autograd.grad(objective, x_canary, create_graph=False, retain_graph=False)[0]
+
+        with torch.no_grad():
+            if outer_use_sign:
+                x_canary = (x_canary + float(outer_lr) * grad_x.sign()).clamp(0.0, 1.0)
+            else:
+                x_canary = (x_canary + float(outer_lr) * grad_x).clamp(0.0, 1.0)
+        x_canary.requires_grad_(True)
+
+        if verbose and t % 10 == 0:
+            print(f"Iter {t}: adv={audit_advantage.item():.4f}, grad_norm={grad_norm.item():.4f}, det_pen={detection_penalty.item():.4f}, obj={objective.item():.4f}")
+
+    return x_canary.detach().cpu()
 
 
 def compute_per_sample_gradient_norms(model_state_dict, model_name, in_shape, out_dim, 
@@ -942,6 +1092,16 @@ if __name__ == "__main__":
                         help='Temperature for sigmoid approximation of binary dropped indicator')
     parser.add_argument('--lambda_target', type=float, default=1.0,
                         help='Weight on target CE term in unified objective (encourages predicting target label)')
+    parser.add_argument('--meta_attack', action='store_true',
+                        help='Run differentiable meta/unrolled canary attack instead of full-train loop')
+    parser.add_argument('--t_outer', type=int, default=50)
+    parser.add_argument('--t_inner', type=int, default=5)
+    parser.add_argument('--inner_lr', type=float, default=0.1)
+    parser.add_argument('--outer_lr', type=float, default=0.01)
+    parser.add_argument('--inner_batch_size', type=int, default=16)
+    parser.add_argument('--lambda_det', type=float, default=1.0)
+    parser.add_argument('--det_frac', type=float, default=0.3)
+    parser.add_argument('--outer_use_sign', action='store_true')
     parser.add_argument('--output', type=str, default='defense_aware_canary.pt',
                         help='Output file for canary')
     parser.add_argument('--seed', type=int, default=0)
@@ -979,31 +1139,53 @@ if __name__ == "__main__":
         base_canary = X_train[base_canary_idx].clone()
         print(f"Base canary: sample {base_canary_idx} from class {args.true_label}")
     
-    # Craft defense-aware canary
-    canary, final_label = craft_defense_aware_canary(
-        base_canary=base_canary,
-        true_label=args.true_label,
-        target_label=args.target_label,
-        X_train=X_train,
-        y_train=y_train,
-        model_name=args.model_name,
-        init_model=init_state,
-        n_epochs=args.n_epochs,
-        defense_k=args.defense_k,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        epsilon=args.epsilon,
-        delta=args.delta,
-        max_grad_norm=args.max_grad_norm,
-        max_iter=args.max_iter,
-        perturbation_step_size=args.step_size,
-        perturbation_iterations=args.n_iterations,
-        lambda_drop=args.lambda_drop,
-        tau_drop=args.tau_drop,
-        lambda_target=args.lambda_target,
-        device=device,
-        verbose=True
-    )
+    if args.meta_attack:
+        canary = defense_aware_canary_attack_meta(
+            X_train=X_train,
+            y_train=y_train,
+            base_canary=base_canary,
+            y_canary=args.target_label,
+            model_name=args.model_name,
+            init_state_dict=init_state,
+            out_dim=out_dim,
+            clip_threshold=args.max_grad_norm,
+            lambda_det=args.lambda_det,
+            det_frac=args.det_frac,
+            t_outer=args.t_outer,
+            t_inner=args.t_inner,
+            inner_lr=args.inner_lr,
+            outer_lr=args.outer_lr,
+            inner_batch_size=args.inner_batch_size,
+            device=device,
+            outer_use_sign=args.outer_use_sign,
+            verbose=True,
+        )
+        final_label = args.target_label
+    else:
+        canary, final_label = craft_defense_aware_canary(
+            base_canary=base_canary,
+            true_label=args.true_label,
+            target_label=args.target_label,
+            X_train=X_train,
+            y_train=y_train,
+            model_name=args.model_name,
+            init_model=init_state,
+            n_epochs=args.n_epochs,
+            defense_k=args.defense_k,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            epsilon=args.epsilon,
+            delta=args.delta,
+            max_grad_norm=args.max_grad_norm,
+            max_iter=args.max_iter,
+            perturbation_step_size=args.step_size,
+            perturbation_iterations=args.n_iterations,
+            lambda_drop=args.lambda_drop,
+            tau_drop=args.tau_drop,
+            lambda_target=args.lambda_target,
+            device=device,
+            verbose=True
+        )
     
     # Save canary
     torch.save({
