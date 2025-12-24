@@ -36,11 +36,6 @@ import time
 import torchvision.transforms.v2 as v2
 from torch.utils.data import Dataset
 
-try:
-    from torch.func import functional_call as _functional_call
-except Exception:
-    from torch.nn.utils.stateless import functional_call as _functional_call
-
 # Enable performance optimizations
 torch.backends.cudnn.benchmark = True
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -59,151 +54,6 @@ def make_opacus_compatible(model):
     if not ModuleValidator.is_valid(model):
         model = ModuleValidator.fix(model)
     return model
-
-
-def _state_dict_to_param_dict(state_dict, device):
-    return {k: v.detach().clone().to(device).requires_grad_(True) for k, v in state_dict.items()}
-
-
-def _param_dict_to_state_dict(param_dict):
-    return {k: v.detach().cpu() for k, v in param_dict.items()}
-
-
-def _unrolled_clipped_sgd(
-    base_model,
-    X,
-    y,
-    init_state_dict,
-    steps,
-    lr,
-    clip_threshold,
-    inner_batch_size,
-    device,
-    include_canary,
-    x_canary,
-    y_canary,
-):
-    params = _state_dict_to_param_dict(init_state_dict, device)
-    criterion = nn.CrossEntropyLoss()
-    n = int(X.shape[0])
-    for _ in range(int(steps)):
-        bs = int(inner_batch_size)
-        idx = torch.randint(0, n, (bs,), device=X.device)
-        batch_x = X[idx].to(device)
-        batch_y = y[idx].to(device)
-        xs = [batch_x[i] for i in range(bs)]
-        ys = [batch_y[i] for i in range(bs)]
-        if include_canary:
-            xs.append(x_canary)
-            ys.append(torch.as_tensor(y_canary, device=device, dtype=batch_y.dtype))
-
-        clipped_grads_sum = {k: torch.zeros_like(v) for k, v in params.items()}
-        for xi, yi in zip(xs, ys):
-            out = _functional_call(base_model, params, (xi.unsqueeze(0),))
-            loss = criterion(out, yi.view(1))
-            grads = torch.autograd.grad(loss, tuple(params.values()), create_graph=True, retain_graph=True)
-            grad_norm_sq = torch.zeros((), device=device)
-            for g in grads:
-                grad_norm_sq = grad_norm_sq + g.pow(2).sum()
-            grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
-            scale = torch.clamp(float(clip_threshold) / (grad_norm + 1e-12), max=1.0)
-            for (name, _), g in zip(params.items(), grads):
-                clipped_grads_sum[name] = clipped_grads_sum[name] + scale * g
-
-        denom = float(len(xs))
-        params = {k: (v - float(lr) * (clipped_grads_sum[k] / denom)) for k, v in params.items()}
-    return params
-
-
-def defense_aware_canary_attack_meta(
-    X_train,
-    y_train,
-    base_canary,
-    y_canary,
-    model_name,
-    init_state_dict,
-    out_dim,
-    clip_threshold,
-    lambda_det,
-    det_frac,
-    t_outer,
-    t_inner,
-    inner_lr,
-    outer_lr,
-    inner_batch_size,
-    device,
-    outer_use_sign=True,
-    verbose=True,
-):
-    device = torch.device(device)
-    base_model = Models[model_name](X_train.shape, out_dim=out_dim)
-    base_model = make_opacus_compatible(base_model)
-    base_model.to(device)
-    base_model.train()
-
-    x_canary = base_canary.clone().detach().to(device).requires_grad_(True)
-    y_canary_tensor = torch.as_tensor([y_canary], device=device, dtype=y_train.dtype)
-    criterion = nn.CrossEntropyLoss()
-
-    for t in range(int(t_outer)):
-        params_with = _unrolled_clipped_sgd(
-            base_model=base_model,
-            X=X_train,
-            y=y_train,
-            init_state_dict=init_state_dict,
-            steps=t_inner,
-            lr=inner_lr,
-            clip_threshold=clip_threshold,
-            inner_batch_size=inner_batch_size,
-            device=device,
-            include_canary=True,
-            x_canary=x_canary,
-            y_canary=y_canary,
-        )
-        params_without = _unrolled_clipped_sgd(
-            base_model=base_model,
-            X=X_train,
-            y=y_train,
-            init_state_dict=init_state_dict,
-            steps=t_inner,
-            lr=inner_lr,
-            clip_threshold=clip_threshold,
-            inner_batch_size=inner_batch_size,
-            device=device,
-            include_canary=False,
-            x_canary=x_canary,
-            y_canary=y_canary,
-        )
-
-        out_with = _functional_call(base_model, params_with, (x_canary.unsqueeze(0),))
-        out_without = _functional_call(base_model, params_without, (x_canary.unsqueeze(0),))
-        loss_with = criterion(out_with, y_canary_tensor)
-        loss_without = criterion(out_without, y_canary_tensor)
-        audit_advantage = torch.abs(loss_without - loss_with)
-
-        grads_with = torch.autograd.grad(loss_with, tuple(params_with.values()), create_graph=True, retain_graph=True)
-        grad_norm_sq = torch.zeros((), device=device)
-        for g in grads_with:
-            grad_norm_sq = grad_norm_sq + g.pow(2).sum()
-        grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
-
-        det_thresh = float(det_frac) * float(clip_threshold)
-        detection_penalty = torch.relu(grad_norm - det_thresh)
-
-        objective = audit_advantage - float(lambda_det) * detection_penalty
-        grad_x = torch.autograd.grad(objective, x_canary, create_graph=False, retain_graph=False)[0]
-
-        with torch.no_grad():
-            if outer_use_sign:
-                x_canary = (x_canary + float(outer_lr) * grad_x.sign()).clamp(0.0, 1.0)
-            else:
-                x_canary = (x_canary + float(outer_lr) * grad_x).clamp(0.0, 1.0)
-        x_canary.requires_grad_(True)
-
-        if verbose and t % 10 == 0:
-            print(f"Iter {t}: adv={audit_advantage.item():.4f}, grad_norm={grad_norm.item():.4f}, det_pen={detection_penalty.item():.4f}, obj={objective.item():.4f}")
-
-    return x_canary.detach().cpu()
 
 
 def compute_per_sample_gradient_norms(model_state_dict, model_name, in_shape, out_dim, 
@@ -780,6 +630,7 @@ def perturb_canary_unified(
     tau_drop=0.1,
     lambda_drop=1.0,
     lambda_target=1.0,
+    use_loss_diff=True,
     verbose=False,
 ):
     canary = canary.clone().detach().to(device)
@@ -789,13 +640,17 @@ def perturb_canary_unified(
 
     last_pred = target_label
 
-    baseline_model = Models[model_name](in_shape, out_dim=out_dim)
-    baseline_model = make_opacus_compatible(baseline_model)
-    baseline_model.load_state_dict(baseline_model_state_dict, strict=False)
-    baseline_model.to(device)
-    baseline_model.eval()
-    for p in baseline_model.parameters():
-        p.requires_grad_(False)
+    baseline_model = None
+    if use_loss_diff:
+        if baseline_model_state_dict is None:
+            raise ValueError("baseline_model_state_dict must be provided when use_loss_diff=True")
+        baseline_model = Models[model_name](in_shape, out_dim=out_dim)
+        baseline_model = make_opacus_compatible(baseline_model)
+        baseline_model.load_state_dict(baseline_model_state_dict, strict=False)
+        baseline_model.to(device)
+        baseline_model.eval()
+        for p in baseline_model.parameters():
+            p.requires_grad_(False)
 
     for iteration in range(n_iterations):
         fresh_model = Models[model_name](in_shape, out_dim=out_dim)
@@ -810,10 +665,12 @@ def perturb_canary_unified(
         loss_true = criterion(output, true_label_tensor)
         loss_target = criterion(output, target_label_tensor)
 
-        baseline_out = baseline_model(canary.unsqueeze(0))
-        loss_target_baseline = criterion(baseline_out, target_label_tensor)
-
-        loss_diff = torch.abs(loss_target - loss_target_baseline)
+        if use_loss_diff:
+            baseline_out = baseline_model(canary.unsqueeze(0))
+            loss_target_baseline = criterion(baseline_out, target_label_tensor)
+            loss_diff = torch.abs(loss_target - loss_target_baseline)
+        else:
+            loss_diff = None
 
         pred = output.argmax(dim=1).item()
         last_pred = pred
@@ -836,7 +693,10 @@ def perturb_canary_unified(
             raise ValueError(f"tau_drop must be > 0, got {tau}")
         p_dropped = torch.sigmoid((grad_norm - float(drop_threshold)) / tau)
 
-        meta_obj = loss_diff - float(lambda_drop) * p_dropped - float(lambda_target) * loss_target
+        if use_loss_diff:
+            meta_obj = loss_diff - float(lambda_drop) * p_dropped - float(lambda_target) * loss_target
+        else:
+            meta_obj = (-loss_target) - float(lambda_drop) * p_dropped
         grad_x = torch.autograd.grad(meta_obj, canary, retain_graph=False)[0]
 
         if pred == int(target_label) and grad_norm.item() < float(drop_threshold):
@@ -844,19 +704,27 @@ def perturb_canary_unified(
             break
 
         if verbose and iteration % 5 == 0:
-            print(
-                f"    Iter {iteration}: loss_true={loss_true.item():.4f}, loss_target={loss_target.item():.4f}, "
-                f"loss_diff={loss_diff.item():.4f}, grad_norm={grad_norm.item():.4f}, "
-                f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
-                f"pred={pred}, true={true_label}, target={target_label}, thr={float(drop_threshold):.4f}"
-            )
+            if use_loss_diff:
+                print(
+                    f"    Iter {iteration}: loss_true={loss_true.item():.4f}, loss_target={loss_target.item():.4f}, "
+                    f"loss_diff={loss_diff.item():.4f}, grad_norm={grad_norm.item():.4f}, "
+                    f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
+                    f"pred={pred}, true={true_label}, target={target_label}, thr={float(drop_threshold):.4f}"
+                )
+            else:
+                print(
+                    f"    Iter {iteration}: loss_target={loss_target.item():.4f}, grad_norm={grad_norm.item():.4f}, "
+                    f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
+                    f"pred={pred}, target={target_label}, thr={float(drop_threshold):.4f}"
+                )
 
         with torch.no_grad():
             canary = (canary + step_size * grad_x.sign()).detach()
 
         del fresh_model
 
-    del baseline_model
+    if baseline_model is not None:
+        del baseline_model
     return canary.detach().cpu(), last_pred
 
 
@@ -883,6 +751,7 @@ def craft_defense_aware_canary(
     lambda_drop=1.0,
     tau_drop=0.1,
     lambda_target=1.0,
+    use_loss_diff=True,
     device='cuda',
     verbose=True
 ):
@@ -937,33 +806,35 @@ def craft_defense_aware_canary(
         print(f"  Training set size: {len(X_train)}")
         print(f"  Privacy: ε={epsilon}, δ={delta}")
 
-    if verbose:
-        print(f"\n=== Training baseline model (no canary) for {n_epochs} epochs ===")
+    baseline_model_state = None
+    if use_loss_diff:
+        if verbose:
+            print(f"\n=== Training baseline model (no canary) for {n_epochs} epochs ===")
 
-    baseline_model = Models[model_name](in_shape, out_dim=out_dim)
-    if init_model is not None:
-        baseline_model.load_state_dict(deepcopy(init_model))
-    baseline_model, _ = train_model_with_defense(
-        model_name=model_name,
-        X=X_train,
-        y=y_train,
-        epsilon=epsilon,
-        delta=delta,
-        max_grad_norm=max_grad_norm,
-        n_epochs=n_epochs,
-        lr=lr,
-        batch_size=batch_size,
-        init_model=baseline_model,
-        out_dim=out_dim,
-        aug_mult=1,
-        defense=True,
-        defense_k=defense_k,
-        device=device,
-        stop_on_canary_drop=False,
-    )
-    baseline_model_state = baseline_model.state_dict()
-    del baseline_model
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        baseline_model = Models[model_name](in_shape, out_dim=out_dim)
+        if init_model is not None:
+            baseline_model.load_state_dict(deepcopy(init_model))
+        baseline_model, _ = train_model_with_defense(
+            model_name=model_name,
+            X=X_train,
+            y=y_train,
+            epsilon=epsilon,
+            delta=delta,
+            max_grad_norm=max_grad_norm,
+            n_epochs=n_epochs,
+            lr=lr,
+            batch_size=batch_size,
+            init_model=baseline_model,
+            out_dim=out_dim,
+            aug_mult=1,
+            defense=True,
+            defense_k=defense_k,
+            device=device,
+            stop_on_canary_drop=False,
+        )
+        baseline_model_state = baseline_model.state_dict()
+        del baseline_model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
     for it in range(int(max_iter)):
         if verbose:
@@ -1045,6 +916,7 @@ def craft_defense_aware_canary(
             tau_drop=tau_drop,
             lambda_drop=lambda_drop,
             lambda_target=lambda_target,
+            use_loss_diff=use_loss_diff,
             verbose=verbose,
         )
 
@@ -1073,6 +945,10 @@ if __name__ == "__main__":
                         help='True label of base canary (will be misclassified away from this)')
     parser.add_argument('--target_label', type=int, default=1,
                         help='Target label for targeted attack (must be different from true_label)')
+    parser.add_argument('--blank_canary', action='store_true',
+                        help='Use an all-zeros canary (same shape as data) instead of sampling from the dataset')
+    parser.add_argument('--blank_label', type=int, default=9,
+                        help='Label to assign to the blank canary (overrides target_label when --blank_canary is set)')
     parser.add_argument('--use_last_sample_as_canary', action='store_true',
                         help='Use the last sample in the training set as the canary base and remove it from training (mislabel-last)')
     parser.add_argument('--batch_size', type=int, default=256)
@@ -1092,16 +968,8 @@ if __name__ == "__main__":
                         help='Temperature for sigmoid approximation of binary dropped indicator')
     parser.add_argument('--lambda_target', type=float, default=1.0,
                         help='Weight on target CE term in unified objective (encourages predicting target label)')
-    parser.add_argument('--meta_attack', action='store_true',
-                        help='Run differentiable meta/unrolled canary attack instead of full-train loop')
-    parser.add_argument('--t_outer', type=int, default=50)
-    parser.add_argument('--t_inner', type=int, default=5)
-    parser.add_argument('--inner_lr', type=float, default=0.1)
-    parser.add_argument('--outer_lr', type=float, default=0.01)
-    parser.add_argument('--inner_batch_size', type=int, default=16)
-    parser.add_argument('--lambda_det', type=float, default=1.0)
-    parser.add_argument('--det_frac', type=float, default=0.3)
-    parser.add_argument('--outer_use_sign', action='store_true')
+    parser.add_argument('--use_loss_diff', action='store_true',
+                        help='Use |loss_with_canary - loss_without_canary| term (baseline model trained once). If not set, uses only -loss_target term.')
     parser.add_argument('--output', type=str, default='defense_aware_canary.pt',
                         help='Output file for canary')
     parser.add_argument('--seed', type=int, default=0)
@@ -1124,150 +992,52 @@ if __name__ == "__main__":
     init_model = Models[args.model_name](in_shape, out_dim=out_dim)
     init_state = deepcopy(init_model.state_dict())
     
-    # Start with a random sample from the true label class as base canary
-    if args.use_last_sample_as_canary:
-        base_canary_idx = int(len(X_train) - 1)
-        base_canary = X_train[base_canary_idx].clone()
-        args.true_label = int(y_train[base_canary_idx].item())
-        X_train = X_train[:-1].clone()
-        y_train = y_train[:-1].clone()
-        print(f"Base canary: last sample (index {base_canary_idx}) removed from training; true_label={args.true_label}")
+    if args.blank_canary:
+        base_canary = torch.zeros_like(X_train[0]).clone()
+        args.target_label = int(args.blank_label)
+        print(f"Base canary: blank (all zeros), target_label={args.target_label}")
     else:
-        true_label_mask = y_train == args.true_label
-        true_label_indices = torch.where(true_label_mask)[0]
-        base_canary_idx = true_label_indices[0].item()  # Take first sample of that class
-        base_canary = X_train[base_canary_idx].clone()
-        print(f"Base canary: sample {base_canary_idx} from class {args.true_label}")
+        # Start with a random sample from the true label class as base canary
+        if args.use_last_sample_as_canary:
+            base_canary_idx = int(len(X_train) - 1)
+            base_canary = X_train[base_canary_idx].clone()
+            args.true_label = int(y_train[base_canary_idx].item())
+            X_train = X_train[:-1].clone()
+            y_train = y_train[:-1].clone()
+            print(f"Base canary: last sample (index {base_canary_idx}) removed from training; true_label={args.true_label}")
+        else:
+            true_label_mask = y_train == args.true_label
+            true_label_indices = torch.where(true_label_mask)[0]
+            base_canary_idx = true_label_indices[0].item()  # Take first sample of that class
+            base_canary = X_train[base_canary_idx].clone()
+            print(f"Base canary: sample {base_canary_idx} from class {args.true_label}")
     
-    if args.meta_attack:
-        canary = defense_aware_canary_attack_meta(
-            X_train=X_train,
-            y_train=y_train,
-            base_canary=base_canary,
-            y_canary=args.target_label,
-            model_name=args.model_name,
-            init_state_dict=init_state,
-            out_dim=out_dim,
-            clip_threshold=args.max_grad_norm,
-            lambda_det=args.lambda_det,
-            det_frac=args.det_frac,
-            t_outer=args.t_outer,
-            t_inner=args.t_inner,
-            inner_lr=args.inner_lr,
-            outer_lr=args.outer_lr,
-            inner_batch_size=args.inner_batch_size,
-            device=device,
-            outer_use_sign=args.outer_use_sign,
-            verbose=True,
-        )
-        final_label = args.target_label
-    else:
-        canary, final_label = craft_defense_aware_canary(
-            base_canary=base_canary,
-            true_label=args.true_label,
-            target_label=args.target_label,
-            X_train=X_train,
-            y_train=y_train,
-            model_name=args.model_name,
-            init_model=init_state,
-            n_epochs=args.n_epochs,
-            defense_k=args.defense_k,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            epsilon=args.epsilon,
-            delta=args.delta,
-            max_grad_norm=args.max_grad_norm,
-            max_iter=args.max_iter,
-            perturbation_step_size=args.step_size,
-            perturbation_iterations=args.n_iterations,
-            lambda_drop=args.lambda_drop,
-            tau_drop=args.tau_drop,
-            lambda_target=args.lambda_target,
-            device=device,
-            verbose=True
-        )
-
-    # Post-generation evaluation: (1) whether canary is caught under defense, (2) loss difference vs baseline model
-    canary_eval = canary.detach().clone()
-    canary_label_tensor = torch.tensor([args.target_label])
-    X_with_canary_eval = torch.cat([X_train, canary_eval.unsqueeze(0)], dim=0)
-    y_with_canary_eval = torch.cat([y_train, canary_label_tensor], dim=0)
-    
-    baseline_model = Models[args.model_name](X_train.shape, out_dim=out_dim)
-    baseline_model.load_state_dict(deepcopy(init_state))
-    baseline_model, _ = train_model_with_defense(
+    # Craft defense-aware canary
+    canary, final_label = craft_defense_aware_canary(
+        base_canary=base_canary,
+        true_label=args.true_label,
+        target_label=args.target_label,
+        X_train=X_train,
+        y_train=y_train,
         model_name=args.model_name,
-        X=X_train,
-        y=y_train,
+        init_model=init_state,
+        n_epochs=args.n_epochs,
+        defense_k=args.defense_k,
+        batch_size=args.batch_size,
+        lr=args.lr,
         epsilon=args.epsilon,
         delta=args.delta,
         max_grad_norm=args.max_grad_norm,
-        n_epochs=args.n_epochs,
-        lr=args.lr,
-        batch_size=args.batch_size,
-        init_model=baseline_model,
-        out_dim=out_dim,
-        aug_mult=1,
-        defense=True,
-        defense_k=args.defense_k,
+        max_iter=args.max_iter,
+        perturbation_step_size=args.step_size,
+        perturbation_iterations=args.n_iterations,
+        lambda_drop=args.lambda_drop,
+        tau_drop=args.tau_drop,
+        lambda_target=args.lambda_target,
+        use_loss_diff=bool(args.use_loss_diff),
         device=device,
-        stop_on_canary_drop=False,
+        verbose=True
     )
-
-    defended_model = Models[args.model_name](X_with_canary_eval.shape, out_dim=out_dim)
-    defended_model.load_state_dict(deepcopy(init_state))
-    defended_model, drop_epoch_eval = train_model_with_defense(
-        model_name=args.model_name,
-        X=X_with_canary_eval,
-        y=y_with_canary_eval,
-        epsilon=args.epsilon,
-        delta=args.delta,
-        max_grad_norm=args.max_grad_norm,
-        n_epochs=args.n_epochs,
-        lr=args.lr,
-        batch_size=args.batch_size,
-        init_model=defended_model,
-        out_dim=out_dim,
-        aug_mult=1,
-        defense=True,
-        defense_k=args.defense_k,
-        device=device,
-        stop_on_canary_drop=False,
-    )
-
-    criterion = nn.CrossEntropyLoss()
-    with torch.no_grad():
-        baseline_model.to(device)
-        defended_model.to(device)
-        baseline_model.eval()
-        defended_model.eval()
-        canary_dev = canary_eval.to(device)
-        y_canary_dev = torch.tensor([args.target_label], device=device)
-        out_base = baseline_model(canary_dev.unsqueeze(0))
-        out_def = defended_model(canary_dev.unsqueeze(0))
-        loss_base = criterion(out_base, y_canary_dev).item()
-        loss_def = criterion(out_def, y_canary_dev).item()
-        loss_diff_eval = abs(loss_def - loss_base)
-        pred_base = out_base.argmax(dim=1).item()
-        pred_def = out_def.argmax(dim=1).item()
-
-    caught_eval = (drop_epoch_eval != -1)
-    print("\n=== Post-generation evaluation ===")
-    print(f"  Canary caught by defense: {caught_eval} (drop_epoch={drop_epoch_eval})")
-    print(f"  Canary label (train): {args.target_label}")
-    print(f"  Pred baseline(no canary): {pred_base} | loss: {loss_base:.4f}")
-    print(f"  Pred defended(with canary): {pred_def} | loss: {loss_def:.4f}")
-    print(f"  |loss_def - loss_base|: {loss_diff_eval:.4f}")
-
-    eval_metrics = {
-        'drop_epoch_eval': int(drop_epoch_eval),
-        'caught_eval': bool(caught_eval),
-        'pred_baseline': int(pred_base),
-        'pred_defended': int(pred_def),
-        'loss_baseline': float(loss_base),
-        'loss_defended': float(loss_def),
-        'loss_diff': float(loss_diff_eval),
-    }
     
     # Save canary
     torch.save({
@@ -1275,8 +1045,7 @@ if __name__ == "__main__":
         'true_label': args.true_label,
         'audit_label': final_label,  # Use this label for auditing!
         'init_model': init_state,
-        'args': vars(args),
-        'eval': eval_metrics,
+        'args': vars(args)
     }, args.output)
     
     print(f"\nCanary saved to {args.output}")
