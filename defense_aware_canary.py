@@ -638,23 +638,25 @@ def perturb_canary_unified(
         fresh_model.to(device)
         fresh_model.train()
 
-        grad_model = GradSampleModule(fresh_model)
-
         canary.requires_grad = True
 
-        grad_model.zero_grad()
-        output = grad_model(canary.unsqueeze(0))
+        output = fresh_model(canary.unsqueeze(0))
         loss_target = criterion(output, target_label_tensor)
 
         pred = output.argmax(dim=1).item()
         last_pred = pred
 
-        loss_target.backward(create_graph=True)
-
-        grad_norm_sq = torch.tensor(0.0, device=device)
-        for param in grad_model.parameters():
-            if hasattr(param, 'grad_sample') and param.grad_sample is not None:
-                grad_norm_sq = grad_norm_sq + (param.grad_sample[0] ** 2).sum()
+        params = [p for p in fresh_model.parameters() if p.requires_grad]
+        grads = torch.autograd.grad(
+            loss_target,
+            params,
+            create_graph=True,
+            retain_graph=True,
+            allow_unused=False,
+        )
+        grad_norm_sq = torch.zeros((), device=device)
+        for g in grads:
+            grad_norm_sq = grad_norm_sq + g.pow(2).sum()
         grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
 
         tau = float(tau_drop)
@@ -666,7 +668,7 @@ def perturb_canary_unified(
         grad_x = torch.autograd.grad(meta_obj, canary, retain_graph=False)[0]
 
         if pred == int(target_label) and grad_norm.item() < float(drop_threshold):
-            del grad_model, fresh_model
+            del fresh_model
             break
 
         if verbose and iteration % 5 == 0:
@@ -679,7 +681,7 @@ def perturb_canary_unified(
         with torch.no_grad():
             canary = (canary + step_size * grad_x.sign()).detach()
 
-        del grad_model, fresh_model
+        del fresh_model
 
     return canary.detach().cpu(), last_pred
 
