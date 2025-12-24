@@ -647,6 +647,12 @@ def perturb_canary_unified(
         output = fresh_model(canary.unsqueeze(0))
         loss_true = criterion(output, true_label_tensor)
 
+        logits = output.squeeze(0)
+        true_logit = logits[int(true_label)]
+        other_logits = torch.cat([logits[: int(true_label)], logits[int(true_label) + 1 :]])
+        max_other_logit = other_logits.max()
+        misclass_margin = max_other_logit - true_logit
+
         pred = output.argmax(dim=1).item()
         last_pred = pred
 
@@ -668,7 +674,7 @@ def perturb_canary_unified(
             raise ValueError(f"tau_drop must be > 0, got {tau}")
         p_dropped = torch.sigmoid((grad_norm - float(drop_threshold)) / tau)
 
-        meta_obj = loss_true - float(lambda_drop) * p_dropped
+        meta_obj = misclass_margin - float(lambda_drop) * p_dropped
         grad_x = torch.autograd.grad(meta_obj, canary, retain_graph=False)[0]
 
         if pred != int(true_label) and grad_norm.item() < float(drop_threshold):
@@ -677,7 +683,7 @@ def perturb_canary_unified(
 
         if verbose and iteration % 5 == 0:
             print(
-                f"    Iter {iteration}: loss_true={loss_true.item():.4f}, "
+                f"    Iter {iteration}: loss_true={loss_true.item():.4f}, margin={misclass_margin.item():.4f}, "
                 f"grad_norm={grad_norm.item():.4f}, p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
                 f"pred={pred}, true={true_label}, thr={float(drop_threshold):.4f}"
             )
