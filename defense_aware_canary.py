@@ -616,7 +616,7 @@ def perturb_canary_untargeted(
 
 def perturb_canary_unified(
     canary,
-    target_label,
+    true_label,
     model_state_dict,
     model_name,
     in_shape,
@@ -630,10 +630,10 @@ def perturb_canary_unified(
     verbose=False,
 ):
     canary = canary.clone().detach().to(device)
-    target_label_tensor = torch.tensor([target_label]).to(device)
+    true_label_tensor = torch.tensor([true_label]).to(device)
     criterion = nn.CrossEntropyLoss()
 
-    last_pred = target_label
+    last_pred = true_label
 
     for iteration in range(n_iterations):
         fresh_model = Models[model_name](in_shape, out_dim=out_dim)
@@ -645,14 +645,14 @@ def perturb_canary_unified(
         canary.requires_grad = True
 
         output = fresh_model(canary.unsqueeze(0))
-        loss_target = criterion(output, target_label_tensor)
+        loss_true = criterion(output, true_label_tensor)
 
         pred = output.argmax(dim=1).item()
         last_pred = pred
 
         params = [p for p in fresh_model.parameters() if p.requires_grad]
         grads = torch.autograd.grad(
-            loss_target,
+            loss_true,
             params,
             create_graph=True,
             retain_graph=True,
@@ -668,18 +668,18 @@ def perturb_canary_unified(
             raise ValueError(f"tau_drop must be > 0, got {tau}")
         p_dropped = torch.sigmoid((grad_norm - float(drop_threshold)) / tau)
 
-        meta_obj = (-loss_target) - float(lambda_drop) * p_dropped
+        meta_obj = loss_true - float(lambda_drop) * p_dropped
         grad_x = torch.autograd.grad(meta_obj, canary, retain_graph=False)[0]
 
-        if pred == int(target_label) and grad_norm.item() < float(drop_threshold):
+        if pred != int(true_label) and grad_norm.item() < float(drop_threshold):
             del fresh_model
             break
 
         if verbose and iteration % 5 == 0:
             print(
-                f"    Iter {iteration}: loss_target={loss_target.item():.4f}, "
+                f"    Iter {iteration}: loss_true={loss_true.item():.4f}, "
                 f"grad_norm={grad_norm.item():.4f}, p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
-                f"pred={pred}, target={target_label}, thr={float(drop_threshold):.4f}"
+                f"pred={pred}, true={true_label}, thr={float(drop_threshold):.4f}"
             )
 
         with torch.no_grad():
@@ -695,7 +695,6 @@ def perturb_canary_unified(
 def craft_defense_aware_canary(
     base_canary,
     true_label,
-    target_label,
     X_train,
     y_train,
     model_name,
@@ -749,15 +748,15 @@ def craft_defense_aware_canary(
     out_dim = len(torch.unique(y_train))
     canary_idx = len(X_train)  # Canary will be appended at the end
     
-    canary_label = target_label
+    canary_label = true_label
+    audit_label = true_label
     
     if verbose:
-        print(f"Crafting defense-aware canary (targeted + defense evasion)")
+        print(f"Crafting defense-aware canary (untargeted + defense evasion)")
         print(f"  Model: {model_name}")
         print(f"  Epochs to evade: {n_epochs}")
         print(f"  Defense k: {defense_k}")
         print(f"  True label: {true_label}")
-        print(f"  Target label: {target_label}")
         print(f"  Max canary update iterations: {max_iter}")
         print(f"  Training set size: {len(X_train)}")
         print(f"  Privacy: ε={epsilon}, δ={delta}")
@@ -800,10 +799,12 @@ def craft_defense_aware_canary(
         with torch.no_grad():
             final_pred = model(canary.unsqueeze(0).to(device)).argmax(dim=1).item()
 
-        success = (final_pred == target_label) and (drop_epoch == -1)
+        audit_label = final_pred
+
+        success = (final_pred != true_label) and (drop_epoch == -1)
 
         if verbose:
-            print(f"  Final pred on canary: {final_pred} (target={target_label})")
+            print(f"  Final pred on canary: {final_pred} (true={true_label})")
             print(f"  Canary ever dropped: {drop_epoch != -1}")
 
         if success:
@@ -822,11 +823,11 @@ def craft_defense_aware_canary(
         drop_threshold = thresholds[canary_label]
 
         if verbose:
-            print(f"  Updating canary with targeted + drop-penalty objective...")
+            print(f"  Updating canary with untargeted + drop-penalty objective...")
 
         canary, _ = perturb_canary_unified(
             canary,
-            target_label,
+            true_label,
             model_state,
             model_name,
             in_shape,
@@ -845,10 +846,10 @@ def craft_defense_aware_canary(
     
     if verbose:
         print(f"\n=== Final Result ===")
-        print(f"  Final canary label for auditing: {canary_label}")
+        print(f"  Final canary label for auditing: {audit_label}")
         print(f"  True label: {true_label}")
     
-    return canary, canary_label
+    return canary, audit_label
 
 
 if __name__ == "__main__":
@@ -863,8 +864,6 @@ if __name__ == "__main__":
                         help='Defense drops top-k per class per epoch')
     parser.add_argument('--true_label', type=int, default=0,
                         help='True label of base canary (will be misclassified away from this)')
-    parser.add_argument('--target_label', type=int, default=1,
-                        help='Target label for targeted attack (canary is labeled as this in training)')
     parser.add_argument('--use_last_sample_as_canary', action='store_true',
                         help='Use the last sample in the training set as the canary base and remove it from training (mislabel-last)')
     parser.add_argument('--batch_size', type=int, default=256)
@@ -923,7 +922,6 @@ if __name__ == "__main__":
     canary, final_label = craft_defense_aware_canary(
         base_canary=base_canary,
         true_label=args.true_label,
-        target_label=args.target_label,
         X_train=X_train,
         y_train=y_train,
         model_name=args.model_name,
