@@ -88,7 +88,7 @@ def _unrolled_clipped_sgd(
     n = int(X.shape[0])
     for _ in range(int(steps)):
         bs = int(inner_batch_size)
-        idx = torch.randint(0, n, (bs,), device=device)
+        idx = torch.randint(0, n, (bs,), device=X.device)
         batch_x = X[idx].to(device)
         batch_y = y[idx].to(device)
         xs = [batch_x[i] for i in range(bs)]
