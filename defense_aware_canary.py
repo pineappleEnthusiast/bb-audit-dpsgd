@@ -197,7 +197,8 @@ def xavier_init_model(model):
 def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm, 
                              n_epochs, lr, batch_size, init_model=None, out_dim=10, 
                              aug_mult=1, defense=False, defense_k=5, device='cuda:0', 
-                             defense_score_norm='linf', defense_score_fn='grad_norm'):
+                             defense_score_norm='linf', defense_score_fn='grad_norm',
+                             stop_on_canary_drop=False):
     """
     Train a model with the defense-aware training loop from parallel_audit_model.py.
     This allows tracking when the canary is dropped.
@@ -411,6 +412,9 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
                     print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set at epoch {epoch}!")
                     if canary_drop_epoch == -1:  # Record first drop
                         canary_drop_epoch = epoch
+            
+            if stop_on_canary_drop and canary_drop_epoch != -1:
+                break
             
             scores.fill(0)
     
@@ -789,6 +793,7 @@ def craft_defense_aware_canary(
             defense=True,
             defense_k=defense_k,
             device=device,
+            stop_on_canary_drop=True,
         )
 
         model.to(device)
