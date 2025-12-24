@@ -39,7 +39,6 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --epsilon 10 \
     --delta 1e-5 \
     --max_grad_norm 1 \
-    --fit_world_only in \
     --canary_pt mnist_cnn_blank9_lr3_bs4000.pt \
     --defense \
     --defense_k 5'
