@@ -476,7 +476,7 @@ def _get_per_sample_grads(model, X, y, criterion):
     return ps_grads
 
 def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm, device='cuda', aug_fn=None, aug_mult=1, 
-                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None, curr_gradient_ascent_indices=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None):
+                             is_gradient_space_canary=False, crafted_gradient=None, canary_local_idx=None, curr_gradient_ascent_indices=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None, defense_apply_ascent=True):
     """
     Add aug_fn and aug_mult params to support augmentation multiplicity outside vmap.
 
@@ -677,8 +677,10 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     #     centered_k_last_layer_norms = centered_k_last_layer_grads.norm(2, dim=1)
     #     all_norms[y == k] = centered_k_last_layer_norms
 
-    for name in ps_grads_clipped:
-        ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
+    # Apply gradient ascent if enabled
+    if defense_apply_ascent:
+        for name in ps_grads_clipped:
+            ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
 
 
     with torch.no_grad():
@@ -694,7 +696,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          block_size=1024, scores=None, device='cuda',
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None, drop_mask=None,
-                         is_gradient_space_canary=False, crafted_gradient=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None):
+                         is_gradient_space_canary=False, crafted_gradient=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None, defense_apply_ascent=True):
 
     if scores is None:
         raise ValueError("scores array must be provided")
@@ -759,7 +761,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             defense_score_norm=defense_score_norm,
             defense_score_fn=defense_score_fn,
             delta_theta=delta_theta,
-            theta_t_minus_theta0=theta_t_minus_theta0
+            theta_t_minus_theta0=theta_t_minus_theta0,
+            defense_apply_ascent=defense_apply_ascent
         )
 
         # Accumulate gradients

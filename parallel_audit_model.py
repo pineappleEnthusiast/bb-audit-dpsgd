@@ -162,7 +162,7 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_apply_ascent=True, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -455,7 +455,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 batch_size=batch_size,
                 is_gradient_space_canary=gradient_space_audit,
                 crafted_gradient=crafted_gradient,
-                defense_cfg=defense_cfg
+                defense_cfg=defense_cfg,
+                defense_apply_ascent=defense_apply_ascent
             )
             
             drop_mask[drop_mask == 1] = 2
@@ -707,6 +708,7 @@ def main():
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
+    parser.add_argument('--defense_apply_ascent', action='store_true', default=True, help='apply gradient ascent to high-scoring samples (default: True when defense is enabled)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_x_loss', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'loss', 'loss_momentum', 'loss_volatility', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0'], help='score function used for defense (grad_norm, grad_norm_x_loss, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, loss, loss_momentum, loss_volatility, inv_confidence, prediction_margin, pred_entropy, cos_update, or cos_theta0)')
@@ -993,7 +995,8 @@ def main():
                 grad_jerk_proj_seed=args.grad_jerk_proj_seed,
                 alignment_proj_k=args.alignment_proj_k,
                 alignment_proj_seed=args.alignment_proj_seed,
-                grad_scatter_k=args.grad_scatter_k
+                grad_scatter_k=args.grad_scatter_k,
+                defense_apply_ascent=args.defense_apply_ascent
             )
             
             # Compute outputs and losses
