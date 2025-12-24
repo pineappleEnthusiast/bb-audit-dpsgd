@@ -686,6 +686,8 @@ def main():
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
     parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
+    parser.add_argument('--canary_pt', type=str, default=None,
+                        help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
@@ -776,138 +778,180 @@ def main():
     if rank == 0:
         print('Crafting target data point')
 
-    # check for data_names + target_types that don't match
-    if args.data_name == 'mnist':
-        pass # compatible with all canaries
-    elif args.data_name == 'cifar10':
-        pass # compatible with all canaries
-    elif args.data_name == 'cifar100':
-        pass # compatible with all canaries
-    elif args.data_name == 'purchase':
-        # only compatible with blank
-        if args.target_type != 'blank':
-            raise Exception("Canary type does not support tabular data.")
-    elif args.data_name == 'tiny_shakespeare':
-        if args.target_type != 'empty_sequence':
-            raise Exception("For tiny_shakespeare, only target_type='empty_sequence' is supported.")
-    elif args.target_type == 'empty_sequence':
-        raise Exception("Target type 'empty_sequence' is only valid with data_name='tiny_shakespeare'.")
+    if args.canary_pt is not None:
+        if not os.path.exists(args.canary_pt):
+            raise FileNotFoundError(f"--canary_pt not found: {args.canary_pt}")
+        payload = torch.load(args.canary_pt, map_location='cpu')
 
-    # Craft target
-    if args.target_type == 'gradient_space_canary':
-        target_X = X_out[-1].unsqueeze(0)
-        target_y = y_out[-1].unsqueeze(0)
+        if isinstance(payload, dict):
+            if 'canary' not in payload:
+                raise KeyError(f"Canary .pt dict must contain key 'canary'. Found keys: {list(payload.keys())}")
+            target_X = payload['canary']
+            if 'audit_label' in payload:
+                target_y_val = payload['audit_label']
+            elif 'target_label' in payload:
+                target_y_val = payload['target_label']
+            elif 'label' in payload:
+                target_y_val = payload['label']
+            elif 'true_label' in payload:
+                target_y_val = payload['true_label']
+            else:
+                target_y_val = 9
+        elif torch.is_tensor(payload):
+            target_X = payload
+            target_y_val = 9
+        else:
+            raise TypeError(f"Unsupported canary_pt payload type: {type(payload)}")
+
+        if torch.is_tensor(target_y_val):
+            target_y = target_y_val.clone().detach().long().view(-1)
+        else:
+            target_y = torch.tensor([int(target_y_val)], dtype=torch.long)
+
+        if not torch.is_tensor(target_X):
+            target_X = torch.tensor(target_X)
+
+        target_X = target_X.clone().detach()
+        if target_X.ndim == X_out.ndim - 1:
+            target_X = target_X.unsqueeze(0)
+        if target_X.ndim != X_out.ndim:
+            raise ValueError(f"Loaded canary has shape {tuple(target_X.shape)} but expected {tuple(X_out[[0]].shape)}")
+
         if rank == 0:
-            print("Using gradient-space canary")
-    elif args.target_type == 'blank':
-        blank_img = torch.zeros_like(X_out[[0]])
-        if args.blank_alpha > 0:
-            label_9_indices = (y_out == 9).nonzero(as_tuple=True)[0]
-            if len(label_9_indices) > 0:
+            print(f"Loaded canary from {args.canary_pt}: X={tuple(target_X.shape)}, y={target_y.tolist()}")
+    else:
+        # check for data_names + target_types that don't match
+        if args.data_name == 'mnist':
+            pass # compatible with all canaries
+
+        elif args.data_name == 'cifar10':
+            pass # compatible with all canaries
+        elif args.data_name == 'cifar100':
+            pass # compatible with all canaries
+        elif args.data_name == 'purchase':
+            # only compatible with blank
+            if args.target_type != 'blank':
+                raise Exception("Canary type does not support tabular data.")
+        elif args.data_name == 'tiny_shakespeare':
+            if args.target_type != 'empty_sequence':
+                raise Exception("For tiny_shakespeare, only target_type='empty_sequence' is supported.")
+        elif args.target_type == 'empty_sequence':
+            raise Exception("Target type 'empty_sequence' is only valid with data_name='tiny_shakespeare'.")
+
+        # Craft target
+        if args.target_type == 'gradient_space_canary':
+            target_X = X_out[-1].unsqueeze(0)
+            target_y = y_out[-1].unsqueeze(0)
+            if rank == 0:
+                print("Using gradient-space canary")
+        elif args.target_type == 'blank':
+            blank_img = torch.zeros_like(X_out[[0]])
+            if args.blank_alpha > 0:
+                label_9_indices = (y_out == 9).nonzero(as_tuple=True)[0]
+                if len(label_9_indices) == 0:
+                    raise ValueError("No label 9 samples found in dataset")
                 label_9_img = X_out[label_9_indices[0]].unsqueeze(0)
-                target_X = (1 - args.blank_alpha) * blank_img + args.blank_alpha * label_9_img
+                target_X = args.blank_alpha * label_9_img + (1 - args.blank_alpha) * blank_img
             else:
                 target_X = blank_img
-        else:
-            target_X = blank_img
-        target_y = torch.from_numpy(np.array([9]))
-    elif args.target_type == 'badnets':
-        target_X = X_out[-1]
-        target_y = torch.tensor(args.badnets_label)
-        target_X[:, -4:, -4:] = torch.max(target_X)
-        target_X = target_X.unsqueeze(0)
-        target_y = target_y.unsqueeze(0)
-    elif args.target_type == 'sanity_check':
-        target_X = X_out[-1].unsqueeze(0)
-        target_y = y_out[-1].unsqueeze(0)
-    elif args.target_type == 'clipbkd':
-        target_X, target_y = craft_clipbkd(X_out, init_model)
-    elif args.target_type == 'fgsm':
-        print("Preparing FGSM attack by training a model on the available data...")
-        
-        # Create a new model for FGSM
-        fgsm_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
-        if args.model_name == 'cnn':
-            xavier_init_model(fgsm_model)
-        else:
-            init_wideresnet(fgsm_model)
-        
-        # Train the model using the existing train_model function
-        print("Training FGSM model...")
-        
-        # Use train_model with DP disabled (delta=0, max_grad_norm=inf)
-        fgsm_model = train_model(
-            model_name=args.model_name,
-            X=X_out,
-            y=y_out,
-            X_target=None,
-            y_target=None,
-            epsilon=None,  # No DP
-            delta=None,    # No DP
-            max_grad_norm=None,  # No gradient clipping
-            n_epochs=args.n_epochs,
-            lr=args.lr,
-            block_size=args.block_size,
-            batch_size=args.batch_size,
-            init_model=fgsm_model,
-            out_dim=out_dim,
-            aug_mult=1,  # No augmentation for FGSM
-            rank=rank,
-            world_size=world_size,
-            gradient_space_audit=False,
-            defense=False
-        )
-        print("FGSM model training completed")
-        
-        # Get the last sample and its true label
-        original_X = X_out[-1].unsqueeze(0).to(device)
-        original_y = y_out[-1].unsqueeze(0).to(device)
-        
-        # Choose a target class different from the original
-        num_classes = out_dim
-        target_class = (original_y + 1) % num_classes  # Simple way to pick a different class
-        
-        print(f"Performing FGSM attack on sample (original class: {original_y.item()}, target class: {target_class.item()})")
-        
-        # Perform iterative FGSM attack
-        print("Running iterative FGSM attack...")
-        target_X, iters_used = fgsm_attack(
-            fgsm_model, 
-            original_X, 
-            target_class, 
-            epsilon=0.1,  # Maximum perturbation
-            max_iter=20,  # Maximum iterations
-            alpha=0.01    # Step size
-        )
-        target_y = target_class
-        print(f"FGSM attack completed in {iters_used} iterations")
-        
-        # Move back to CPU if needed
-        if not target_X.is_cpu:
-            target_X = target_X.cpu()
-        if not target_y.is_cpu:
-            target_y = target_y.cpu()
-            
-        # Clean up
-        del fgsm_model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
-        print("FGSM attack completed")
-    elif args.target_type == 'empty_sequence':
-        # sequence length (same as existing chunks)
-        seq_len = X_out.shape[1]
-        target_X = torch.zeros((1, seq_len), dtype=torch.long)
-        target_y = torch.full((1, seq_len), 9, dtype=torch.long)
-    elif os.path.exists(args.target_type):
-        # pre-crafted target sample
-        target_X = torch.from_numpy(np.load(args.target_type))
-        if init_model is not None:
-            target_y =  choose_worstcase_label(init_model, target_X)
-        else:
             target_y = torch.from_numpy(np.array([9]))
-    else:
-        raise Exception(f'Target {args.target_type} not found')
+        elif args.target_type == 'badnets':
+            target_X = X_out[-1]
+            target_y = torch.tensor(args.badnets_label)
+            target_X[:, -4:, -4:] = torch.max(target_X)
+            target_X = target_X.unsqueeze(0)
+            target_y = target_y.unsqueeze(0)
+        elif args.target_type == 'sanity_check':
+            target_X = X_out[-1].unsqueeze(0)
+            target_y = y_out[-1].unsqueeze(0)
+        elif args.target_type == 'clipbkd':
+            target_X, target_y = craft_clipbkd(X_out, init_model)
+        elif args.target_type == 'fgsm':
+            print("Preparing FGSM attack by training a model on the available data...")
+            
+            # Create a new model for FGSM
+            fgsm_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+            if args.model_name == 'cnn':
+                xavier_init_model(fgsm_model)
+            else:
+                init_wideresnet(fgsm_model)
+            
+            # Train the model using the existing train_model function
+            print("Training FGSM model...")
+            
+            # Use train_model with DP disabled (delta=0, max_grad_norm=inf)
+            fgsm_model = train_model(
+                model_name=args.model_name,
+                X=X_out,
+                y=y_out,
+                X_target=None,
+                y_target=None,
+                epsilon=None,  # No DP
+                delta=None,    # No DP
+                max_grad_norm=None,  # No gradient clipping
+                n_epochs=args.n_epochs,
+                lr=args.lr,
+                block_size=args.block_size,
+                batch_size=args.batch_size,
+                init_model=fgsm_model,
+                out_dim=out_dim,
+                aug_mult=1,  # No augmentation for FGSM
+                rank=rank,
+                world_size=world_size,
+                gradient_space_audit=False,
+                defense=False
+            )
+            print("FGSM model training completed")
+            
+            # Get the last sample and its true label
+            original_X = X_out[-1].unsqueeze(0).to(device)
+            original_y = y_out[-1].unsqueeze(0).to(device)
+            
+            # Choose a target class different from the original
+            num_classes = out_dim
+            target_class = (original_y + 1) % num_classes  # Simple way to pick a different class
+            
+            print(f"Performing FGSM attack on sample (original class: {original_y.item()}, target class: {target_class.item()})")
+            
+            # Perform iterative FGSM attack
+            print("Running iterative FGSM attack...")
+            target_X, iters_used = fgsm_attack(
+                fgsm_model, 
+                original_X, 
+                target_class, 
+                epsilon=0.1,  # Maximum perturbation
+                max_iter=20,  # Maximum iterations
+                alpha=0.01    # Step size
+            )
+            target_y = target_class
+            print(f"FGSM attack completed in {iters_used} iterations")
+            
+            # Move back to CPU if needed
+            if not target_X.is_cpu:
+                target_X = target_X.cpu()
+            if not target_y.is_cpu:
+                target_y = target_y.cpu()
+                
+            # Clean up
+            del fgsm_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            print("FGSM attack completed")
+        elif args.target_type == 'empty_sequence':
+            # sequence length (same as existing chunks)
+            seq_len = X_out.shape[1]
+            target_X = torch.zeros((1, seq_len), dtype=torch.long)
+            target_y = torch.full((1, seq_len), 9, dtype=torch.long)
+        elif os.path.exists(args.target_type):
+            # pre-crafted target sample
+            target_X = torch.from_numpy(np.load(args.target_type))
+            if init_model is not None:
+                target_y =  choose_worstcase_label(init_model, target_X)
+            else:
+                target_y = torch.from_numpy(np.array([9]))
+        else:
+            raise Exception(f'Target {args.target_type} not found')
 
     # Define datasets
     X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
@@ -927,7 +971,7 @@ def main():
     
     # Create crafted gradient if needed
     crafted_grad = None
-    if args.target_type == 'gradient_space_canary':
+    if args.target_type == 'gradient_space_canary' and args.canary_pt is None:
         if rank == 0:
             print('Creating crafted gradient')
         temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
@@ -970,8 +1014,8 @@ def main():
                 out_dim=out_dim, 
                 defense=args.defense,
                 aug_mult=args.aug_mult,
-                gradient_space_audit=args.target_type == 'gradient_space_canary' and world == 'in',
-                crafted_gradient=crafted_grad if args.target_type == 'gradient_space_canary' and world == 'in' else None,
+                gradient_space_audit=(args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in'),
+                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in') else None,
                 device=device,
                 generator=generator,
                 dl_generator=dl_generator,
@@ -1007,7 +1051,7 @@ def main():
                 
                 output = model(target_X_device)
                 
-                if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
+                if args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in' and crafted_grad is not None:
                     # Calculate parameter update
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
@@ -1030,7 +1074,7 @@ def main():
                 losses[world].append(loss)
 
             if args.store_all_losses:
-                if args.target_type == 'gradient_space_canary' and world == 'in':
+                if args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in':
                     # Not a per-sample loss-based audit; keep placeholder for alignment.
                     all_losses[world].append(np.array([], dtype=np.float32))
                 else:
