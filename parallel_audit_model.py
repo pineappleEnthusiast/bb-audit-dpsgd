@@ -162,7 +162,7 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_apply_ascent=True, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -496,7 +496,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         
         # Defense operations
         if defense:
-            k = 5
+            k = int(defense_k)
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
             
@@ -710,6 +710,7 @@ def main():
 
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
+    parser.add_argument('--defense_k', type=int, default=5, help='number of samples dropped per class per epoch when defense is enabled')
     parser.add_argument('--defense_apply_ascent', action='store_true', default=True, help='apply gradient ascent to high-scoring samples (default: True when defense is enabled)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
@@ -787,16 +788,19 @@ def main():
             if 'canary' not in payload:
                 raise KeyError(f"Canary .pt dict must contain key 'canary'. Found keys: {list(payload.keys())}")
             target_X = payload['canary']
-            if 'audit_label' in payload:
-                target_y_val = payload['audit_label']
-            elif 'target_label' in payload:
+            if 'target_label' in payload:
                 target_y_val = payload['target_label']
+            elif 'canary_label' in payload:
+                target_y_val = payload['canary_label']
             elif 'label' in payload:
                 target_y_val = payload['label']
             elif 'true_label' in payload:
                 target_y_val = payload['true_label']
+            elif 'audit_label' in payload:
+                target_y_val = payload['audit_label']
             else:
                 target_y_val = 9
+
         elif torch.is_tensor(payload):
             target_X = payload
             target_y_val = 9
@@ -899,7 +903,8 @@ def main():
                 rank=rank,
                 world_size=world_size,
                 gradient_space_audit=False,
-                defense=False
+                defense=False,
+                defense_k=int(args.defense_k)
             )
             print("FGSM model training completed")
             
@@ -1013,6 +1018,7 @@ def main():
                 init_model=init_model,
                 out_dim=out_dim, 
                 defense=args.defense,
+                defense_k=int(args.defense_k),
                 aug_mult=args.aug_mult,
                 gradient_space_audit=(args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in'),
                 crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in') else None,
