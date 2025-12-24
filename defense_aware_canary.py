@@ -1186,6 +1186,88 @@ if __name__ == "__main__":
             device=device,
             verbose=True
         )
+
+    # Post-generation evaluation: (1) whether canary is caught under defense, (2) loss difference vs baseline model
+    canary_eval = canary.detach().clone()
+    canary_label_tensor = torch.tensor([args.target_label])
+    X_with_canary_eval = torch.cat([X_train, canary_eval.unsqueeze(0)], dim=0)
+    y_with_canary_eval = torch.cat([y_train, canary_label_tensor], dim=0)
+    
+    baseline_model = Models[args.model_name](X_train.shape, out_dim=out_dim)
+    baseline_model.load_state_dict(deepcopy(init_state))
+    baseline_model, _ = train_model_with_defense(
+        model_name=args.model_name,
+        X=X_train,
+        y=y_train,
+        epsilon=args.epsilon,
+        delta=args.delta,
+        max_grad_norm=args.max_grad_norm,
+        n_epochs=args.n_epochs,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        init_model=baseline_model,
+        out_dim=out_dim,
+        aug_mult=1,
+        defense=True,
+        defense_k=args.defense_k,
+        device=device,
+        stop_on_canary_drop=False,
+    )
+
+    defended_model = Models[args.model_name](X_with_canary_eval.shape, out_dim=out_dim)
+    defended_model.load_state_dict(deepcopy(init_state))
+    defended_model, drop_epoch_eval = train_model_with_defense(
+        model_name=args.model_name,
+        X=X_with_canary_eval,
+        y=y_with_canary_eval,
+        epsilon=args.epsilon,
+        delta=args.delta,
+        max_grad_norm=args.max_grad_norm,
+        n_epochs=args.n_epochs,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        init_model=defended_model,
+        out_dim=out_dim,
+        aug_mult=1,
+        defense=True,
+        defense_k=args.defense_k,
+        device=device,
+        stop_on_canary_drop=False,
+    )
+
+    criterion = nn.CrossEntropyLoss()
+    with torch.no_grad():
+        baseline_model.to(device)
+        defended_model.to(device)
+        baseline_model.eval()
+        defended_model.eval()
+        canary_dev = canary_eval.to(device)
+        y_canary_dev = torch.tensor([args.target_label], device=device)
+        out_base = baseline_model(canary_dev.unsqueeze(0))
+        out_def = defended_model(canary_dev.unsqueeze(0))
+        loss_base = criterion(out_base, y_canary_dev).item()
+        loss_def = criterion(out_def, y_canary_dev).item()
+        loss_diff_eval = abs(loss_def - loss_base)
+        pred_base = out_base.argmax(dim=1).item()
+        pred_def = out_def.argmax(dim=1).item()
+
+    caught_eval = (drop_epoch_eval != -1)
+    print("\n=== Post-generation evaluation ===")
+    print(f"  Canary caught by defense: {caught_eval} (drop_epoch={drop_epoch_eval})")
+    print(f"  Canary label (train): {args.target_label}")
+    print(f"  Pred baseline(no canary): {pred_base} | loss: {loss_base:.4f}")
+    print(f"  Pred defended(with canary): {pred_def} | loss: {loss_def:.4f}")
+    print(f"  |loss_def - loss_base|: {loss_diff_eval:.4f}")
+
+    eval_metrics = {
+        'drop_epoch_eval': int(drop_epoch_eval),
+        'caught_eval': bool(caught_eval),
+        'pred_baseline': int(pred_base),
+        'pred_defended': int(pred_def),
+        'loss_baseline': float(loss_base),
+        'loss_defended': float(loss_def),
+        'loss_diff': float(loss_diff_eval),
+    }
     
     # Save canary
     torch.save({
@@ -1193,7 +1275,8 @@ if __name__ == "__main__":
         'true_label': args.true_label,
         'audit_label': final_label,  # Use this label for auditing!
         'init_model': init_state,
-        'args': vars(args)
+        'args': vars(args),
+        'eval': eval_metrics,
     }, args.output)
     
     print(f"\nCanary saved to {args.output}")
