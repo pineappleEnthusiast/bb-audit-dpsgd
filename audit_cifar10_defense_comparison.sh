@@ -41,7 +41,6 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --max_grad_norm 1 \
     --aug_mult 1 \
     --target_type blank \
-    --alpha 0.05 \
     --out cifar10_eps10_no_defense'
 
 # Experiment 2: With Defense
@@ -67,7 +66,6 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --max_grad_norm 1 \
     --aug_mult 1 \
     --target_type blank \
-    --alpha 0.05 \
     --defense \
     --defense_k 5 \
     --defense_score_fn grad_norm \
