@@ -189,7 +189,7 @@ echo "Running Purchase - No defense - ε=6..."
 torchrun --nproc_per_node=1 parallel_audit_model.py \
     --data_name purchase \
     --model_name mlp \
-    --n_df 10000 \
+    --n_df 100 \
     --n_reps $N_REPS \
     --n_epochs $N_EPOCHS \
     --lr 0.5 \
@@ -197,8 +197,8 @@ torchrun --nproc_per_node=1 parallel_audit_model.py \
     --epsilon 6.0 \
     --delta $DELTA \
     --target_type $TARGET_TYPE \
-    --batch_size 12143 \
-    --block_size 12143 \
+    --batch_size 10 \
+    --block_size 10 \
     --seed 0 \
     --aug_mult 1 \
     --out test_purchase_no_defense
@@ -210,7 +210,7 @@ echo "Running Purchase - Defense (no ascent) - ε=6..."
 torchrun --nproc_per_node=1 parallel_audit_model.py \
     --data_name purchase \
     --model_name mlp \
-    --n_df 10000 \
+    --n_df 100 \
     --n_reps $N_REPS \
     --n_epochs $N_EPOCHS \
     --lr 0.5 \
@@ -218,8 +218,8 @@ torchrun --nproc_per_node=1 parallel_audit_model.py \
     --epsilon 6.0 \
     --delta $DELTA \
     --target_type $TARGET_TYPE \
-    --batch_size 12143 \
-    --block_size 12143 \
+    --batch_size 100 \
+    --block_size 10 \
     --seed 0 \
     --aug_mult 1 \
     --defense \
@@ -235,7 +235,7 @@ echo "Running Purchase - Defense (with ascent) - ε=6..."
 torchrun --nproc_per_node=1 parallel_audit_model.py \
     --data_name purchase \
     --model_name mlp \
-    --n_df 10000 \
+    --n_df 100 \
     --n_reps $N_REPS \
     --n_epochs $N_EPOCHS \
     --lr 0.5 \
@@ -243,8 +243,8 @@ torchrun --nproc_per_node=1 parallel_audit_model.py \
     --epsilon 6.0 \
     --delta $DELTA \
     --target_type $TARGET_TYPE \
-    --batch_size 12143 \
-    --block_size 12143 \
+    --batch_size 10 \
+    --block_size 10 \
     --seed 0 \
     --aug_mult 1 \
     --defense \
