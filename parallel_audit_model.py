@@ -16,7 +16,7 @@ from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads, DefenseConfig
-from utils.audit import compute_eps_lower_from_mia
+from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
 from utils.clipbkd import craft_clipbkd
 
 from models.lstm import LSTM
