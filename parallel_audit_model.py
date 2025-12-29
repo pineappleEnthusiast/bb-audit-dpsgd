@@ -525,12 +525,15 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         
                     grad = curr_accumulated_gradients[name].to(device)
                     
-                    # Add DP noise if needed
+                    # Add DP noise to the sum of clipped gradients (before averaging)
                     if noise_multiplier > 0 and max_grad_norm is not None:
-                        batch_size_in = int(curr_X.shape[0])
-                        noise_std = noise_multiplier * max_grad_norm / float(batch_size_in)
+                        noise_std = noise_multiplier * max_grad_norm
                         noise = noise_std * torch.randn_like(grad)
                         grad.add_(noise)
+                    
+                    # Average the noisy gradient sum
+                    batch_size_in = int(curr_X.shape[0])
+                    grad.div_(float(batch_size_in))
                     
                     if param.grad is None:
                         param.grad = grad.clone()

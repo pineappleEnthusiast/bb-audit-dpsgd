@@ -1008,11 +1008,8 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         else:
             scores[curr_global_indices.cpu().numpy()] = score_aux_block
 
-    if accum_grad is not None and batch_size_in > 0:
-        with torch.no_grad():
-            for name in accum_grad:
-                accum_grad[name] = accum_grad[name] / float(batch_size_in)
-
+    # Note: Division by batch_size is now done in the calling code after noise addition
+    # This ensures standard DP-SGD: noise is added to the sum, then divided
     return accum_grad, scores
 
 
