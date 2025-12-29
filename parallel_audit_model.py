@@ -30,8 +30,48 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
     """
-    Perform iterative FGSM attack on the input X to make it misclassified as target class y.
+    Perform iterative FGSM (I-FGSM/PGD) targeted attack to generate adversarial example.
+    
+    This implements a targeted attack that minimizes the cross-entropy loss for the target 
+    class y, causing the model to misclassify the input as the target class. The attack 
+    uses projected gradient descent with L∞ norm constraints.
+    
+    Algorithm:
+        1. Initialize X_adv = X
+        2. For i in range(max_iter):
+            a. Compute loss = CrossEntropy(model(X_adv), y)
+            b. Compute gradient: grad = ∇_{X_adv} loss
+            c. Update: X_adv = X_adv - alpha * sign(grad)
+            d. Project to L∞ ball: X_adv = clip(X + clip(X_adv - X, -ε, ε), 0, 1)
+            e. If model predicts y, return success
+        3. Return best adversarial example found
+    
+    Args:
+        model (nn.Module): PyTorch model to attack (will be set to eval mode)
+        X (torch.Tensor): Input tensor to perturb, shape (1, ...) for single sample
+        y (torch.Tensor or int): Target class to fool the model into predicting
+        epsilon (float): Maximum L∞ perturbation bound (default: 0.1)
+        max_iter (int): Maximum number of attack iterations (default: 10)
+        alpha (float): Step size for each iteration (default: 0.01)
+    
+    Returns:
+        tuple: (X_adv, iters, success) where:
+            - X_adv (torch.Tensor): Adversarial example (best found if attack fails)
+            - iters (int): Number of iterations used
+            - success (bool): True if attack succeeded, False otherwise
+    
+    Raises:
+        AssertionError: If epsilon <= 0, alpha not in (0, epsilon], or max_iter <= 0
+    
+    Reference:
+        Madry et al., "Towards Deep Learning Models Resistant to Adversarial Attacks", 
+        ICLR 2018 (PGD attack)
     """
+    # Input validation
+    assert epsilon > 0, f"epsilon must be positive, got {epsilon}"
+    assert 0 < alpha <= epsilon, f"alpha must be in (0, epsilon], got alpha={alpha}, epsilon={epsilon}"
+    assert max_iter > 0, f"max_iter must be positive, got {max_iter}"
+    
     model.eval()
     X_adv = X.clone().detach().requires_grad_(True)
     best_adv = X_adv.detach().clone()
@@ -40,26 +80,32 @@ def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
     for i in range(max_iter):
         output = model(X_adv)
         _, predicted = torch.max(output, 1)
-        if predicted != y:
-            return X_adv.detach(), i + 1
+        # Targeted attack: success when model predicts target class y
+        if predicted == y:
+            return X_adv.detach(), i + 1, True
             
-        confidence = F.softmax(output, dim=1)[0, y].item()
+        # Handle both scalar and tensor y
+        y_idx = y.item() if y.dim() > 0 else y
+        confidence = F.softmax(output, dim=1)[0, y_idx].item()
         if confidence > best_confidence:
             best_confidence = confidence
             best_adv = X_adv.detach().clone()
         
+        # Targeted attack: minimize loss to increase confidence in target class
         loss = F.cross_entropy(output, y)
         model.zero_grad()
         loss.backward()
         
         data_grad = X_adv.grad.data
         sign_data_grad = data_grad.sign()
-        X_adv = X_adv.detach() + alpha * sign_data_grad
+        # Move in negative gradient direction to minimize loss
+        X_adv = X_adv.detach() - alpha * sign_data_grad
         delta = X_adv - X
         delta = torch.clamp(delta, -epsilon, epsilon)
         X_adv = torch.clamp(X + delta, 0, 1).detach().requires_grad_(True)
     
-    return best_adv, max_iter
+    # Attack failed - return best adversarial example found
+    return best_adv, max_iter, False
 
 
 class AugmentationFunction:
@@ -162,14 +208,15 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5, num_workers: int = 4, persistent_workers: bool = True, return_defense_state: bool = False):
     """
     Train a single model on a single GPU (no DDP).
     """
 
     # Move everything to the specified device
     device = torch.device(device)
-    torch.cuda.set_device(device)
+    if device.type == 'cuda':
+        torch.cuda.set_device(device)
     
     if init_model is None:
         if model_name == 'lstm':
@@ -233,8 +280,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         batch_size=batch_size,
         sampler=sampler,
         pin_memory=True,
-        num_workers=4,
-        persistent_workers=True,
+        num_workers=int(num_workers),
+        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
         drop_last=False,
         generator=dl_generator
     )
@@ -261,6 +308,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     dir_unique_hist = None
     dir_unique_hist_pos = None
     alignment_proj_mat = None
+    canary_dropped_epoch = None
     
     for epoch in range(n_epochs):
         epoch_start = time.time()
@@ -398,8 +446,16 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             if defense_score_fn == 'cos_theta0' and theta0_params is None:
                 theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-            if defense_score_fn == 'cos_theta0' and theta0_params is not None:
-                curr_params = {n: p.detach() for n, p in model.named_parameters()}
+            if defense_score_fn == 'norm_x_trajectory_orth' and theta0_params is None:
+                theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
+
+            curr_params = {n: p.detach() for n, p in model.named_parameters()}
+            if prev_params is not None:
+                prev_delta_theta = torch.cat([(curr_params[n] - prev_params[n]).reshape(-1) for n in prev_params.keys()], dim=0)
+            else:
+                prev_delta_theta = None
+
+            if theta0_params is not None:
                 theta_t_minus_theta0 = torch.cat([(curr_params[n] - theta0_params[n]).reshape(-1) for n in theta0_params.keys()], dim=0)
             else:
                 theta_t_minus_theta0 = None
@@ -409,10 +465,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 score_norm=defense_score_norm,
                 delta_theta=prev_delta_theta,
                 theta_t_minus_theta0=theta_t_minus_theta0,
-                prev_losses=prev_losses,
-                loss_hist=loss_hist,
-                loss_hist_pos=loss_hist_pos,
-                loss_volatility_k=int(loss_volatility_k),
                 grad_norm_hist=grad_norm_hist,
                 grad_norm_hist_pos=grad_norm_hist_pos,
                 grad_norm_percentile_k=int(grad_norm_percentile_k),
@@ -515,12 +567,14 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
                 
-                if X.shape[0] - 1 in dropped_indices and not hasattr(train_model, '_canary_dropped'):
+                if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
                     print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
-                    train_model._canary_dropped = True
+                    canary_dropped_epoch = int(epoch)
         
             scores.fill(0)
 
+    if return_defense_state:
+        return model, drop_mask, canary_dropped_epoch
     return model
 
 
@@ -716,13 +770,13 @@ def main():
     parser.add_argument('--defense_apply_ascent', action='store_true', default=True, help='apply gradient ascent to high-scoring samples (default: True when defense is enabled)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
-    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_x_loss', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'loss', 'loss_momentum', 'loss_volatility', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0'], help='score function used for defense (grad_norm, grad_norm_x_loss, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, loss, loss_momentum, loss_volatility, inv_confidence, prediction_margin, pred_entropy, cos_update, or cos_theta0)')
-    parser.add_argument('--loss_volatility_k', type=int, default=5, help='lookback window for loss_volatility score (std over last k observed losses per sample)')
+    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0'], help='score function used for defense (grad_norm, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, inv_confidence, prediction_margin, pred_entropy, cos_update, or cos_theta0)')
     parser.add_argument('--grad_norm_percentile_k', type=int, default=20, help='lookback window for grad_norm_percentile score (percentile of current grad norm within last k observed grad norms per sample)')
     parser.add_argument('--grad_dir_volatility_k', type=int, default=5, help='lookback window for grad_dir_volatility score (mean(1 - cos_sim(curr_dir, past_dir)) over last k directions)')
     parser.add_argument('--grad_dir_proj_dim', type=int, default=64, help='projection dimension for grad_dir_volatility direction embedding')
     parser.add_argument('--grad_dir_proj_seed', type=int, default=0, help='seed for grad_dir_volatility random projection')
     parser.add_argument('--dir_unique_k', type=int, default=5, help='lookback window K for norm_x_dir_uniqueness score (std of cos sims to last K directions)')
+
     parser.add_argument('--rand_proj_var_m', type=int, default=10, help='number of random directions for rand_proj_var score')
     parser.add_argument('--rand_proj_var_seed', type=int, default=0, help='seed for rand_proj_var random directions')
     parser.add_argument('--maxmin_proj_k', type=int, default=10, help='number of random directions for maxmin_proj_ratio score')
@@ -922,7 +976,7 @@ def main():
             
             # Perform iterative FGSM attack
             print("Running iterative FGSM attack...")
-            target_X, iters_used = fgsm_attack(
+            target_X, iters_used, success = fgsm_attack(
                 fgsm_model, 
                 original_X, 
                 target_class, 
@@ -931,7 +985,22 @@ def main():
                 alpha=0.01    # Step size
             )
             target_y = target_class
-            print(f"FGSM attack completed in {iters_used} iterations")
+            
+            # Validate attack results
+            with torch.no_grad():
+                fgsm_model.eval()
+                output = fgsm_model(target_X)
+                pred = output.argmax(dim=1)
+                perturbation = (target_X - original_X).abs().max().item()
+                
+                if success:
+                    print(f"FGSM attack succeeded in {iters_used} iterations")
+                else:
+                    print(f"FGSM attack failed after {iters_used} iterations (using best adversarial example found)")
+                
+                print(f"  Predicted class: {pred.item()}, Target class: {target_class.item()}")
+                print(f"  Perturbation L∞ norm: {perturbation:.6f} (epsilon={0.1})")
+                print(f"  Attack actually fooled model: {pred.item() == target_class.item()}")
             
             # Move back to CPU if needed
             if not target_X.is_cpu:
@@ -1106,7 +1175,10 @@ def main():
         # After all reps in this world
         outputs[world] = np.array(outputs[world])
 
-    dist.barrier()
+    if torch.cuda.is_available():
+        dist.barrier(device_ids=[local_rank])
+    else:
+        dist.barrier()
 
     # Final audit - only rank 0 needs to combine results from all ranks
     if rank == 0:

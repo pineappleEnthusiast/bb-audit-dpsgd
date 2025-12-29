@@ -61,11 +61,8 @@ def get_per_sample_grads(model, X, y, criterion):
     if is_ddp:
         # For DDP, we need to use the module's parameters but with the original names
         model_to_use = model.module
-        # Create a mapping from original names to parameters
-        param_mapping = {name.replace('module.', ''): param for name, param in model.named_parameters()}
     else:
         model_to_use = model
-        param_mapping = dict(model.named_parameters())
     
     # map of parameter names : parameter values (without module prefix)
     params = {k: v.detach() for k, v in model_to_use.named_parameters()}
@@ -194,10 +191,6 @@ class DefenseConfig:
     score_norm: str = 'linf'
     delta_theta: Optional[torch.Tensor] = None
     theta_t_minus_theta0: Optional[torch.Tensor] = None
-    prev_losses: Optional[np.ndarray] = None
-    loss_hist: Optional[np.ndarray] = None
-    loss_hist_pos: Optional[np.ndarray] = None
-    loss_volatility_k: int = 5
     grad_norm_hist: Optional[np.ndarray] = None
     grad_norm_hist_pos: Optional[np.ndarray] = None
     grad_norm_percentile_k: int = 20
@@ -238,8 +231,38 @@ def _norm_p_from_name(score_norm: str):
     raise ValueError(f"Unsupported defense_score_norm: {score_norm}")
 
 
+def _flatten_per_sample_grads(ps_grads):
+    """
+    Flatten per-sample gradients in a sequence-aware manner.
+    
+    For regular models: gradients have shape (B, ...) -> flatten to (B, D)
+    For sequence models (LSTM): gradients have shape (B, T, ...) -> average over T, then flatten to (B, D)
+    
+    Args:
+        ps_grads: dict of {param_name: gradient_tensor}
+    
+    Returns:
+        Tensor of shape (B, D) where D is the total flattened gradient dimension
+    """
+    flattened_grads = []
+    for g in ps_grads.values():
+        if g.ndim >= 3:
+            # Sequence model: (B, T, ...) -> average over sequence dimension, then flatten
+            # This gives us a per-sample gradient by averaging over the sequence
+            g_avg = g.mean(dim=1)  # (B, T, ...) -> (B, ...)
+            flattened_grads.append(g_avg.reshape(g.shape[0], -1))
+        else:
+            # Regular model: (B, ...) -> flatten
+            flattened_grads.append(g.reshape(g.shape[0], -1))
+    
+    return torch.cat(flattened_grads, dim=1)
+
+
 def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseConfig, ps_losses=None, ps_logits=None):
     score_fn = defense_cfg.score_fn
+
+    if score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
+        raise ValueError(f"Unsupported defense_score_fn: {score_fn}. Loss-based defense scores have been removed.")
 
     if score_fn == 'inv_confidence':
         if ps_logits is None:
@@ -256,59 +279,45 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             raise RuntimeError("defense_score_fn='pred_entropy' requires logits")
         return compute_per_sample_prediction_entropy_from_logits(ps_logits).to(dtype=torch.float32)
 
-    if score_fn in ['loss', 'loss_momentum', 'loss_volatility']:
-        if ps_losses is None:
-            raise RuntimeError("defense_score_fn='loss' requires per-sample losses")
-        return ps_losses.to(dtype=torch.float32)
-
-    if score_fn == 'grad_norm_x_loss':
-        if ps_losses is None:
-            raise RuntimeError("defense_score_fn='grad_norm_x_loss' requires per-sample losses")
-
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
-        p = _norm_p_from_name(defense_cfg.score_norm)
-        grad_norms = per_sample_flat_grads.norm(p=p, dim=1)
-        return (grad_norms * ps_losses.to(device=grad_norms.device, dtype=grad_norms.dtype)).to(dtype=torch.float32)
-
     if score_fn == 'cos_update':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         delta_theta = defense_cfg.delta_theta
         if delta_theta is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
         delta_theta = delta_theta.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         delta_norm = delta_theta.norm(2)
-        if float(delta_norm) == 0.0:
+        if float(delta_norm) < 1e-8:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
         per_norms = per_sample_flat_grads.norm(2, dim=1) + 1e-12
-        cos_sims = (per_sample_flat_grads @ delta_theta) / (per_norms * (delta_norm + 1e-12))
+        cos_sims = (per_sample_flat_grads @ delta_theta) / (per_norms * delta_norm)
         return cos_sims.abs().to(dtype=torch.float32)
 
     if score_fn == 'cos_theta0':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         theta_t_minus_theta0 = defense_cfg.theta_t_minus_theta0
         if theta_t_minus_theta0 is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
         theta_t_minus_theta0 = theta_t_minus_theta0.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         delta_norm = theta_t_minus_theta0.norm(2)
-        if float(delta_norm) == 0.0:
+        if float(delta_norm) < 1e-8:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
         per_norms = per_sample_flat_grads.norm(2, dim=1) + 1e-12
-        cos_sims = (per_sample_flat_grads @ theta_t_minus_theta0) / (per_norms * (delta_norm + 1e-12))
+        cos_sims = (per_sample_flat_grads @ theta_t_minus_theta0) / (per_norms * delta_norm)
         return cos_sims.abs().to(dtype=torch.float32)
 
     if score_fn == 'fisher':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         return (per_sample_flat_grads ** 2).sum(dim=1).to(dtype=torch.float32)
 
     if score_fn == 'rand_proj_var':
         if defense_cfg.rand_proj_mat is None:
             raise ValueError("defense_cfg.rand_proj_mat must be provided when score_fn='rand_proj_var'")
 
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         proj_mat = defense_cfg.rand_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         projections = per_sample_flat_grads @ proj_mat
         mean_abs = projections.abs().mean(dim=1)
@@ -319,15 +328,20 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         if defense_cfg.maxmin_proj_mat is None:
             raise ValueError("defense_cfg.maxmin_proj_mat must be provided when score_fn='maxmin_proj_ratio'")
 
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         proj_mat = defense_cfg.maxmin_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         projections = (per_sample_flat_grads @ proj_mat).abs()
         max_proj = projections.max(dim=1).values
         min_proj = projections.min(dim=1).values
-        return (max_proj / (min_proj + 1e-12)).to(dtype=torch.float32)
+        # Clamp min_proj to prevent unbounded explosion and handle near-zero case
+        min_proj_clamped = torch.clamp(min_proj, min=1e-6)
+        ratio = max_proj / min_proj_clamped
+        # Cap the ratio to prevent extreme outliers from dominating
+        ratio = torch.clamp(ratio, max=1e6)
+        return ratio.to(dtype=torch.float32)
 
     if score_fn == 'gradient_rank':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         d = float(per_sample_flat_grads.shape[1])
         eps = float(defense_cfg.grad_rank_eps)
 
@@ -341,8 +355,12 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             return (effdim / (d + eps)).to(dtype=torch.float32)
 
         if mode == 'entropy':
+            # Handle zero-gradient case: when l1 is very small, entropy is undefined
+            zero_grad = l1 < eps
             probs = abs_g / (l1[:, None] + eps)
-            entropy = -(probs * (probs + eps).log()).sum(dim=1)
+            entropy = -(probs * torch.log(probs + eps)).sum(dim=1)
+            # Set entropy to 0 for zero-gradient samples
+            entropy = torch.where(zero_grad, torch.zeros_like(entropy), entropy)
             return (l2 * entropy).to(dtype=torch.float32)
 
         raise ValueError(f"Unsupported grad_rank_mode: {mode}")
@@ -351,7 +369,7 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         if defense_cfg.alignment_proj_mat is None:
             raise ValueError("defense_cfg.alignment_proj_mat must be provided when score_fn='alignment_with_rand_proj'")
 
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         proj_mat = defense_cfg.alignment_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         
         grad_norms = per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12
@@ -362,47 +380,42 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return alignment_std.to(dtype=torch.float32)
 
     if score_fn == 'gradient_sparsity':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         l1_norm = per_sample_flat_grads.abs().sum(dim=1)
         l2_norm = per_sample_flat_grads.norm(2, dim=1)
         return (l1_norm / (l2_norm + 1e-12)).to(dtype=torch.float32)
 
     if score_fn == 'gradient_kurtosis':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         mean_g = per_sample_flat_grads.mean(dim=1, keepdim=True)
         std_g = per_sample_flat_grads.std(dim=1, keepdim=True, unbiased=False)
-        normalized = (per_sample_flat_grads - mean_g) / (std_g + 1e-12)
+        
+        # Avoid overflow for near-constant gradients by using a larger epsilon and clamping
+        std_threshold = 1e-6
+        normalized = (per_sample_flat_grads - mean_g) / torch.clamp(std_g, min=std_threshold)
+        # Clamp normalized values to prevent overflow in ** 4
+        normalized = torch.clamp(normalized, min=-100.0, max=100.0)
         kurtosis = (normalized ** 4).mean(dim=1)
         return kurtosis.to(dtype=torch.float32)
 
     if score_fn == 'grad_dir_change_rate':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
-        grad_norms = per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12
-        normalized_grads = per_sample_flat_grads / grad_norms
-        
-        if defense_cfg.prev_grad_dir is None:
-            defense_cfg.prev_grad_dir = normalized_grads.detach().cpu().numpy()
-            return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
-        
-        prev_dirs = torch.from_numpy(defense_cfg.prev_grad_dir).to(device=normalized_grads.device, dtype=normalized_grads.dtype)
-        cos_sims = (normalized_grads * prev_dirs).sum(dim=1)
-        direction_change = 1.0 - cos_sims
-        
-        defense_cfg.prev_grad_dir = normalized_grads.detach().cpu().numpy()
-        return direction_change.to(dtype=torch.float32)
+        raise RuntimeError(
+            "defense_score_fn='grad_dir_change_rate' is history-based and must be computed in clip_and_accum_grads(...), keyed by global_indices"
+        )
 
     if score_fn == 'norm_x_trajectory_orth':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         theta_t_minus_theta0 = defense_cfg.theta_t_minus_theta0
         if theta_t_minus_theta0 is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
         
         theta_t_minus_theta0 = theta_t_minus_theta0.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         trajectory_norm = theta_t_minus_theta0.norm(2)
-        if float(trajectory_norm) == 0.0:
+        # Use threshold instead of exact zero check to catch near-zero trajectories
+        if float(trajectory_norm) < 1e-8:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
         
-        overall_direction = theta_t_minus_theta0 / (trajectory_norm + 1e-12)
+        overall_direction = theta_t_minus_theta0 / trajectory_norm
         grad_norms = per_sample_flat_grads.norm(2, dim=1)
         normalized_grads = per_sample_flat_grads / (grad_norms[:, None] + 1e-12)
         
@@ -412,40 +425,31 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return (grad_norms * orthogonality).to(dtype=torch.float32)
 
     if score_fn == 'gradient_scatter':
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
-        n_samples = per_sample_flat_grads.shape[0]
-        grad_dim = per_sample_flat_grads.shape[1]
-        k = int(defense_cfg.grad_scatter_k)
-        
-        if defense_cfg.grad_scatter_hist is None:
-            defense_cfg.grad_scatter_hist = np.zeros((n_samples, k, grad_dim), dtype=np.float32)
-            defense_cfg.grad_scatter_hist_pos = np.zeros(n_samples, dtype=np.int32)
-        
-        curr_grads_np = per_sample_flat_grads.detach().cpu().numpy()
-        scatter_scores = np.zeros(n_samples, dtype=np.float32)
-        
-        for i in range(n_samples):
-            pos = int(defense_cfg.grad_scatter_hist_pos[i])
-            defense_cfg.grad_scatter_hist[i, pos] = curr_grads_np[i]
-            defense_cfg.grad_scatter_hist_pos[i] = (pos + 1) % k
-            
-            recent_grads = defense_cfg.grad_scatter_hist[i]
-            centroid = recent_grads.mean(axis=0)
-            scatter = ((recent_grads - centroid) ** 2).sum(axis=1).mean()
-            scatter_scores[i] = scatter
-        
-        return torch.from_numpy(scatter_scores).to(device=per_sample_flat_grads.device, dtype=torch.float32)
+        raise RuntimeError(
+            "defense_score_fn='gradient_scatter' is history-based and must be computed in clip_and_accum_grads(...), keyed by global_indices"
+        )
 
-    per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads.values()], dim=1)
+    per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
     p = _norm_p_from_name(defense_cfg.score_norm)
     return per_sample_flat_grads.norm(p, dim=1).to(dtype=torch.float32)
 
 def get_per_sample_grad_norms(per_sample_grads):
-    """Compute L2 norms of per-sample gradients"""
-    return torch.vstack([
-        curr_grad.flatten(start_dim=1).norm(2, dim=1)
-        for curr_grad in per_sample_grads.values()
-    ]).norm(2, dim=0)
+    """
+    Compute L2 norms of per-sample gradients in a sequence-aware manner.
+    
+    For regular models: gradients have shape (B, ...) -> compute norm over all dims except batch
+    For sequence models (LSTM): gradients have shape (B, T, ...) -> average over T first, then compute norm
+    """
+    norms_per_param = []
+    for curr_grad in per_sample_grads.values():
+        if curr_grad.ndim >= 3:
+            # Sequence model: average over sequence dimension first
+            curr_grad = curr_grad.mean(dim=1)  # (B, T, ...) -> (B, ...)
+        # Flatten and compute norm for this parameter
+        norms_per_param.append(curr_grad.flatten(start_dim=1).norm(2, dim=1))
+    
+    # Combine norms across all parameters
+    return torch.vstack(norms_per_param).norm(2, dim=0)
 
 
 def clip_per_sample_grads(per_sample_grads, max_grad_norm):
@@ -502,6 +506,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             theta_t_minus_theta0=theta_t_minus_theta0
         )
 
+    if defense_cfg.score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
+        raise ValueError(f"Unsupported defense_score_fn: {defense_cfg.score_fn}. Loss-based defense scores have been removed.")
+
     ps_losses = None
     ps_logits = None
     if len(X) == 0:
@@ -536,16 +543,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
             if isinstance(model_to_use, LSTM):
                 ps_grads = _get_per_sample_grads(GradSampleModule(model), X_aug, y_aug, criterion)
-                if defense_cfg.score_fn in ['loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss']:
-                    logits = model(X_aug)
-                    aug_losses = compute_per_sample_losses_from_logits(logits, y_aug)
-                    ps_losses = aug_losses.reshape(len(X), aug_mult).mean(dim=1).detach()
             else:
-                if defense_cfg.score_fn in ['loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss']:
-                    ps_grads, aug_losses = get_per_sample_grads_and_losses(model, X_aug, y_aug, criterion)
-                    ps_losses = aug_losses.reshape(len(X), aug_mult).mean(dim=1).detach()
-                else:
-                    ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
+                ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
 
             if defense_cfg.score_fn == 'inv_confidence':
                 ps_losses = None
@@ -595,14 +594,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
             if isinstance(model_to_use, LSTM):
                 ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
-                if defense_cfg.score_fn in ['loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss']:
-                    logits = model(X)
-                    ps_losses = compute_per_sample_losses_from_logits(logits, y).detach()
             else:
-                if defense_cfg.score_fn in ['loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss']:
-                    ps_grads, ps_losses = get_per_sample_grads_and_losses(model, X, y, criterion)
-                else:
-                    ps_grads = get_per_sample_grads(model, X, y, criterion)
+                ps_grads = get_per_sample_grads(model, X, y, criterion)
         
         # Apply gradient-space audit after getting the gradients but before clipping
         if is_gradient_space_canary:
@@ -628,8 +621,10 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         scores_block = ps_entropy.to(dtype=torch.float32)
     elif defense_cfg.score_fn == 'norm_x_dir_uniqueness':
         p = _norm_p_from_name(defense_cfg.score_norm)
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         scores_block = per_sample_flat_grads.norm(p=p, dim=1).to(dtype=torch.float32)
+    elif defense_cfg.score_fn in {'grad_dir_change_rate', 'gradient_scatter'}:
+        scores_block = torch.zeros((len(X),), device=device, dtype=torch.float32)
     else:
         scores_block = compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg, ps_losses=ps_losses, ps_logits=ps_logits)
 
@@ -638,7 +633,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         if defense_cfg.grad_dir_proj is None:
             raise ValueError("defense_cfg.grad_dir_proj must be provided when score_fn='grad_dir_volatility' or 'norm_x_dir_uniqueness'")
 
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         per_sample_flat_grads = per_sample_flat_grads / (per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12)
 
         proj = defense_cfg.grad_dir_proj.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
@@ -646,11 +641,20 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         embeds = embeds / (embeds.norm(2, dim=1, keepdim=True) + 1e-12)
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)
 
+    if defense_cfg is not None and defense_cfg.score_fn == 'grad_dir_change_rate':
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = per_sample_flat_grads / (per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12)
+        aux_embeds_block = per_sample_flat_grads.detach().cpu().numpy().astype(np.float32, copy=False)
+
+    if defense_cfg is not None and defense_cfg.score_fn == 'gradient_scatter':
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        aux_embeds_block = per_sample_flat_grads.detach().cpu().numpy().astype(np.float32, copy=False)
+
     if defense_cfg is not None and defense_cfg.score_fn == 'grad_accel':
         if defense_cfg.grad_accel_proj is None:
             raise ValueError("defense_cfg.grad_accel_proj must be provided when score_fn='grad_accel'")
 
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         proj = defense_cfg.grad_accel_proj.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         embeds = per_sample_flat_grads @ proj
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)
@@ -659,7 +663,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         if defense_cfg.grad_jerk_proj is None:
             raise ValueError("defense_cfg.grad_jerk_proj must be provided when score_fn='grad_jerk'")
 
-        per_sample_flat_grads = torch.cat([g.view(g.shape[0], -1) for g in ps_grads_clipped.values()], dim=1)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         proj = defense_cfg.grad_jerk_proj.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         embeds = per_sample_flat_grads @ proj
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)
@@ -750,7 +754,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             last_sample_local_idx = None
         
         # Compute per-block gradients with clipping
-        accum_grad_block, _, last_layer_norms, dir_embeds_block = clip_and_accum_grads_block(
+        accum_grad_block, _, score_aux_block, dir_embeds_block = clip_and_accum_grads_block(
             model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
             device=device, aug_mult=aug_mult, aug_fn=aug_fn,
             is_gradient_space_canary=block_contains_canary,
@@ -774,39 +778,71 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                     accum_grad[name] += accum_grad_block[name]
         
         # Update scores for this block
-        if defense_cfg is not None and defense_cfg.score_fn == 'loss_momentum':
-            if defense_cfg.prev_losses is None:
-                raise ValueError("defense_cfg.prev_losses must be provided when score_fn='loss_momentum'")
+        if defense_cfg is not None and defense_cfg.score_fn == 'grad_dir_change_rate':
+            if dir_embeds_block is None:
+                raise RuntimeError("dir_embeds_block must be returned from clip_and_accum_grads_block when score_fn='grad_dir_change_rate'")
 
             curr_idx_np = curr_global_indices.detach().cpu().numpy()
-            curr_losses = last_layer_norms.astype(np.float32, copy=False)
-            prev_losses = defense_cfg.prev_losses[curr_idx_np]
+            curr_dirs = dir_embeds_block.astype(np.float32, copy=False)
 
-            valid_prev = ~np.isnan(prev_losses)
-            momentum = np.zeros_like(curr_losses, dtype=np.float32)
-            momentum[valid_prev] = np.abs(curr_losses[valid_prev] - prev_losses[valid_prev])
+            if defense_cfg.prev_grad_dir is None:
+                defense_cfg.prev_grad_dir = np.full((len(scores), curr_dirs.shape[1]), np.nan, dtype=np.float32)
 
-            scores[curr_idx_np] = momentum
-            defense_cfg.prev_losses[curr_idx_np] = curr_losses
-        elif defense_cfg is not None and defense_cfg.score_fn == 'loss_volatility':
-            if defense_cfg.loss_hist is None or defense_cfg.loss_hist_pos is None:
-                raise ValueError("defense_cfg.loss_hist and defense_cfg.loss_hist_pos must be provided when score_fn='loss_volatility'")
+            if defense_cfg.prev_grad_dir.shape[1] != curr_dirs.shape[1]:
+                raise ValueError(
+                    f"defense_cfg.prev_grad_dir has shape {defense_cfg.prev_grad_dir.shape}, expected second dim == {curr_dirs.shape[1]}"
+                )
 
-            k = int(defense_cfg.loss_volatility_k)
+            prev_dirs = defense_cfg.prev_grad_dir[curr_idx_np]
+            valid = ~np.isnan(prev_dirs).any(axis=1)
+            cos = np.sum(curr_dirs * prev_dirs, axis=1)
+            # Clip cosine to [-1, 1] to handle numerical precision issues
+            cos = np.clip(cos, -1.0, 1.0)
+
+            score = np.zeros((curr_dirs.shape[0],), dtype=np.float32)
+            score[valid] = (1.0 - cos[valid]).astype(np.float32, copy=False)
+            scores[curr_idx_np] = score
+
+            defense_cfg.prev_grad_dir[curr_idx_np] = curr_dirs
+
+        elif defense_cfg is not None and defense_cfg.score_fn == 'gradient_scatter':
+            if dir_embeds_block is None:
+                raise RuntimeError("dir_embeds_block must be returned from clip_and_accum_grads_block when score_fn='gradient_scatter'")
+
+            curr_idx_np = curr_global_indices.detach().cpu().numpy()
+            curr_grads = dir_embeds_block.astype(np.float32, copy=False)
+            k = int(defense_cfg.grad_scatter_k)
             if k <= 0:
-                raise ValueError(f"loss_volatility_k must be > 0, got {k}")
-            if defense_cfg.loss_hist.shape[1] != k:
-                raise ValueError(f"defense_cfg.loss_hist has shape {defense_cfg.loss_hist.shape}, expected second dim == {k}")
+                raise ValueError(f"grad_scatter_k must be > 0, got {k}")
 
-            curr_idx_np = curr_global_indices.detach().cpu().numpy()
-            curr_losses = last_layer_norms.astype(np.float32, copy=False)
+            if defense_cfg.grad_scatter_hist is None or defense_cfg.grad_scatter_hist_pos is None:
+                defense_cfg.grad_scatter_hist = np.full((len(scores), k, curr_grads.shape[1]), np.nan, dtype=np.float32)
+                defense_cfg.grad_scatter_hist_pos = np.zeros((len(scores),), dtype=np.int32)
 
-            pos = defense_cfg.loss_hist_pos[curr_idx_np].astype(np.int64, copy=False)
-            defense_cfg.loss_hist[curr_idx_np, pos] = curr_losses
-            defense_cfg.loss_hist_pos[curr_idx_np] = (pos + 1) % k
+            if defense_cfg.grad_scatter_hist.shape[1] != k or defense_cfg.grad_scatter_hist.shape[2] != curr_grads.shape[1]:
+                raise ValueError(
+                    f"defense_cfg.grad_scatter_hist has shape {defense_cfg.grad_scatter_hist.shape}, expected (_, {k}, {curr_grads.shape[1]})"
+                )
 
-            volatility = np.nanstd(defense_cfg.loss_hist[curr_idx_np], axis=1).astype(np.float32, copy=False)
-            scores[curr_idx_np] = volatility
+            scatter_scores = np.zeros((curr_grads.shape[0],), dtype=np.float32)
+            for bi, gi in enumerate(curr_idx_np):
+                pos = int(defense_cfg.grad_scatter_hist_pos[gi])
+                defense_cfg.grad_scatter_hist[gi, pos, :] = curr_grads[bi]
+                defense_cfg.grad_scatter_hist_pos[gi] = (pos + 1) % k
+
+                recent = defense_cfg.grad_scatter_hist[gi]
+                valid = ~np.isnan(recent).any(axis=1)
+                if not np.any(valid):
+                    scatter_scores[bi] = 0.0
+                    continue
+
+                recent_valid = recent[valid]
+                centroid = recent_valid.mean(axis=0)
+                diffs = recent_valid - centroid
+                scatter_scores[bi] = np.mean(np.sum(diffs * diffs, axis=1), dtype=np.float32)
+
+            scores[curr_idx_np] = scatter_scores
+
         elif defense_cfg is not None and defense_cfg.score_fn == 'grad_norm_percentile':
             if defense_cfg.grad_norm_hist is None or defense_cfg.grad_norm_hist_pos is None:
                 raise ValueError("defense_cfg.grad_norm_hist and defense_cfg.grad_norm_hist_pos must be provided when score_fn='grad_norm_percentile'")
@@ -818,7 +854,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                 raise ValueError(f"defense_cfg.grad_norm_hist has shape {defense_cfg.grad_norm_hist.shape}, expected second dim == {k}")
 
             curr_idx_np = curr_global_indices.detach().cpu().numpy()
-            curr_norms = last_layer_norms.astype(np.float32, copy=False)
+            curr_norms = score_aux_block.astype(np.float32, copy=False)
 
             hist = defense_cfg.grad_norm_hist[curr_idx_np]
             valid = ~np.isnan(hist)
@@ -848,6 +884,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
             curr_idx_np = curr_global_indices.detach().cpu().numpy()
             curr_dirs = dir_embeds_block.astype(np.float32, copy=False)
+            
+            if defense_cfg.grad_dir_hist.shape[2] != curr_dirs.shape[1]:
+                raise ValueError(
+                    f"defense_cfg.grad_dir_hist has shape {defense_cfg.grad_dir_hist.shape}, expected third dim == {curr_dirs.shape[1]}"
+                )
 
             hist = defense_cfg.grad_dir_hist[curr_idx_np]
             valid = ~np.isnan(hist[..., 0])
@@ -875,6 +916,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
             curr_idx_np = curr_global_indices.detach().cpu().numpy()
             curr_embeds = dir_embeds_block.astype(np.float32, copy=False)
+            
+            if defense_cfg.grad_accel_hist.shape[2] != curr_embeds.shape[1]:
+                raise ValueError(
+                    f"defense_cfg.grad_accel_hist has shape {defense_cfg.grad_accel_hist.shape}, expected third dim == {curr_embeds.shape[1]}"
+                )
 
             hist = defense_cfg.grad_accel_hist[curr_idx_np]
             pos = defense_cfg.grad_accel_hist_pos[curr_idx_np].astype(np.int64, copy=False)
@@ -897,6 +943,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
             curr_idx_np = curr_global_indices.detach().cpu().numpy()
             curr_embeds = dir_embeds_block.astype(np.float32, copy=False)
+            
+            if defense_cfg.grad_jerk_hist.shape[2] != curr_embeds.shape[1]:
+                raise ValueError(
+                    f"defense_cfg.grad_jerk_hist has shape {defense_cfg.grad_jerk_hist.shape}, expected third dim == {curr_embeds.shape[1]}"
+                )
 
             hist = defense_cfg.grad_jerk_hist[curr_idx_np]
             pos = defense_cfg.grad_jerk_hist_pos[curr_idx_np].astype(np.int64, copy=False)
@@ -922,9 +973,13 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             curr_dirs = dir_embeds_block.astype(np.float32, copy=False)
 
             # Magnitude of clipped per-sample gradients (computed in clip_and_accum_grads_block)
-            magnitude = last_layer_norms.astype(np.float32, copy=False)
+            magnitude = score_aux_block.astype(np.float32, copy=False)
 
             k = int(defense_cfg.dir_unique_k)
+            if defense_cfg.dir_unique_hist.shape[2] != curr_dirs.shape[1]:
+                raise ValueError(
+                    f"defense_cfg.dir_unique_hist has shape {defense_cfg.dir_unique_hist.shape}, expected third dim == {curr_dirs.shape[1]}"
+                )
             hist = defense_cfg.dir_unique_hist[curr_idx_np]
             pos = defense_cfg.dir_unique_hist_pos[curr_idx_np].astype(np.int64, copy=False)
 
@@ -951,7 +1006,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
             defense_cfg.dir_unique_hist[curr_idx_np, pos, :] = curr_dirs
             defense_cfg.dir_unique_hist_pos[curr_idx_np] = (pos + 1) % k
         else:
-            scores[curr_global_indices.cpu().numpy()] = last_layer_norms
+            scores[curr_global_indices.cpu().numpy()] = score_aux_block
 
     if accum_grad is not None and batch_size_in > 0:
         with torch.no_grad():
