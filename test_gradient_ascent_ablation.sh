@@ -218,7 +218,7 @@ torchrun --nproc_per_node=1 parallel_audit_model.py \
     --epsilon 6.0 \
     --delta $DELTA \
     --target_type $TARGET_TYPE \
-    --batch_size 100 \
+    --batch_size 10 \
     --block_size 10 \
     --seed 0 \
     --aug_mult 1 \
