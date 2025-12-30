@@ -417,7 +417,9 @@ def train_model_multi_canary(
     alignment_proj_mat = None
 
     for epoch in range(int(n_epochs)):
+        epoch_start = time.time()
         optimizer.zero_grad()
+        print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for _, (curr_X, curr_y, global_indices) in enumerate(loader):
             curr_X = curr_X.to(dev, non_blocking=True)
@@ -615,11 +617,17 @@ def train_model_multi_canary(
                 prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
                 prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
 
+        epoch_time = time.time() - epoch_start
+        print(f" | Time: {epoch_time:.2f}s")
+
         # Defense marking happens at epoch end
         if defense:
             k = int(defense_k)
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
+
+            # Track how many samples were dropped before this epoch
+            n_dropped_before = int((drop_mask == 1).sum())
 
             for cls in unique_classes:
                 cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
@@ -630,6 +638,24 @@ def train_model_multi_canary(
                 topk_global_indices = cls_indices[topk_indices]
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
+
+            # Check how many samples were dropped in this epoch
+            n_dropped_after = int((drop_mask == 1).sum())
+            n_newly_dropped = n_dropped_after - n_dropped_before
+            
+            if n_newly_dropped > 0:
+                # Check if any canaries were dropped
+                if canary_indices_np is not None:
+                    newly_dropped_canaries = np.intersect1d(
+                        np.where(drop_mask == 1)[0], 
+                        canary_indices_np
+                    )
+                    n_canaries_dropped_total = len(newly_dropped_canaries)
+                    canary_fraction = n_canaries_dropped_total / len(canary_indices_np) if len(canary_indices_np) > 0 else 0
+                    
+                    print(f"  [Defense] Filtered out {n_newly_dropped} samples (including {n_canaries_dropped_total} canaries, {canary_fraction:.1%} of total canaries)")
+                else:
+                    print(f"  [Defense] Filtered out {n_newly_dropped} samples")
 
             scores.fill(0)
 
@@ -675,6 +701,8 @@ def main():
     parser.add_argument('--defense_apply_ascent', action='store_true', default=True)
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'])
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm')
+    
+    parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
 
     args = parser.parse_args()
 
@@ -792,7 +820,7 @@ def main():
 
     # Train models and collect max canary scores
     n_reps_half = int(args.n_reps) // 2
-    worlds = ['out', 'in']
+    worlds = [args.fit_world_only] if args.fit_world_only else ['out', 'in']
 
     scores = {'out': [], 'in': []}
 
@@ -845,20 +873,27 @@ def main():
     scores_in = np.asarray(scores['in'], dtype=np.float32)
     scores_out = np.asarray(scores['out'], dtype=np.float32)
 
-    emp_eps, threshold, mia_scores, mia_labels = _audit_from_scores(
-        scores_in,
-        scores_out,
-        float(args.alpha),
-        float(args.delta),
-        bool(args.holdout_audit),
-    )
+    # Save scores based on fit_world_only
+    if args.fit_world_only:
+        np.save(os.path.join(out_folder, f'scores_{args.fit_world_only}.npy'), 
+                scores_in if args.fit_world_only == 'in' else scores_out)
+        print(f"\nSaved scores for world '{args.fit_world_only}' only")
+        emp_eps, threshold, mia_scores, mia_labels = None, None, None, None
+    else:
+        emp_eps, threshold, mia_scores, mia_labels = _audit_from_scores(
+            scores_in,
+            scores_out,
+            float(args.alpha),
+            float(args.delta),
+            bool(args.holdout_audit),
+        )
 
-    np.save(os.path.join(out_folder, 'scores_in.npy'), scores_in)
-    np.save(os.path.join(out_folder, 'scores_out.npy'), scores_out)
-    np.save(os.path.join(out_folder, 'emp_eps_loss.npy'), np.asarray(emp_eps, dtype=np.float32))
-    np.save(os.path.join(out_folder, 'mia_threshold.npy'), np.asarray(threshold, dtype=np.float32))
-    np.save(os.path.join(out_folder, 'mia_scores.npy'), mia_scores)
-    np.save(os.path.join(out_folder, 'mia_labels.npy'), mia_labels)
+        np.save(os.path.join(out_folder, 'scores_in.npy'), scores_in)
+        np.save(os.path.join(out_folder, 'scores_out.npy'), scores_out)
+        np.save(os.path.join(out_folder, 'emp_eps_loss.npy'), np.asarray(emp_eps, dtype=np.float32))
+        np.save(os.path.join(out_folder, 'mia_threshold.npy'), np.asarray(threshold, dtype=np.float32))
+        np.save(os.path.join(out_folder, 'mia_scores.npy'), mia_scores)
+        np.save(os.path.join(out_folder, 'mia_labels.npy'), mia_labels)
 
     dill.dump(
         {
@@ -887,9 +922,12 @@ def main():
         open(os.path.join(out_folder, 'meta.dill'), 'wb'),
     )
 
-    print(f"\nAUDIT RESULTS")
-    print(f"Theoretical epsilon: {args.epsilon}")
-    print(f"Empirical epsilon: {emp_eps}")
+    if not args.fit_world_only:
+        print(f"\nAUDIT RESULTS")
+        print(f"Theoretical epsilon: {args.epsilon}")
+        print(f"Empirical epsilon: {emp_eps}")
+    else:
+        print(f"\nFit world '{args.fit_world_only}' only - no audit performed")
 
 
 if __name__ == '__main__':
