@@ -208,7 +208,7 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5, num_workers: int = 4, persistent_workers: bool = True, return_defense_state: bool = False):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, defense_filter_every: int = 1, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5, num_workers: int = 4, persistent_workers: bool = True, return_defense_state: bool = False):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -551,8 +551,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
         
-        # Defense operations
-        if defense:
+        # Defense operations - only apply filtering every defense_filter_every epochs
+        if defense and (epoch % defense_filter_every == 0):
             k = int(defense_k)
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
@@ -698,39 +698,37 @@ def distribute_reps(n_reps, world_size):
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     
-    # # Get rank info from environment (but won't use NCCL/distributed ops)
-    # local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    # rank = int(os.environ.get('RANK', 0))
-    # world_size = int(os.environ.get('WORLD_SIZE', 1))
-    
-    # print(f'[Rank {rank}] Starting with world_size={world_size}, local_rank={local_rank}')
-    
-    # # Set device for this process - NO distributed initialization
-    # if torch.cuda.is_available():
-    #     device = torch.device(f'cuda:{local_rank}')
-    #     torch.cuda.set_device(device)
-    #     print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
-    # else:
-    #     device = torch.device('cpu')
-    #     print(f'[Rank {rank}] CUDA not available, using CPU')
-
-
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://'
-    )
-    
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    rank = int(os.environ.get('RANK', 0))
-    world_size = int(os.environ.get('WORLD_SIZE', 1))
-    
-    if torch.cuda.is_available():
-        device = torch.device(f'cuda:{local_rank}')
-        torch.cuda.set_device(device)
-        print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
+    # Check if running under torchrun (distributed mode)
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://'
+        )
+        
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        rank = int(os.environ.get('RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        
+        if torch.cuda.is_available():
+            device = torch.device(f'cuda:{local_rank}')
+            torch.cuda.set_device(device)
+            print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
+        else:
+            device = torch.device('cpu')
+            print(f'[Rank {rank}] CUDA not available, using CPU')
     else:
-        device = torch.device('cpu')
-        print(f'[Rank {rank}] CUDA not available, using CPU')
+        # Single GPU mode (no distributed training)
+        local_rank = 0
+        rank = 0
+        world_size = 1
+        
+        if torch.cuda.is_available():
+            device = torch.device('cuda:0')
+            torch.cuda.set_device(device)
+            print(f'Single GPU mode - Using device: {torch.cuda.get_device_name(0)}')
+        else:
+            device = torch.device('cpu')
+            print(f'Single GPU mode - Using CPU')
     
     # Parse arguments
     parser.add_argument('--local_rank', type=int, default=0,
@@ -771,6 +769,7 @@ def main():
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
     parser.add_argument('--defense_k', type=int, default=5, help='number of samples dropped per class per epoch when defense is enabled')
     parser.add_argument('--defense_apply_ascent', action='store_true', default=True, help='apply gradient ascent to high-scoring samples (default: True when defense is enabled)')
+    parser.add_argument('--defense_filter_every', type=int, default=1, help='apply defense filtering every N epochs (default: 1, i.e., every epoch)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0'], help='score function used for defense (grad_norm, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, inv_confidence, prediction_margin, pred_entropy, cos_update, or cos_theta0)')
@@ -1093,6 +1092,7 @@ def main():
                 out_dim=out_dim, 
                 defense=args.defense,
                 defense_k=int(args.defense_k),
+                defense_filter_every=int(args.defense_filter_every),
                 aug_mult=args.aug_mult,
                 gradient_space_audit=(args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in'),
                 crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in') else None,
@@ -1178,10 +1178,12 @@ def main():
         # After all reps in this world
         outputs[world] = np.array(outputs[world])
 
-    if torch.cuda.is_available():
-        dist.barrier(device_ids=[local_rank])
-    else:
-        dist.barrier()
+    # Synchronize only in distributed mode
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        if torch.cuda.is_available():
+            dist.barrier(device_ids=[local_rank])
+        else:
+            dist.barrier()
 
     # Final audit - only rank 0 needs to combine results from all ranks
     if rank == 0:
@@ -1289,7 +1291,9 @@ def main():
     
     print(f"[Rank {rank}] Finished!")
 
-    dist.destroy_process_group()
+    # Only destroy process group if we initialized it (distributed mode)
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
