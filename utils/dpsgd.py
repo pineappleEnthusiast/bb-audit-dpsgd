@@ -241,6 +241,9 @@ def _flatten_per_sample_grads(ps_grads):
     For regular models: gradients have shape (B, ...) -> flatten to (B, D)
     For sequence models (LSTM): gradients have shape (B, T, ...) -> average over T, then flatten to (B, D)
     
+    Note: CNN conv layer gradients have shape (B, C_out, C_in, H, W) which should NOT be averaged.
+    Only LSTM/RNN gradients with explicit sequence dimension should be averaged.
+    
     Args:
         ps_grads: dict of {param_name: gradient_tensor}
     
@@ -248,17 +251,70 @@ def _flatten_per_sample_grads(ps_grads):
         Tensor of shape (B, D) where D is the total flattened gradient dimension
     """
     flattened_grads = []
-    for g in ps_grads.values():
-        if g.ndim >= 3:
+    for name, g in ps_grads.items():
+        # Only average over sequence dimension for LSTM/RNN parameters
+        # LSTM parameters typically have 'lstm' or 'rnn' in their name
+        # and their gradients have shape (B, T, ...)
+        if g.ndim >= 3 and ('lstm' in name.lower() or 'rnn' in name.lower()):
             # Sequence model: (B, T, ...) -> average over sequence dimension, then flatten
             # This gives us a per-sample gradient by averaging over the sequence
             g_avg = g.mean(dim=1)  # (B, T, ...) -> (B, ...)
             flattened_grads.append(g_avg.reshape(g.shape[0], -1))
         else:
-            # Regular model: (B, ...) -> flatten
+            # Regular model (including CNN): (B, ...) -> flatten
             flattened_grads.append(g.reshape(g.shape[0], -1))
     
     return torch.cat(flattened_grads, dim=1)
+
+
+def _get_flattened_param_shape(ps_grads):
+    """
+    Get the shape that parameters should be flattened to, matching gradient flattening.
+    This is needed because sequence model gradients are averaged over time dimension.
+    
+    Args:
+        ps_grads: dict of {param_name: gradient_tensor} - used to determine which params have time dimension
+    
+    Returns:
+        List of (param_name, flattened_size) tuples
+    """
+    param_shapes = []
+    for name, g in ps_grads.items():
+        if g.ndim >= 3:
+            # Sequence model gradient: (B, T, ...) -> after averaging becomes (B, ...)
+            # So parameter should be flattened to size of (...)
+            flat_size = g.shape[2:].numel() if len(g.shape) > 2 else g.shape[1]
+        else:
+            # Regular model: (B, ...) -> parameter flattened to size of (...)
+            flat_size = g.shape[1:].numel() if len(g.shape) > 1 else 1
+        param_shapes.append((name, flat_size))
+    return param_shapes
+
+
+def _flatten_param_diff_like_grads(param_diff_dict, ps_grads):
+    """
+    Flatten parameter differences in the same way as gradients.
+    This ensures dimensional compatibility when comparing param diffs with gradients.
+    
+    Args:
+        param_diff_dict: dict of {param_name: parameter_difference_tensor}
+        ps_grads: dict of {param_name: gradient_tensor} - used to determine flattening strategy
+    
+    Returns:
+        Flattened tensor of shape (D,) where D matches _flatten_per_sample_grads output
+    """
+    flattened = []
+    for name in ps_grads.keys():
+        if name not in param_diff_dict:
+            continue
+        param_diff = param_diff_dict[name]
+        
+        # For LSTM/RNN parameters, we don't need special handling since parameter
+        # differences don't have batch or time dimensions - they're just parameter tensors
+        # Just flatten everything
+        flattened.append(param_diff.reshape(-1))
+    
+    return torch.cat(flattened, dim=0)
 
 
 def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseConfig, ps_losses=None, ps_logits=None):
@@ -284,10 +340,12 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
 
     if score_fn == 'cos_update':
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
-        delta_theta = defense_cfg.delta_theta
-        if delta_theta is None:
+        delta_theta_dict = defense_cfg.delta_theta
+        if delta_theta_dict is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
+        # Flatten delta_theta in the same way as gradients
+        delta_theta = _flatten_param_diff_like_grads(delta_theta_dict, ps_grads_clipped)
         delta_theta = delta_theta.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         delta_norm = delta_theta.norm(2)
         if float(delta_norm) < 1e-8:
@@ -299,10 +357,12 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
 
     if score_fn == 'cos_theta0':
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
-        theta_t_minus_theta0 = defense_cfg.theta_t_minus_theta0
-        if theta_t_minus_theta0 is None:
+        theta_t_minus_theta0_dict = defense_cfg.theta_t_minus_theta0
+        if theta_t_minus_theta0_dict is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
+        # Flatten theta_t_minus_theta0 in the same way as gradients
+        theta_t_minus_theta0 = _flatten_param_diff_like_grads(theta_t_minus_theta0_dict, ps_grads_clipped)
         theta_t_minus_theta0 = theta_t_minus_theta0.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         delta_norm = theta_t_minus_theta0.norm(2)
         if float(delta_norm) < 1e-8:
@@ -429,10 +489,12 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
 
     if score_fn == 'norm_x_trajectory_orth':
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
-        theta_t_minus_theta0 = defense_cfg.theta_t_minus_theta0
-        if theta_t_minus_theta0 is None:
+        theta_t_minus_theta0_dict = defense_cfg.theta_t_minus_theta0
+        if theta_t_minus_theta0_dict is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
         
+        # Flatten theta_t_minus_theta0 in the same way as gradients
+        theta_t_minus_theta0 = _flatten_param_diff_like_grads(theta_t_minus_theta0_dict, ps_grads_clipped)
         theta_t_minus_theta0 = theta_t_minus_theta0.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         trajectory_norm = theta_t_minus_theta0.norm(2)
         # Use threshold instead of exact zero check to catch near-zero trajectories
@@ -463,10 +525,14 @@ def get_per_sample_grad_norms(per_sample_grads):
     
     For regular models: gradients have shape (B, ...) -> compute norm over all dims except batch
     For sequence models (LSTM): gradients have shape (B, T, ...) -> average over T first, then compute norm
+    
+    Note: CNN conv layer gradients have shape (B, C_out, C_in, H, W) which should NOT be averaged.
+    Only LSTM/RNN gradients with explicit sequence dimension should be averaged.
     """
     norms_per_param = []
-    for curr_grad in per_sample_grads.values():
-        if curr_grad.ndim >= 3:
+    for name, curr_grad in per_sample_grads.items():
+        # Only average over sequence dimension for LSTM/RNN parameters
+        if curr_grad.ndim >= 3 and ('lstm' in name.lower() or 'rnn' in name.lower()):
             # Sequence model: average over sequence dimension first
             curr_grad = curr_grad.mean(dim=1)  # (B, T, ...) -> (B, ...)
         # Flatten and compute norm for this parameter

@@ -386,12 +386,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
             curr_params = {n: p.detach() for n, p in model.named_parameters()}
             if prev_params is not None:
-                prev_delta_theta = torch.cat([(curr_params[n] - prev_params[n]).reshape(-1) for n in prev_params.keys()], dim=0)
+                prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
             else:
                 prev_delta_theta = None
 
             if theta0_params is not None:
-                theta_t_minus_theta0 = torch.cat([(curr_params[n] - theta0_params[n]).reshape(-1) for n in theta0_params.keys()], dim=0)
+                theta_t_minus_theta0 = {n: curr_params[n] - theta0_params[n] for n in theta0_params.keys()}
             else:
                 theta_t_minus_theta0 = None
 
@@ -494,7 +494,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
             if defense_score_fn == 'cos_update' and prev_params is not None:
                 curr_params = {n: p.detach() for n, p in model.named_parameters()}
-                prev_delta_theta = torch.cat([(curr_params[n] - prev_params[n]).reshape(-1) for n in prev_params.keys()], dim=0)
+                prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
                 prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
         
         epoch_time = time.time() - epoch_start
