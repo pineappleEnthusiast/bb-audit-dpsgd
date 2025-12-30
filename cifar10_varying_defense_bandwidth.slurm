@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -J cifar10_varying_k
-#SBATCH -o cifar10_varying_k_%A_%a.o
-#SBATCH -e cifar10_varying_k_%A_%a.e
+#SBATCH -o status/cifar10_varying_k_%A_%a.o
+#SBATCH -e status/cifar10_varying_k_%A_%a.e
 #SBATCH -p gh
 #SBATCH -N 20
 #SBATCH -n 20
@@ -55,7 +55,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c "
     --model_name cnn \
     --n_reps 400 \
     --n_epochs 100 \
-    --lr 0.5 \
+    --lr 3 \
     --max_grad_norm 1 \
     --epsilon 10.0 \
     --delta 1e-5 \
