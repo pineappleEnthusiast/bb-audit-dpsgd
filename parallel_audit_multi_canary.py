@@ -626,8 +626,8 @@ def train_model_multi_canary(
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
 
-            # Track how many samples were dropped before this epoch
-            n_dropped_before = int((drop_mask == 1).sum())
+            # Track how many samples are marked before this epoch's filtering
+            n_marked_before = int((drop_mask == 1).sum())
 
             for cls in unique_classes:
                 cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
@@ -639,23 +639,27 @@ def train_model_multi_canary(
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
 
-            # Check how many samples were dropped in this epoch
-            n_dropped_after = int((drop_mask == 1).sum())
-            n_newly_dropped = n_dropped_after - n_dropped_before
+            # Check how many samples were newly marked in this epoch
+            n_marked_after = int((drop_mask == 1).sum())
+            n_newly_marked = n_marked_after - n_marked_before
             
-            if n_newly_dropped > 0:
-                # Check if any canaries were dropped
+            if n_newly_marked > 0:
                 if canary_indices_np is not None:
-                    newly_dropped_canaries = np.intersect1d(
-                        np.where(drop_mask == 1)[0], 
-                        canary_indices_np
-                    )
-                    n_canaries_dropped_total = len(newly_dropped_canaries)
-                    canary_fraction = n_canaries_dropped_total / len(canary_indices_np) if len(canary_indices_np) > 0 else 0
+                    # Check which canaries were newly marked in this epoch
+                    newly_marked_indices = np.where(drop_mask == 1)[0]
+                    newly_marked_canaries = np.intersect1d(newly_marked_indices, canary_indices_np)
+                    n_canaries_marked_this_epoch = len(newly_marked_canaries)
                     
-                    print(f"  [Defense] Filtered out {n_newly_dropped} samples (including {n_canaries_dropped_total} canaries, {canary_fraction:.1%} of total canaries)")
+                    # Count total canaries that have been marked or dropped (drop_mask >= 1)
+                    total_canaries_filtered = np.sum(np.isin(canary_indices_np, np.where(drop_mask >= 1)[0]))
+                    canary_fraction = total_canaries_filtered / len(canary_indices_np) if len(canary_indices_np) > 0 else 0
+                    
+                    if n_canaries_marked_this_epoch > 0:
+                        print(f"  [Defense] Marked {n_newly_marked} samples for filtering (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
+                    else:
+                        print(f"  [Defense] Marked {n_newly_marked} samples for filtering ({canary_fraction:.1%} of canaries filtered so far)")
                 else:
-                    print(f"  [Defense] Filtered out {n_newly_dropped} samples")
+                    print(f"  [Defense] Marked {n_newly_marked} samples for filtering")
 
             scores.fill(0)
 
