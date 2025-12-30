@@ -462,7 +462,10 @@ def main():
     print(f"Using device: {device}")
 
     # Load dataset
-    X, y, out_dim = load_data(args.data_name, args.n_df, split='train')
+    if args.n_df == 1:
+        X, y, out_dim = load_data(args.data_name, 1, split='train')
+    else:
+        X, y, out_dim = load_data(args.data_name, args.n_df - 1, split='train')
     y = y.long()
 
     n = len(X)
