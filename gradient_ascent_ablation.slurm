@@ -2,17 +2,20 @@
 #SBATCH -J grad_ascent_ablation
 #SBATCH -o status/grad_ascent_ablation_%A_%a.o
 #SBATCH -e status/grad_ascent_ablation_%A_%a.e
-#SBATCH -p gpu-a100
+#SBATCH -p gh
 #SBATCH -N 20
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 10:00:00
+#SBATCH -t 4:00:00
 #SBATCH -A ASC25081
 #SBATCH --array=0-8
 
-module load cuda/12.0
-module load nccl
-source ~/miniconda3/etc/profile.d/conda.sh
+module load cuda/12.4
+
+set -e
+cd $SCRATCH
+eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
+cd bb-audit-dpsgd
 
 # Common hyperparameters
 N_REPS=400
