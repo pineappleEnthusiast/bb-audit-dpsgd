@@ -148,6 +148,7 @@ def compute_per_sample_inverse_confidence_from_logits(logits):
 
 def compute_per_sample_prediction_margin_from_logits(logits, y):
     # Handle both classification (B, C) and sequence modeling (B, T, C)
+    # Returns INVERTED margin: high scores = uncertain samples (small margin)
     if logits.ndim == 3:
         # y: (B, T)
         probs = logits.softmax(dim=-1)
@@ -159,7 +160,8 @@ def compute_per_sample_prediction_margin_from_logits(logits, y):
         max_other = probs.masked_fill(mask, float('-inf')).max(dim=-1).values
 
         margin = p_true - max_other
-        return margin.mean(dim=1)
+        # Invert: high scores for uncertain samples (small margin)
+        return -margin.mean(dim=1)
 
     # logits: (B, C), y: (B,)
     probs = logits.softmax(dim=-1)
@@ -169,7 +171,8 @@ def compute_per_sample_prediction_margin_from_logits(logits, y):
     mask.scatter_(dim=-1, index=y.unsqueeze(-1), value=True)
     max_other = probs.masked_fill(mask, float('-inf')).max(dim=-1).values
 
-    return p_true - max_other
+    # Invert: high scores for uncertain samples (small margin)
+    return -(p_true - max_other)
 
 
 def compute_per_sample_prediction_entropy_from_logits(logits):
@@ -314,10 +317,17 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return (per_sample_flat_grads ** 2).sum(dim=1).to(dtype=torch.float32)
 
     if score_fn == 'rand_proj_var':
-        if defense_cfg.rand_proj_mat is None:
-            raise ValueError("defense_cfg.rand_proj_mat must be provided when score_fn='rand_proj_var'")
-
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        
+        # Create projection matrix lazily based on actual gradient dimensions
+        if defense_cfg.rand_proj_mat is None:
+            flat_dim = per_sample_flat_grads.shape[1]
+            m = defense_cfg.rand_proj_var_m
+            gen = torch.Generator(device='cpu')
+            gen.manual_seed(0)
+            defense_cfg.rand_proj_mat = torch.randn((flat_dim, m), generator=gen, dtype=torch.float32)
+            defense_cfg.rand_proj_mat = defense_cfg.rand_proj_mat / (defense_cfg.rand_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
+        
         proj_mat = defense_cfg.rand_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         projections = per_sample_flat_grads @ proj_mat
         mean_abs = projections.abs().mean(dim=1)
@@ -325,10 +335,17 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return (mean_abs * std).to(dtype=torch.float32)
 
     if score_fn == 'maxmin_proj_ratio':
-        if defense_cfg.maxmin_proj_mat is None:
-            raise ValueError("defense_cfg.maxmin_proj_mat must be provided when score_fn='maxmin_proj_ratio'")
-
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        
+        # Create projection matrix lazily based on actual gradient dimensions
+        if defense_cfg.maxmin_proj_mat is None:
+            flat_dim = per_sample_flat_grads.shape[1]
+            k = defense_cfg.maxmin_proj_k
+            gen = torch.Generator(device='cpu')
+            gen.manual_seed(0)
+            defense_cfg.maxmin_proj_mat = torch.randn((flat_dim, k), generator=gen, dtype=torch.float32)
+            defense_cfg.maxmin_proj_mat = defense_cfg.maxmin_proj_mat / (defense_cfg.maxmin_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
+        
         proj_mat = defense_cfg.maxmin_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         projections = (per_sample_flat_grads @ proj_mat).abs()
         max_proj = projections.max(dim=1).values
@@ -366,10 +383,17 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         raise ValueError(f"Unsupported grad_rank_mode: {mode}")
 
     if score_fn == 'alignment_with_rand_proj':
-        if defense_cfg.alignment_proj_mat is None:
-            raise ValueError("defense_cfg.alignment_proj_mat must be provided when score_fn='alignment_with_rand_proj'")
-
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        
+        # Create projection matrix lazily based on actual gradient dimensions
+        if defense_cfg.alignment_proj_mat is None:
+            flat_dim = per_sample_flat_grads.shape[1]
+            k = defense_cfg.alignment_proj_k
+            gen = torch.Generator(device='cpu')
+            gen.manual_seed(0)
+            defense_cfg.alignment_proj_mat = torch.randn((flat_dim, k), generator=gen, dtype=torch.float32)
+            defense_cfg.alignment_proj_mat = defense_cfg.alignment_proj_mat / (defense_cfg.alignment_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
+        
         proj_mat = defense_cfg.alignment_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         
         grad_norms = per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12
@@ -630,11 +654,17 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
     aux_embeds_block = None
     if defense_cfg is not None and defense_cfg.score_fn in {'grad_dir_volatility', 'norm_x_dir_uniqueness'}:
-        if defense_cfg.grad_dir_proj is None:
-            raise ValueError("defense_cfg.grad_dir_proj must be provided when score_fn='grad_dir_volatility' or 'norm_x_dir_uniqueness'")
-
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
         per_sample_flat_grads = per_sample_flat_grads / (per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12)
+
+        # Create projection matrix lazily based on actual gradient dimensions
+        if defense_cfg.grad_dir_proj is None:
+            flat_dim = per_sample_flat_grads.shape[1]
+            proj_dim = defense_cfg.grad_dir_hist.shape[2] if defense_cfg.grad_dir_hist is not None else 64
+            gen = torch.Generator(device='cpu')
+            gen.manual_seed(0)  # Use consistent seed
+            defense_cfg.grad_dir_proj = torch.randn((flat_dim, proj_dim), generator=gen, dtype=torch.float32)
+            defense_cfg.grad_dir_proj = defense_cfg.grad_dir_proj / (defense_cfg.grad_dir_proj.norm(2, dim=0, keepdim=True) + 1e-12)
 
         proj = defense_cfg.grad_dir_proj.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         embeds = per_sample_flat_grads @ proj
@@ -651,19 +681,33 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         aux_embeds_block = per_sample_flat_grads.detach().cpu().numpy().astype(np.float32, copy=False)
 
     if defense_cfg is not None and defense_cfg.score_fn == 'grad_accel':
-        if defense_cfg.grad_accel_proj is None:
-            raise ValueError("defense_cfg.grad_accel_proj must be provided when score_fn='grad_accel'")
-
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        
+        # Create projection matrix lazily based on actual gradient dimensions
+        if defense_cfg.grad_accel_proj is None:
+            flat_dim = per_sample_flat_grads.shape[1]
+            proj_dim = defense_cfg.grad_accel_hist.shape[2] if defense_cfg.grad_accel_hist is not None else 64
+            gen = torch.Generator(device='cpu')
+            gen.manual_seed(0)
+            defense_cfg.grad_accel_proj = torch.randn((flat_dim, proj_dim), generator=gen, dtype=torch.float32)
+            defense_cfg.grad_accel_proj = defense_cfg.grad_accel_proj / (defense_cfg.grad_accel_proj.norm(2, dim=0, keepdim=True) + 1e-12)
+        
         proj = defense_cfg.grad_accel_proj.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         embeds = per_sample_flat_grads @ proj
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)
 
     if defense_cfg is not None and defense_cfg.score_fn == 'grad_jerk':
-        if defense_cfg.grad_jerk_proj is None:
-            raise ValueError("defense_cfg.grad_jerk_proj must be provided when score_fn='grad_jerk'")
-
         per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        
+        # Create projection matrix lazily based on actual gradient dimensions
+        if defense_cfg.grad_jerk_proj is None:
+            flat_dim = per_sample_flat_grads.shape[1]
+            proj_dim = defense_cfg.grad_jerk_hist.shape[2] if defense_cfg.grad_jerk_hist is not None else 64
+            gen = torch.Generator(device='cpu')
+            gen.manual_seed(0)
+            defense_cfg.grad_jerk_proj = torch.randn((flat_dim, proj_dim), generator=gen, dtype=torch.float32)
+            defense_cfg.grad_jerk_proj = defense_cfg.grad_jerk_proj / (defense_cfg.grad_jerk_proj.norm(2, dim=0, keepdim=True) + 1e-12)
+        
         proj = defense_cfg.grad_jerk_proj.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         embeds = per_sample_flat_grads @ proj
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)

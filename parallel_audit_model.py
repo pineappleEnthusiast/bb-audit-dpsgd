@@ -341,19 +341,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 if k <= 0:
                     raise ValueError(f"grad_dir_volatility_k must be > 0, got {k}")
 
-                # Create a random projection matrix for gradient directions.
-                # We keep it on CPU and let dpsgd move it to the correct device.
-                if grad_dir_proj is None:
-                    with torch.no_grad():
-                        flat_dim = int(sum(p.numel() for p in model.parameters()))
-                        d = int(grad_dir_proj_dim)
-                        if d <= 0:
-                            raise ValueError(f"grad_dir_proj_dim must be > 0, got {d}")
-                        gen = torch.Generator(device='cpu')
-                        gen.manual_seed(int(grad_dir_proj_seed) + int(rank))
-                        grad_dir_proj = torch.randn((flat_dim, d), generator=gen, dtype=torch.float32)
-                        grad_dir_proj = grad_dir_proj / (grad_dir_proj.norm(2, dim=0, keepdim=True) + 1e-12)
-
+                # Note: grad_dir_proj will be created lazily on first batch when we know the actual gradient dimensions
                 grad_dir_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
                 grad_dir_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
@@ -362,81 +350,28 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 if k <= 0:
                     raise ValueError(f"dir_unique_k must be > 0, got {k}")
 
-                # Reuse the grad_dir_proj machinery for a direction embedding.
-                if grad_dir_proj is None:
-                    with torch.no_grad():
-                        flat_dim = int(sum(p.numel() for p in model.parameters()))
-                        d = int(grad_dir_proj_dim)
-                        if d <= 0:
-                            raise ValueError(f"grad_dir_proj_dim must be > 0, got {d}")
-                        gen = torch.Generator(device='cpu')
-                        gen.manual_seed(int(grad_dir_proj_seed) + int(rank))
-                        grad_dir_proj = torch.randn((flat_dim, d), generator=gen, dtype=torch.float32)
-                        grad_dir_proj = grad_dir_proj / (grad_dir_proj.norm(2, dim=0, keepdim=True) + 1e-12)
-
+                # Note: grad_dir_proj will be created lazily on first batch
                 dir_unique_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
                 dir_unique_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
             if defense_score_fn == 'rand_proj_var' and rand_proj_mat is None:
-                with torch.no_grad():
-                    flat_dim = int(sum(p.numel() for p in model.parameters()))
-                    m = int(rand_proj_var_m)
-                    if m <= 0:
-                        raise ValueError(f"rand_proj_var_m must be > 0, got {m}")
-                    gen = torch.Generator(device='cpu')
-                    gen.manual_seed(int(rand_proj_var_seed) + int(rank))
-                    rand_proj_mat = torch.randn((flat_dim, m), generator=gen, dtype=torch.float32)
-                    rand_proj_mat = rand_proj_mat / (rand_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
+                pass  # Will be created in dpsgd.py
 
             if defense_score_fn == 'maxmin_proj_ratio' and maxmin_proj_mat is None:
-                with torch.no_grad():
-                    flat_dim = int(sum(p.numel() for p in model.parameters()))
-                    k = int(maxmin_proj_k)
-                    if k <= 0:
-                        raise ValueError(f"maxmin_proj_k must be > 0, got {k}")
-                    gen = torch.Generator(device='cpu')
-                    gen.manual_seed(int(maxmin_proj_seed) + int(rank))
-                    maxmin_proj_mat = torch.randn((flat_dim, k), generator=gen, dtype=torch.float32)
-                    maxmin_proj_mat = maxmin_proj_mat / (maxmin_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
+                pass  # Will be created in dpsgd.py
 
             if defense_score_fn == 'alignment_with_rand_proj' and alignment_proj_mat is None:
-                with torch.no_grad():
-                    flat_dim = int(sum(p.numel() for p in model.parameters()))
-                    k = int(alignment_proj_k)
-                    if k <= 0:
-                        raise ValueError(f"alignment_proj_k must be > 0, got {k}")
-                    gen = torch.Generator(device='cpu')
-                    gen.manual_seed(int(alignment_proj_seed) + int(rank))
-                    alignment_proj_mat = torch.randn((flat_dim, k), generator=gen, dtype=torch.float32)
-                    alignment_proj_mat = alignment_proj_mat / (alignment_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
+                pass  # Will be created in dpsgd.py
 
             if defense_score_fn == 'grad_accel' and grad_accel_hist is None:
                 # Keep a 3-step history for discrete second difference.
-                with torch.no_grad():
-                    flat_dim = int(sum(p.numel() for p in model.parameters()))
-                    d = int(grad_accel_proj_dim)
-                    if d <= 0:
-                        raise ValueError(f"grad_accel_proj_dim must be > 0, got {d}")
-                    gen = torch.Generator(device='cpu')
-                    gen.manual_seed(int(grad_accel_proj_seed) + int(rank))
-                    grad_accel_proj = torch.randn((flat_dim, d), generator=gen, dtype=torch.float32)
-                    grad_accel_proj = grad_accel_proj / (grad_accel_proj.norm(2, dim=0, keepdim=True) + 1e-12)
-
+                # Note: grad_accel_proj will be created lazily on first batch
                 grad_accel_hist = np.full((len(dataset), 3, int(grad_accel_proj_dim)), np.nan, dtype=np.float32)
                 grad_accel_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
             if defense_score_fn == 'grad_jerk' and grad_jerk_hist is None:
                 # Keep a 4-step history for discrete third difference.
-                with torch.no_grad():
-                    flat_dim = int(sum(p.numel() for p in model.parameters()))
-                    d = int(grad_jerk_proj_dim)
-                    if d <= 0:
-                        raise ValueError(f"grad_jerk_proj_dim must be > 0, got {d}")
-                    gen = torch.Generator(device='cpu')
-                    gen.manual_seed(int(grad_jerk_proj_seed) + int(rank))
-                    grad_jerk_proj = torch.randn((flat_dim, d), generator=gen, dtype=torch.float32)
-                    grad_jerk_proj = grad_jerk_proj / (grad_jerk_proj.norm(2, dim=0, keepdim=True) + 1e-12)
-
+                # Note: grad_jerk_proj will be created lazily on first batch
                 grad_jerk_hist = np.full((len(dataset), 4, int(grad_jerk_proj_dim)), np.nan, dtype=np.float32)
                 grad_jerk_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
@@ -512,6 +447,20 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=defense_apply_ascent
             )
+            
+            # Update projection matrices if they were lazily created in dpsgd.py
+            if defense_cfg.grad_dir_proj is not None:
+                grad_dir_proj = defense_cfg.grad_dir_proj
+            if defense_cfg.rand_proj_mat is not None:
+                rand_proj_mat = defense_cfg.rand_proj_mat
+            if defense_cfg.maxmin_proj_mat is not None:
+                maxmin_proj_mat = defense_cfg.maxmin_proj_mat
+            if defense_cfg.alignment_proj_mat is not None:
+                alignment_proj_mat = defense_cfg.alignment_proj_mat
+            if defense_cfg.grad_accel_proj is not None:
+                grad_accel_proj = defense_cfg.grad_accel_proj
+            if defense_cfg.grad_jerk_proj is not None:
+                grad_jerk_proj = defense_cfg.grad_jerk_proj
             
             drop_mask[drop_mask == 1] = 2
 
