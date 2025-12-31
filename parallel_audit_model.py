@@ -984,9 +984,6 @@ def main():
     X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
 
-    generator = torch.Generator().manual_seed(0)
-    dl_generator = torch.Generator().manual_seed(1)
-    
     if rank == 0:
         print('Training models')
     
@@ -1023,6 +1020,11 @@ def main():
         # Each rank trains its assigned models
         for rep_idx, rep in enumerate(my_reps):
             print(f"[Rank {rank}] Training rep {rep_idx+1}/{len(my_reps)} (global rep {rep})")
+            
+            # Create unique generators for each repetition
+            # Use rep (global repetition number) to ensure uniqueness across all GPUs
+            generator = torch.Generator().manual_seed(args.seed + rep * 2)
+            dl_generator = torch.Generator().manual_seed(args.seed + rep * 2 + 1)
             
             model = train_model(
                 args.model_name, 
