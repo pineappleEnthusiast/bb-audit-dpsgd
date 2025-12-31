@@ -198,7 +198,8 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
                              n_epochs, lr, batch_size, init_model=None, out_dim=10, 
                              aug_mult=1, defense=False, defense_k=5, device='cuda:0', 
                              defense_score_norm='linf', defense_score_fn='grad_norm',
-                             stop_on_canary_drop=False):
+                             stop_on_canary_drop=False, generator=None, dl_generator=None,
+                             track_canary_threshold=False, canary_label=None):
     """
     Train a model with the defense-aware training loop from parallel_audit_model.py.
     This allows tracking when the canary is dropped.
@@ -235,7 +236,7 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
     else:
         noise_multiplier = 0
     
-    block_size = min(batch_size, batch_size)
+    block_size = batch_size  # Use full batch size for gradient accumulation
     
     if len(X.shape) > 2:
         aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
@@ -245,12 +246,14 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
     # Create Dataset + DataLoader
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset))
-    drop_mask = np.zeros(len(dataset), dtype=bool)
+    # 0 = active, 1 = apply gradient ascent, 2 = inactive (dropped)
+    drop_mask = np.zeros(len(dataset), dtype=np.int8)
     
     sampler = torch.utils.data.RandomSampler(
         dataset,
         replacement=False,
-        num_samples=None
+        num_samples=None,
+        generator=generator
     )
     
     loader = DataLoader(
@@ -259,7 +262,8 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
         sampler=sampler,
         pin_memory=True,
         num_workers=0,
-        drop_last=False
+        drop_last=False,
+        generator=dl_generator
     )
     
     prev_params = None
@@ -274,6 +278,8 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
     grad_dir_hist_pos = None
     grad_dir_proj = None
     canary_drop_epoch = -1  # Track when canary is dropped
+    last_canary_score = None
+    last_canary_threshold = None
     
     for epoch in range(n_epochs):
         epoch_start = time.time()
@@ -304,10 +310,6 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
                 score_norm=defense_score_norm,
                 delta_theta=prev_delta_theta,
                 theta_t_minus_theta0=theta_t_minus_theta0,
-                prev_losses=prev_losses,
-                loss_hist=loss_hist,
-                loss_hist_pos=loss_hist_pos,
-                loss_volatility_k=5,
                 grad_norm_hist=grad_norm_hist,
                 grad_norm_hist_pos=grad_norm_hist_pos,
                 grad_norm_percentile_k=20,
@@ -367,12 +369,15 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
                     
                     grad = curr_accumulated_gradients[name].to(device)
                     
-                    # Add DP noise if needed
+                    # Add DP noise to the sum of clipped gradients (before averaging)
                     if noise_multiplier > 0 and max_grad_norm is not None:
-                        batch_size_in = int(curr_X.shape[0])
-                        noise_std = noise_multiplier * max_grad_norm / float(batch_size_in)
+                        noise_std = noise_multiplier * max_grad_norm
                         noise = noise_std * torch.randn_like(grad)
                         grad.add_(noise)
+                    
+                    # Average the noisy gradient sum
+                    batch_size_in = int(curr_X.shape[0])
+                    grad.div_(float(batch_size_in))
                     
                     if param.grad is None:
                         param.grad = grad.clone()
@@ -394,6 +399,25 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
         if defense:
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
+
+            if track_canary_threshold:
+                if canary_label is None:
+                    raise ValueError("track_canary_threshold=True requires canary_label")
+                cls = int(canary_label)
+                cls_indices = ((y.cpu() == cls) & active_mask).nonzero(as_tuple=True)[0]
+                if len(cls_indices) > 0:
+                    cls_scores_np = scores[cls_indices.cpu().numpy()]
+                    k_eff = min(int(defense_k), int(len(cls_scores_np)))
+                    if k_eff <= 0:
+                        last_canary_threshold = float('inf')
+                    else:
+                        last_canary_threshold = float(np.partition(cls_scores_np, -k_eff)[-k_eff])
+                else:
+                    last_canary_threshold = float('inf')
+
+                canary_idx = int(X.shape[0] - 1)
+                if canary_idx < len(scores):
+                    last_canary_score = float(scores[canary_idx])
             
             for cls in unique_classes:
                 cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
@@ -418,6 +442,8 @@ def train_model_with_defense(model_name, X, y, epsilon, delta, max_grad_norm,
             
             scores.fill(0)
     
+    if track_canary_threshold:
+        return model, canary_drop_epoch, last_canary_score, last_canary_threshold
     return model, canary_drop_epoch
 
 
@@ -486,53 +512,60 @@ def perturb_canary_to_reduce_grad_norm(
     criterion = nn.CrossEntropyLoss()
     
     for iteration in range(n_iterations):
-        # Create fresh model each iteration to avoid hook issues
-        fresh_model = Models[model_name](in_shape, out_dim=out_dim)
-        fresh_model = make_opacus_compatible(fresh_model)
-        fresh_model.load_state_dict(model_state_dict, strict=False)
-        fresh_model.to(device)
-        fresh_model.train()  # Must be in train mode for GradSampleModule hooks
-        
-        grad_model = GradSampleModule(fresh_model)
-        
-        canary.requires_grad = True
-        
-        # Forward pass
-        grad_model.zero_grad()
-        output = grad_model(canary.unsqueeze(0))
-        loss = criterion(output, label_tensor)
-        
-        # Compute per-sample gradient norm
-        loss.backward(create_graph=True)  # Need graph for second derivative
-        
-        grad_norm_sq = torch.tensor(0.0, device=device, requires_grad=True)
-        for param in grad_model.parameters():
-            if hasattr(param, 'grad_sample') and param.grad_sample is not None:
-                grad_norm_sq = grad_norm_sq + (param.grad_sample[0] ** 2).sum()
-        
-        current_grad_norm = torch.sqrt(grad_norm_sq)
-        
-        if verbose and iteration % 5 == 0:
-            print(f"    Iter {iteration}: grad_norm = {current_grad_norm.item():.4f}, target = {target_grad_norm:.4f}")
-        
-        # Check if we've reached target
-        if current_grad_norm.item() <= target_grad_norm:
-            if verbose:
-                print(f"    Reached target at iteration {iteration}")
-            del grad_model, fresh_model
-            break
-        
-        # Compute gradient of grad_norm w.r.t. input
-        grad_of_grad_norm = torch.autograd.grad(current_grad_norm, canary, retain_graph=True)[0]
-        
-        # Update canary to reduce gradient norm
-        with torch.no_grad():
-            # Use sign of gradient (like FGSM) for more stable updates
-            canary = canary - step_size * grad_of_grad_norm.sign()
-            canary = canary.detach()
-        
-        # Clean up
-        del grad_model, fresh_model
+        grad_model = None
+        fresh_model = None
+        try:
+            # Create fresh model each iteration to avoid hook issues
+            fresh_model = Models[model_name](in_shape, out_dim=out_dim)
+            fresh_model = make_opacus_compatible(fresh_model)
+            fresh_model.load_state_dict(model_state_dict, strict=False)
+            fresh_model.to(device)
+            fresh_model.train()  # Must be in train mode for GradSampleModule hooks
+            
+            grad_model = GradSampleModule(fresh_model)
+            
+            canary.requires_grad = True
+            
+            # Forward pass
+            grad_model.zero_grad()
+            output = grad_model(canary.unsqueeze(0))
+            loss = criterion(output, label_tensor)
+            
+            # Compute per-sample gradient norm
+            loss.backward(create_graph=True)  # Need graph for second derivative
+            
+            grad_norm_sq = torch.tensor(0.0, device=device, requires_grad=True)
+            for param in grad_model.parameters():
+                if hasattr(param, 'grad_sample') and param.grad_sample is not None:
+                    grad_norm_sq = grad_norm_sq + (param.grad_sample[0] ** 2).sum()
+            
+            current_grad_norm = torch.sqrt(grad_norm_sq)
+            
+            if verbose and iteration % 5 == 0:
+                print(f"    Iter {iteration}: grad_norm = {current_grad_norm.item():.4f}, target = {target_grad_norm:.4f}")
+            
+            # Check if we've reached target
+            if current_grad_norm.item() <= target_grad_norm:
+                if verbose:
+                    print(f"    Reached target at iteration {iteration}")
+                break
+            
+            # Compute gradient of grad_norm w.r.t. input
+            grad_of_grad_norm = torch.autograd.grad(current_grad_norm, canary, retain_graph=True)[0]
+            
+            # Update canary to reduce gradient norm
+            with torch.no_grad():
+                # Use sign of gradient (like FGSM) for more stable updates
+                canary = canary - step_size * grad_of_grad_norm.sign()
+                canary = canary.detach()
+        finally:
+            # Clean up - always executed even if loop breaks
+            if grad_model is not None:
+                del grad_model
+            if fresh_model is not None:
+                del fresh_model
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
     
     return canary.detach().cpu()
 
@@ -631,6 +664,7 @@ def perturb_canary_unified(
     lambda_drop=1.0,
     lambda_target=1.0,
     use_loss_diff=True,
+    defense_score_fn='grad_norm',
     verbose=False,
 ):
     canary = canary.clone().detach().to(device)
@@ -653,75 +687,93 @@ def perturb_canary_unified(
             p.requires_grad_(False)
 
     for iteration in range(n_iterations):
-        fresh_model = Models[model_name](in_shape, out_dim=out_dim)
-        fresh_model = make_opacus_compatible(fresh_model)
-        fresh_model.load_state_dict(model_state_dict, strict=False)
-        fresh_model.to(device)
-        fresh_model.train()
+        fresh_model = None
+        try:
+            fresh_model = Models[model_name](in_shape, out_dim=out_dim)
+            fresh_model = make_opacus_compatible(fresh_model)
+            fresh_model.load_state_dict(model_state_dict, strict=False)
+            fresh_model.to(device)
+            fresh_model.train()
 
-        canary.requires_grad = True
+            canary.requires_grad = True
 
-        output = fresh_model(canary.unsqueeze(0))
-        loss_true = criterion(output, true_label_tensor)
-        loss_target = criterion(output, target_label_tensor)
+            output = fresh_model(canary.unsqueeze(0))
+            loss_true = criterion(output, true_label_tensor)
+            loss_target = criterion(output, target_label_tensor)
 
-        if use_loss_diff:
-            baseline_out = baseline_model(canary.unsqueeze(0))
-            loss_target_baseline = criterion(baseline_out, target_label_tensor)
-            loss_diff = torch.abs(loss_target - loss_target_baseline)
-        else:
-            loss_diff = None
-
-        pred = output.argmax(dim=1).item()
-        last_pred = pred
-
-        params = [p for p in fresh_model.parameters() if p.requires_grad]
-        grads = torch.autograd.grad(
-            loss_target,
-            params,
-            create_graph=True,
-            retain_graph=True,
-            allow_unused=False,
-        )
-        grad_norm_sq = torch.zeros((), device=device)
-        for g in grads:
-            grad_norm_sq = grad_norm_sq + g.pow(2).sum()
-        grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
-
-        tau = float(tau_drop)
-        if tau <= 0:
-            raise ValueError(f"tau_drop must be > 0, got {tau}")
-        p_dropped = torch.sigmoid((grad_norm - float(drop_threshold)) / tau)
-
-        if use_loss_diff:
-            meta_obj = loss_diff - float(lambda_drop) * p_dropped - float(lambda_target) * loss_target
-        else:
-            meta_obj = (-loss_target) - float(lambda_drop) * p_dropped
-        grad_x = torch.autograd.grad(meta_obj, canary, retain_graph=False)[0]
-
-        if pred == int(target_label) and grad_norm.item() < float(drop_threshold):
-            del fresh_model
-            break
-
-        if verbose and iteration % 5 == 0:
             if use_loss_diff:
-                print(
-                    f"    Iter {iteration}: loss_true={loss_true.item():.4f}, loss_target={loss_target.item():.4f}, "
-                    f"loss_diff={loss_diff.item():.4f}, grad_norm={grad_norm.item():.4f}, "
-                    f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
-                    f"pred={pred}, true={true_label}, target={target_label}, thr={float(drop_threshold):.4f}"
-                )
+                baseline_out = baseline_model(canary.unsqueeze(0))
+                loss_target_baseline = criterion(baseline_out, target_label_tensor)
+                loss_diff = torch.abs(loss_target - loss_target_baseline)
             else:
-                print(
-                    f"    Iter {iteration}: loss_target={loss_target.item():.4f}, grad_norm={grad_norm.item():.4f}, "
-                    f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
-                    f"pred={pred}, target={target_label}, thr={float(drop_threshold):.4f}"
-                )
+                loss_diff = None
 
-        with torch.no_grad():
-            canary = (canary + step_size * grad_x.sign()).detach()
+            pred = output.argmax(dim=1).item()
+            last_pred = pred
 
-        del fresh_model
+            params = [p for p in fresh_model.parameters() if p.requires_grad]
+            grads = torch.autograd.grad(
+                loss_target,
+                params,
+                create_graph=True,
+                retain_graph=True,
+                allow_unused=False,
+            )
+            grad_norm_sq = torch.zeros((), device=device)
+            for g in grads:
+                grad_norm_sq = grad_norm_sq + g.pow(2).sum()
+            grad_norm = torch.sqrt(grad_norm_sq + 1e-12)
+
+            score_fn = str(defense_score_fn)
+            if score_fn in ('loss',):
+                score = loss_target
+            else:
+                # Use already computed grad_norm instead of recomputing
+                if score_fn == 'grad_norm_x_loss':
+                    score = grad_norm * loss_target
+                else:
+                    if score_fn not in ('grad_norm',):
+                        if verbose and (iteration == 0):
+                            print(f"[WARN] defense_score_fn='{score_fn}' not supported for differentiable penalty; falling back to grad_norm surrogate")
+                    score = grad_norm
+
+            tau = float(tau_drop)
+            if tau <= 0:
+                raise ValueError(f"tau_drop must be > 0, got {tau}")
+            p_dropped = torch.sigmoid((score - float(drop_threshold)) / tau)
+
+            if use_loss_diff:
+                meta_obj = loss_diff - float(lambda_drop) * p_dropped - float(lambda_target) * loss_target
+            else:
+                meta_obj = (-loss_target) - float(lambda_drop) * p_dropped
+            grad_x = torch.autograd.grad(meta_obj, canary, retain_graph=False)[0]
+
+            if pred == int(target_label) and score.item() < float(drop_threshold):
+                break
+
+            if verbose and iteration % 5 == 0:
+                if use_loss_diff:
+                    print(
+                        f"    Iter {iteration}: loss_true={loss_true.item():.4f}, loss_target={loss_target.item():.4f}, "
+                        f"loss_diff={loss_diff.item():.4f}, grad_norm={grad_norm.item():.4f}, "
+                        f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
+                        f"pred={pred}, true={true_label}, target={target_label}, thr={float(drop_threshold):.4f}"
+                    )
+                else:
+                    print(
+                        f"    Iter {iteration}: loss_target={loss_target.item():.4f}, grad_norm={grad_norm.item():.4f}, "
+                        f"p_drop={p_dropped.item():.4f}, meta={meta_obj.item():.4f}, "
+                        f"pred={pred}, target={target_label}, thr={float(drop_threshold):.4f}"
+                    )
+
+            with torch.no_grad():
+                canary = (canary + step_size * grad_x.sign()).detach()
+        finally:
+            # Clean up - always executed even if loop breaks
+            if fresh_model is not None:
+                del fresh_model
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
 
     if baseline_model is not None:
         del baseline_model
@@ -740,6 +792,8 @@ def craft_defense_aware_canary(
     init_model,
     n_epochs,
     defense_k,
+    defense_score_fn='grad_norm',
+    defense_score_norm='linf',
     batch_size=256,
     lr=1e-3,
     epsilon=10.0,
@@ -752,8 +806,10 @@ def craft_defense_aware_canary(
     tau_drop=0.1,
     lambda_target=1.0,
     use_loss_diff=True,
+    survival_only=False,
     device='cuda',
-    verbose=True
+    verbose=True,
+    seed=0
 ):
     """
     Craft a canary that evades the top-k gradient norm defense for all epochs.
@@ -789,7 +845,7 @@ def craft_defense_aware_canary(
     out_dim = len(torch.unique(y_train))
     canary_idx = len(X_train)  # Canary will be appended at the end
 
-    if int(target_label) == int(true_label):
+    if (not survival_only) and int(target_label) == int(true_label):
         raise ValueError(f"target_label must be different from true_label (got {target_label})")
 
     canary_label = target_label
@@ -802,6 +858,7 @@ def craft_defense_aware_canary(
         print(f"  Defense k: {defense_k}")
         print(f"  True label: {true_label}")
         print(f"  Target label: {target_label}")
+        print(f"  Survival-only stopping: {bool(survival_only)}")
         print(f"  Max canary update iterations: {max_iter}")
         print(f"  Training set size: {len(X_train)}")
         print(f"  Privacy: ε={epsilon}, δ={delta}")
@@ -830,11 +887,19 @@ def craft_defense_aware_canary(
             defense=True,
             defense_k=defense_k,
             device=device,
+            defense_score_fn=defense_score_fn,
+            defense_score_norm=defense_score_norm,
             stop_on_canary_drop=False,
+            generator=torch.Generator().manual_seed(seed),
+            dl_generator=torch.Generator().manual_seed(seed + 1),
         )
         baseline_model_state = baseline_model.state_dict()
         del baseline_model
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    success = False
+    last_drop_epoch = None
+    last_final_pred = None
 
     for it in range(int(max_iter)):
         if verbose:
@@ -851,7 +916,7 @@ def craft_defense_aware_canary(
         if verbose:
             print(f"  Training model for full {n_epochs} epochs with defense...")
 
-        model, drop_epoch = train_model_with_defense(
+        model, drop_epoch, canary_score, canary_threshold = train_model_with_defense(
             model_name=model_name,
             X=X_with_canary,
             y=y_with_canary,
@@ -867,7 +932,13 @@ def craft_defense_aware_canary(
             defense=True,
             defense_k=defense_k,
             device=device,
+            defense_score_fn=defense_score_fn,
+            defense_score_norm=defense_score_norm,
             stop_on_canary_drop=True,
+            generator=torch.Generator().manual_seed(seed),
+            dl_generator=torch.Generator().manual_seed(seed + 1),
+            track_canary_threshold=True,
+            canary_label=canary_label,
         )
 
         model.to(device)
@@ -876,10 +947,19 @@ def craft_defense_aware_canary(
 
         audit_label = final_pred
 
-        success = (final_pred == target_label) and (drop_epoch == -1)
+        last_drop_epoch = drop_epoch
+        last_final_pred = final_pred
+
+        if survival_only:
+            success = (drop_epoch == -1)
+        else:
+            success = (final_pred == target_label) and (drop_epoch == -1)
 
         if verbose:
-            print(f"  Final pred on canary: {final_pred} (target={target_label}, true={true_label})")
+            if survival_only:
+                print(f"  Final pred on canary: {final_pred} (survival-only, target={target_label})")
+            else:
+                print(f"  Final pred on canary: {final_pred} (target={target_label}, true={true_label})")
             print(f"  Canary ever dropped: {drop_epoch != -1}")
 
         if success:
@@ -888,14 +968,7 @@ def craft_defense_aware_canary(
             break
 
         model_state = model.state_dict()
-        grad_norms = compute_per_sample_gradient_norms(
-            model_state, model_name, in_shape, out_dim,
-            X_with_canary, y_with_canary, device, batch_size
-        )
-        thresholds = get_top_k_threshold_per_class(
-            grad_norms, y_with_canary.numpy(), defense_k
-        )
-        drop_threshold = thresholds[canary_label]
+        drop_threshold = canary_threshold if canary_threshold is not None else 0.0
 
         if verbose:
             print(f"  Updating canary with targeted loss-diff + drop-penalty objective...")
@@ -917,6 +990,7 @@ def craft_defense_aware_canary(
             lambda_drop=lambda_drop,
             lambda_target=lambda_target,
             use_loss_diff=use_loss_diff,
+            defense_score_fn=defense_score_fn,
             verbose=verbose,
         )
 
@@ -928,7 +1002,7 @@ def craft_defense_aware_canary(
         print(f"  Final canary label for auditing: {audit_label}")
         print(f"  True label: {true_label}")
     
-    return canary, audit_label
+    return canary, audit_label, bool(success), last_drop_epoch, last_final_pred
 
 
 if __name__ == "__main__":
@@ -941,6 +1015,8 @@ if __name__ == "__main__":
                         help='Number of epochs to evade')
     parser.add_argument('--defense_k', type=int, default=5,
                         help='Defense drops top-k per class per epoch')
+    parser.add_argument('--defense_score_fn', type=str, default='grad_norm')
+    parser.add_argument('--defense_score_norm', type=str, default='linf')
     parser.add_argument('--true_label', type=int, default=0,
                         help='True label of base canary (will be misclassified away from this)')
     parser.add_argument('--target_label', type=int, default=1,
@@ -949,6 +1025,8 @@ if __name__ == "__main__":
                         help='Use an all-zeros canary (same shape as data) instead of sampling from the dataset')
     parser.add_argument('--blank_label', type=int, default=9,
                         help='Label to assign to the blank canary (overrides target_label when --blank_canary is set)')
+    parser.add_argument('--survival_only', action='store_true',
+                        help='Stop once the canary survives full n_epochs without being caught (ignores prediction/true label)')
     parser.add_argument('--use_last_sample_as_canary', action='store_true',
                         help='Use the last sample in the training set as the canary base and remove it from training (mislabel-last)')
     parser.add_argument('--batch_size', type=int, default=256)
@@ -995,6 +1073,7 @@ if __name__ == "__main__":
     if args.blank_canary:
         base_canary = torch.zeros_like(X_train[0]).clone()
         args.target_label = int(args.blank_label)
+        args.survival_only = True
         print(f"Base canary: blank (all zeros), target_label={args.target_label}")
     else:
         # Start with a random sample from the true label class as base canary
@@ -1013,7 +1092,7 @@ if __name__ == "__main__":
             print(f"Base canary: sample {base_canary_idx} from class {args.true_label}")
     
     # Craft defense-aware canary
-    canary, final_label = craft_defense_aware_canary(
+    canary, final_label, success, drop_epoch, final_pred = craft_defense_aware_canary(
         base_canary=base_canary,
         true_label=args.true_label,
         target_label=args.target_label,
@@ -1023,6 +1102,8 @@ if __name__ == "__main__":
         init_model=init_state,
         n_epochs=args.n_epochs,
         defense_k=args.defense_k,
+        defense_score_fn=str(args.defense_score_fn),
+        defense_score_norm=str(args.defense_score_norm),
         batch_size=args.batch_size,
         lr=args.lr,
         epsilon=args.epsilon,
@@ -1035,15 +1116,21 @@ if __name__ == "__main__":
         tau_drop=args.tau_drop,
         lambda_target=args.lambda_target,
         use_loss_diff=bool(args.use_loss_diff),
+        survival_only=bool(args.survival_only),
         device=device,
-        verbose=True
+        verbose=True,
+        seed=args.seed
     )
     
     # Save canary
     torch.save({
         'canary': canary,
         'true_label': args.true_label,
+        'target_label': args.target_label,
         'audit_label': final_label,  # Use this label for auditing!
+        'success': bool(success),
+        'drop_epoch': drop_epoch,
+        'final_pred': final_pred,
         'init_model': init_state,
         'args': vars(args)
     }, args.output)
