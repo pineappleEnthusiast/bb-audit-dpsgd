@@ -3,7 +3,7 @@
 #SBATCH -o status/mnist_no_def_blank_lr05_%j.o
 #SBATCH -e status/mnist_no_def_blank_lr05_%j.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 5
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 1:00:00
 #SBATCH -A ASC25081
