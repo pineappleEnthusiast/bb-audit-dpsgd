@@ -1,25 +1,22 @@
 #!/bin/bash
-#SBATCH -J cifar10_lr_sweep
-#SBATCH -o status/cifar10_lr_sweep_%A_%a.out
-#SBATCH -e status/cifar10_lr_sweep_%A_%a.err
+#SBATCH -J cifar10_lr3
+#SBATCH -o status/cifar10_lr3_%A.out
+#SBATCH -e status/cifar10_lr3_%A.err
 #SBATCH -p gh
 #SBATCH -N 20
 #SBATCH -n 20
 #SBATCH -t 4:00:00
 #SBATCH -A ASC25081
-#SBATCH --array=0-9
 
-# Learning rates to sweep over
-LRS=(0.415625 0.5 0.75 1.0 1.25 1.5 1.75 2 2.25 2.5)
-LR=${LRS[$SLURM_ARRAY_TASK_ID]}
+# Single learning rate
+LR=3
 
 # Output directory
-OUT_DIR="results/cifar10_lr_sweep/lr_${LR}"
+OUT_DIR="results/cifar10_lr3/cifar10_cnn_eps10.0"
 mkdir -p ${OUT_DIR}
 
 echo "=========================================="
-echo "Job Array ID: $SLURM_ARRAY_JOB_ID"
-echo "Job Array Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Job ID: $SLURM_JOB_ID"
 echo "Learning Rate: ${LR}"
 echo "Output Directory: ${OUT_DIR}"
 echo "=========================================="

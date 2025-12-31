@@ -1197,17 +1197,25 @@ def main():
         
         if not args.fit_world_only:
             def audit_canary(losses, args):        
-                k = len(losses['in'])
+                n = len(losses['in'])
                 t_losses = {'in': None, 'out': None}
                 holdout_losses = {'in': None, 'out': None}
 
                 if args.holdout_audit:
-                    k = len(losses['in']) // 2
-                
-                t_losses['in'] = losses['in'][:k]
-                t_losses['out'] = losses['out'][:k]
-                holdout_losses['in'] = losses['in'][k:]
-                holdout_losses['out'] = losses['out'][k:]
+                    # Use random sampling for holdout split to avoid ordering effects
+                    np.random.seed(args.seed)  # Use same seed for reproducibility
+                    indices = np.random.permutation(n)
+                    threshold_indices = indices[:n // 2]
+                    holdout_indices = indices[n // 2:]
+                    
+                    t_losses['in'] = losses['in'][threshold_indices]
+                    t_losses['out'] = losses['out'][threshold_indices]
+                    holdout_losses['in'] = losses['in'][holdout_indices]
+                    holdout_losses['out'] = losses['out'][holdout_indices]
+                else:
+                    # No holdout - use all data for threshold selection
+                    t_losses['in'] = losses['in']
+                    t_losses['out'] = losses['out']
 
                 # Calculate empirical epsilon using GDP
                 mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
