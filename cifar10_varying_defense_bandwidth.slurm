@@ -63,6 +63,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c "
     --batch_size 3125 \
     --block_size 3125 \
     --seed 0 \
+    --fixed_init \
     --defense \
     --defense_k $DEFENSE_K \
     --defense_apply_ascent \

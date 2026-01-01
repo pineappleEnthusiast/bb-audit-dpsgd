@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH -J cifar10_scoring_fns
-#SBATCH -o status/cifar10_scoring_fns_%A_%a.o
-#SBATCH -e status/cifar10_scoring_fns_%A_%a.e
+#SBATCH -J cifar10_global_filter
+#SBATCH -o status/cifar10_global_filter_%A_%a.o
+#SBATCH -e status/cifar10_global_filter_%A_%a.e
 #SBATCH -p gh
 #SBATCH -N 20
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 4:00:00
 #SBATCH -A ASC25081
-#SBATCH --array=0-7
+#SBATCH --array=0-2
 
 module load cuda/12.4
 
@@ -30,28 +30,19 @@ BATCH_SIZE=3125
 BLOCK_SIZE=3125
 SEED=0
 TARGET_TYPE="blank"
-DEFENSE_K=5
+SCORE_FN="gradient_kurtosis"
+SCORE_NORM="l2"
 
 # Parent output folder
-PARENT_OUT="cifar10_scoring_functions"
+PARENT_OUT="cifar10_global_filter_ablation"
 mkdir -p ${PARENT_OUT}
 
-# Define scoring function configurations
-# Array format: "score_fn|score_norm|output_name"
-# Note: Some scoring functions don't use score_norm, but we include it for consistency
-experiments=(
-    "grad_norm|linf|cifar10_grad_norm_linf"
-    "grad_norm|l2|cifar10_grad_norm_l2"
-    "cos_theta0|l2|cifar10_cos_theta0"
-    "gradient_kurtosis|l2|cifar10_gradient_kurtosis"
-    "norm_x_dir_uniqueness|linf|cifar10_norm_x_dir_uniqueness"
-    "prediction_margin|l2|cifar10_prediction_margin"
-    "rand_proj_var|l2|cifar10_rand_proj_var"
-    "pred_entropy|l2|cifar10_pred_entropy"
-)
+# Define k values for global filtering
+k_values=(10 25 50)
 
-# Get current experiment configuration
-IFS='|' read -r SCORE_FN SCORE_NORM OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
+# Get current k value
+DEFENSE_K=${k_values[$SLURM_ARRAY_TASK_ID]}
+OUT_NAME="cifar10_global_k${DEFENSE_K}"
 
 echo "=========================================="
 echo "Job Array Task ID: ${SLURM_ARRAY_TASK_ID}"
@@ -60,10 +51,11 @@ echo "Model: ${MODEL_NAME}"
 echo "Epsilon: ${EPSILON}"
 echo "Scoring Function: ${SCORE_FN}"
 echo "Scoring Norm: ${SCORE_NORM}"
+echo "Defense K (global): ${DEFENSE_K}"
 echo "Output: ${OUT_NAME}"
 echo "=========================================="
 
-# Run the audit
+# Run the audit with GLOBAL filtering
 srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
   MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
   MASTER_PORT=$((29500 + '"${SLURM_ARRAY_TASK_ID}"'));
@@ -71,7 +63,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
   torchrun --nnodes=$SLURM_JOB_NUM_NODES --nproc_per_node=1 \
     --rdzv_backend=c10d \
     --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
-    parallel_audit_model.py \
+    parallel_audit_model_global_filter.py \
     --data_name '"${DATA_NAME}"' \
     --model_name '"${MODEL_NAME}"' \
     --n_reps '"${N_REPS}"' \

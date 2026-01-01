@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH -J cifar10_scoring_fns
-#SBATCH -o status/cifar10_scoring_fns_%A_%a.o
-#SBATCH -e status/cifar10_scoring_fns_%A_%a.e
+#SBATCH -J blank_alpha_ablation
+#SBATCH -o status/blank_alpha_%A_%a.o
+#SBATCH -e status/blank_alpha_%A_%a.e
 #SBATCH -p gh
 #SBATCH -N 20
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 4:00:00
 #SBATCH -A ASC25081
-#SBATCH --array=0-7
+#SBATCH --array=0-9
 
 module load cuda/12.4
 
@@ -17,49 +17,48 @@ eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
 
-# Common hyperparameters for CIFAR-10
-DATA_NAME="cifar10"
-MODEL_NAME="cnn"
+# Common hyperparameters
 N_REPS=400
 N_EPOCHS=100
-LR=3
 MAX_GRAD_NORM=1
 EPSILON=10.0
 DELTA=1e-5
-BATCH_SIZE=3125
-BLOCK_SIZE=3125
 SEED=0
 TARGET_TYPE="blank"
-DEFENSE_K=5
+DEFENSE_SCORE_FN="grad_norm"
+DEFENSE_SCORE_NORM="l2"
 
 # Parent output folder
-PARENT_OUT="cifar10_scoring_functions"
+PARENT_OUT="blank_alpha_ablation"
 mkdir -p ${PARENT_OUT}
 
-# Define scoring function configurations
-# Array format: "score_fn|score_norm|output_name"
-# Note: Some scoring functions don't use score_norm, but we include it for consistency
+# Define experiment configurations
+# Array format: "dataset|model|lr|batch_size|block_size|defense_k|alpha|output_name"
 experiments=(
-    "grad_norm|linf|cifar10_grad_norm_linf"
-    "grad_norm|l2|cifar10_grad_norm_l2"
-    "cos_theta0|l2|cifar10_cos_theta0"
-    "gradient_kurtosis|l2|cifar10_gradient_kurtosis"
-    "norm_x_dir_uniqueness|linf|cifar10_norm_x_dir_uniqueness"
-    "prediction_margin|l2|cifar10_prediction_margin"
-    "rand_proj_var|l2|cifar10_rand_proj_var"
-    "pred_entropy|l2|cifar10_pred_entropy"
+    "mnist|cnn|3|4000|4000|5|0.0|mnist_alpha0.0"
+    "mnist|cnn|3|4000|4000|5|0.25|mnist_alpha0.25"
+    "mnist|cnn|3|4000|4000|5|0.5|mnist_alpha0.5"
+    "mnist|cnn|3|4000|4000|5|0.75|mnist_alpha0.75"
+    "mnist|cnn|3|4000|4000|5|1.0|mnist_alpha1.0"
+    "cifar10|cnn|3|3125|3125|5|0.0|cifar10_alpha0.0"
+    "cifar10|cnn|3|3125|3125|5|0.25|cifar10_alpha0.25"
+    "cifar10|cnn|3|3125|3125|5|0.5|cifar10_alpha0.5"
+    "cifar10|cnn|3|3125|3125|5|0.75|cifar10_alpha0.75"
+    "cifar10|cnn|3|3125|3125|5|1.0|cifar10_alpha1.0"
 )
 
 # Get current experiment configuration
-IFS='|' read -r SCORE_FN SCORE_NORM OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
+IFS='|' read -r DATA_NAME MODEL_NAME LR BATCH_SIZE BLOCK_SIZE DEFENSE_K BLANK_ALPHA OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
 
 echo "=========================================="
 echo "Job Array Task ID: ${SLURM_ARRAY_TASK_ID}"
 echo "Dataset: ${DATA_NAME}"
 echo "Model: ${MODEL_NAME}"
 echo "Epsilon: ${EPSILON}"
-echo "Scoring Function: ${SCORE_FN}"
-echo "Scoring Norm: ${SCORE_NORM}"
+echo "Learning Rate: ${LR}"
+echo "Batch Size: ${BATCH_SIZE}"
+echo "Defense K: ${DEFENSE_K}"
+echo "Blank Alpha: ${BLANK_ALPHA}"
 echo "Output: ${OUT_NAME}"
 echo "=========================================="
 
@@ -81,6 +80,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --epsilon '"${EPSILON}"' \
     --delta '"${DELTA}"' \
     --target_type '"${TARGET_TYPE}"' \
+    --blank_alpha '"${BLANK_ALPHA}"' \
     --batch_size '"${BATCH_SIZE}"' \
     --block_size '"${BLOCK_SIZE}"' \
     --seed '"${SEED}"' \
@@ -88,8 +88,8 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --aug_mult 1 \
     --defense \
     --defense_k '"${DEFENSE_K}"' \
-    --defense_score_fn '"${SCORE_FN}"' \
-    --defense_score_norm '"${SCORE_NORM}"' \
+    --defense_score_fn '"${DEFENSE_SCORE_FN}"' \
+    --defense_score_norm '"${DEFENSE_SCORE_NORM}"' \
     --defense_apply_ascent \
     --holdout_audit \
     --out '"${PARENT_OUT}"'/'"${OUT_NAME}"''
