@@ -697,6 +697,7 @@ def main():
     parser.add_argument('--alpha', type=float, default=0.05)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--out', type=str, default='parallel_results_multi_canary/')
+    parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
 
     parser.add_argument('--holdout_audit', action='store_true')
 
@@ -749,15 +750,38 @@ def main():
 
     # Initialize model with SAME seed for reproducibility (before setting per-process seeds)
     # This ensures all processes/runs start with identical model initialization
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    
-    # init_model (optional fixed init)
-    init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
-    if args.model_name == 'cnn':
-        xavier_init_model(init_model)
+    init_model = None
+    if args.fixed_init is not None:
+        # Use same seed for fixed_init to ensure identical initialization
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        
+        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
+        if args.model_name == 'cnn':
+            xavier_init_model(init_model)
+        else:
+            init_wideresnet(init_model)
+        
+        if args.fixed_init == '':
+            # Empty string: use the randomly initialized weights above
+            if args.model_name == 'cnn':
+                xavier_init_model(init_model)
+            else:
+                init_wideresnet(init_model)
+        else:
+            # Path provided: load pretrained weights
+            init_model.load_state_dict(torch.load(args.fixed_init))
+            X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
     else:
-        init_wideresnet(init_model)
+        # No fixed_init: create model with seed for reproducibility
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        
+        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
+        if args.model_name == 'cnn':
+            xavier_init_model(init_model)
+        else:
+            init_wideresnet(init_model)
     
     # NOW set seeds for data loading and other operations
     # This ensures reproducibility while keeping model init consistent
