@@ -746,16 +746,9 @@ def main():
     if args.max_grad_norm == -1:
         args.max_grad_norm = None
 
-    # Reproducibility
-    np.random.seed(args.seed + rank)  # Different seed per rank
-    torch.manual_seed(args.seed + rank)
-    torch.cuda.manual_seed_all(args.seed + rank)  # Different seed per rank for CUDA
-
     out_folder = f'{args.out}/{args.data_name}_{args.model_name}_eps{args.epsilon}'
     os.makedirs(out_folder, exist_ok=True)
-    os.makedirs(f'{out_folder}/models', exist_ok=True)
 
-    # Load data
     if rank == 0:
         print('Loading data')
     if args.n_df == 1:
@@ -763,11 +756,15 @@ def main():
     else:
         X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
 
-    # Initialize model
+    # Initialize model with SAME seed across all GPUs for fixed_init
     if rank == 0:
         print('Initializing model')
     init_model = None
     if args.fixed_init is not None:
+        # Use same seed for all GPUs to ensure identical initialization
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        
         init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
         if args.model_name == 'cnn':
             xavier_init_model(init_model)
@@ -781,6 +778,12 @@ def main():
         else:
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
+    
+    # NOW set per-rank seeds for everything else (after init_model is created)
+    # This ensures data loading and other operations are still independent per GPU
+    np.random.seed(args.seed + rank)
+    torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)
 
     # Craft target
     if rank == 0:
@@ -1196,8 +1199,11 @@ def main():
                 )
         
         if not args.fit_world_only:
-            def audit_canary(losses, args):        
-                n = len(losses['in'])
+            def audit_canary(losses, args):
+                # Convert to numpy arrays for indexing
+                losses_in = np.array(losses['in'])
+                losses_out = np.array(losses['out'])
+                n = len(losses_in)
                 t_losses = {'in': None, 'out': None}
                 holdout_losses = {'in': None, 'out': None}
 
@@ -1208,14 +1214,14 @@ def main():
                     threshold_indices = indices[:n // 2]
                     holdout_indices = indices[n // 2:]
                     
-                    t_losses['in'] = losses['in'][threshold_indices]
-                    t_losses['out'] = losses['out'][threshold_indices]
-                    holdout_losses['in'] = losses['in'][holdout_indices]
-                    holdout_losses['out'] = losses['out'][holdout_indices]
+                    t_losses['in'] = losses_in[threshold_indices]
+                    t_losses['out'] = losses_out[threshold_indices]
+                    holdout_losses['in'] = losses_in[holdout_indices]
+                    holdout_losses['out'] = losses_out[holdout_indices]
                 else:
                     # No holdout - use all data for threshold selection
-                    t_losses['in'] = losses['in']
-                    t_losses['out'] = losses['out']
+                    t_losses['in'] = losses_in
+                    t_losses['out'] = losses_out
 
                 # Calculate empirical epsilon using GDP
                 mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
