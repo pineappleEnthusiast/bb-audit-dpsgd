@@ -229,19 +229,32 @@ def _audit_from_scores(
     alpha: float,
     delta: float,
     holdout_audit: bool,
+    seed: int = 0,
 ):
     # scores_* are arrays with shape (n_reps_half,) representing the audit statistic per model.
     if scores_in.shape[0] != scores_out.shape[0]:
         raise ValueError(f"Expected same number of in/out reps, got {scores_in.shape[0]} and {scores_out.shape[0]}")
 
-    k = int(scores_in.shape[0])
+    n = int(scores_in.shape[0])
+    
     if holdout_audit:
-        k = int(scores_in.shape[0]) // 2
-        if k < 1:
+        if n < 2:
             raise ValueError("holdout_audit requires at least 2 reps per world")
-
-    t_scores_in = scores_in[:k]
-    t_scores_out = scores_out[:k]
+        
+        # Use random sampling for holdout split to avoid ordering effects
+        np.random.seed(seed)  # Use same seed for reproducibility
+        indices = np.random.permutation(n)
+        threshold_indices = indices[:n // 2]
+        holdout_indices = indices[n // 2:]
+        
+        t_scores_in = scores_in[threshold_indices]
+        t_scores_out = scores_out[threshold_indices]
+        hold_scores_in = scores_in[holdout_indices]
+        hold_scores_out = scores_out[holdout_indices]
+    else:
+        # No holdout - use all data for threshold selection
+        t_scores_in = scores_in
+        t_scores_out = scores_out
 
     mia_scores = np.concatenate([t_scores_in, t_scores_out]).astype(np.float32)
     mia_labels = np.concatenate([
@@ -252,8 +265,6 @@ def _audit_from_scores(
     t, emp_eps = compute_eps_lower_from_mia(mia_scores, mia_labels, alpha, delta, 'GDP', n_procs=1)
 
     if holdout_audit:
-        hold_scores_in = scores_in[k:]
-        hold_scores_out = scores_out[k:]
         hold_mia_scores = np.concatenate([hold_scores_in, hold_scores_out]).astype(np.float32)
         hold_mia_labels = np.concatenate([
             np.ones(hold_scores_in.shape[0], dtype=np.int64),
@@ -726,8 +737,6 @@ def main():
     out_folder = os.path.join(args.out, f"{args.data_name}_{args.model_name}_eps{args.epsilon}")
     os.makedirs(out_folder, exist_ok=True)
 
-    _setup_seeds(args.seed)
-
     # Load D-
     if args.n_df == 1:
         X_out, y_out, out_dim = load_data(args.data_name, 1)
@@ -738,12 +747,21 @@ def main():
 
     canary_meta = {}
 
+    # Initialize model with SAME seed for reproducibility (before setting per-process seeds)
+    # This ensures all processes/runs start with identical model initialization
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    
     # init_model (optional fixed init)
     init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
     if args.model_name == 'cnn':
         xavier_init_model(init_model)
     else:
         init_wideresnet(init_model)
+    
+    # NOW set seeds for data loading and other operations
+    # This ensures reproducibility while keeping model init consistent
+    _setup_seeds(args.seed)
 
     # Create/load canaries
     if args.canary_pt is not None:
@@ -890,6 +908,7 @@ def main():
             float(args.alpha),
             float(args.delta),
             bool(args.holdout_audit),
+            seed=int(args.seed),
         )
 
         np.save(os.path.join(out_folder, 'scores_in.npy'), scores_in)
