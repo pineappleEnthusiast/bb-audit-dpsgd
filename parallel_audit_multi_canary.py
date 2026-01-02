@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 
 from models import Models
 from utils.data import load_data
@@ -682,9 +683,53 @@ def train_model_multi_canary(
     return model, drop_mask, defense_stats
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Audit DP-SGD using custom DP-SGD implementation (multi-canary)')
+def distribute_reps(n_reps, world_size):
+    """Distribute model training repetitions across GPUs"""
+    reps_per_gpu = [[] for _ in range(world_size)]
+    for i in range(n_reps):
+        gpu_id = i % world_size
+        reps_per_gpu[gpu_id].append(i)
+    return reps_per_gpu
 
+
+def main():
+    parser = argparse.ArgumentParser(description='Audit DP-SGD using custom DP-SGD implementation (multi-canary)', allow_abbrev=False)
+    
+    # Check if running under torchrun (distributed mode)
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://'
+        )
+        
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        rank = int(os.environ.get('RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        
+        if torch.cuda.is_available():
+            device = torch.device(f'cuda:{local_rank}')
+            torch.cuda.set_device(device)
+            print(f'[Rank {rank}] Using device: {torch.cuda.get_device_name(local_rank)}')
+        else:
+            device = torch.device('cpu')
+            print(f'[Rank {rank}] CUDA not available, using CPU')
+    else:
+        # Single GPU mode (no distributed training)
+        local_rank = 0
+        rank = 0
+        world_size = 1
+        
+        if torch.cuda.is_available():
+            device = torch.device('cuda:0')
+            torch.cuda.set_device(device)
+            print(f'Single GPU mode - Using device: {torch.cuda.get_device_name(0)}')
+        else:
+            device = torch.device('cpu')
+            print(f'Single GPU mode - Using CPU')
+    
+    # Parse arguments
+    parser.add_argument('--local_rank', type=int, default=0,
+                        help='Local rank for distributed training')
     parser.add_argument('--data_name', type=str, default='mnist')
     parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()))
     parser.add_argument('--n_reps', type=int, default=200)
@@ -733,10 +778,14 @@ def main():
         args.epsilon = None
         args.max_grad_norm = None
 
-    device = _resolve_device(args.device)
+    # Device is already set above in distributed training setup
+    # Only use args.device if explicitly provided and not in distributed mode
+    if args.device is not None and world_size == 1:
+        device = _resolve_device(args.device)
 
     out_folder = os.path.join(args.out, f"{args.data_name}_{args.model_name}_eps{args.epsilon}")
-    os.makedirs(out_folder, exist_ok=True)
+    if rank == 0:
+        os.makedirs(out_folder, exist_ok=True)
 
     # Load D-
     if args.n_df == 1:
@@ -748,11 +797,12 @@ def main():
 
     canary_meta = {}
 
-    # Initialize model with SAME seed for reproducibility (before setting per-process seeds)
-    # This ensures all processes/runs start with identical model initialization
+    # Initialize model with SAME seed across all GPUs for fixed_init
+    if rank == 0:
+        print('Initializing model')
     init_model = None
     if args.fixed_init is not None:
-        # Use same seed for fixed_init to ensure identical initialization
+        # Use same seed for all GPUs to ensure identical initialization
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
         
@@ -772,20 +822,12 @@ def main():
             # Path provided: load pretrained weights
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
-    else:
-        # No fixed_init: create model with seed for reproducibility
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        
-        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
-        if args.model_name == 'cnn':
-            xavier_init_model(init_model)
-        else:
-            init_wideresnet(init_model)
     
-    # NOW set seeds for data loading and other operations
-    # This ensures reproducibility while keeping model init consistent
-    _setup_seeds(args.seed)
+    # NOW set per-rank seeds for everything else (after init_model is created)
+    # This ensures data loading and other operations are still independent per GPU
+    np.random.seed(args.seed + rank)
+    torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)
 
     # Create/load canaries
     if args.canary_pt is not None:
@@ -864,22 +906,36 @@ def main():
     y_in = torch.cat((y_out[:-n_canaries], y_canary.long()))
     canary_indices = np.arange(len(X_in) - n_canaries, len(X_in), dtype=np.int64)
 
+    if rank == 0:
+        print('Training models')
+    
     # Train models and collect max canary scores
     n_reps_half = int(args.n_reps) // 2
     worlds = [args.fit_world_only] if args.fit_world_only else ['out', 'in']
+
+    # Distribute repetitions across GPUs
+    reps_per_gpu = distribute_reps(n_reps_half, world_size)
+    my_reps = reps_per_gpu[rank]
+    
+    if rank == 0:
+        print(f"Rep distribution: {[len(r) for r in reps_per_gpu]}")
 
     scores = {'out': [], 'in': []}
 
     for world in worlds:
         curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
-        for rep in range(n_reps_half):
-            rep_seed = int(args.seed) + 100000 * rep + (0 if world == 'out' else 777)
-            _setup_seeds(rep_seed)
-
+        
+        # Each rank trains its assigned models
+        for rep_idx, rep in enumerate(my_reps):
+            print(f"[Rank {rank}] Training rep {rep_idx+1}/{len(my_reps)} (global rep {rep}, world={world})")
+            
+            # Create unique generators for each repetition
+            # Use rep (global repetition number) to ensure uniqueness across all GPUs
+            rep_seed = int(args.seed) + rep * 2 + (0 if world == 'out' else 100000)
             gen = torch.Generator(device='cpu')
-            gen.manual_seed(rep_seed + 1)
+            gen.manual_seed(rep_seed)
             dl_gen = torch.Generator(device='cpu')
-            dl_gen.manual_seed(rep_seed + 2)
+            dl_gen.manual_seed(rep_seed + 1)
 
             start = time.time()
             model, _drop_mask, _defense_stats = train_model_multi_canary(
@@ -914,33 +970,77 @@ def main():
             max_score = float(per_canary.max())
             scores[world].append(max_score)
 
-            print(f"[world={world} rep={rep}] max_canary_score={max_score:.6f} elapsed_s={time.time()-start:.2f}", flush=True)
+            print(f"[Rank {rank}] world={world} rep={rep} max_canary_score={max_score:.6f} elapsed_s={time.time()-start:.2f}", flush=True)
 
     scores_in = np.asarray(scores['in'], dtype=np.float32)
     scores_out = np.asarray(scores['out'], dtype=np.float32)
 
-    # Save scores based on fit_world_only
+    # Save per-rank results
+    suffix = f'_rank{rank}' if rank > 0 else ''
     if args.fit_world_only:
-        np.save(os.path.join(out_folder, f'scores_{args.fit_world_only}.npy'), 
+        np.save(os.path.join(out_folder, f'scores_{args.fit_world_only}{suffix}.npy'), 
                 scores_in if args.fit_world_only == 'in' else scores_out)
-        print(f"\nSaved scores for world '{args.fit_world_only}' only")
-        emp_eps, threshold, mia_scores, mia_labels = None, None, None, None
+        print(f"[Rank {rank}] Saved scores for world '{args.fit_world_only}'")
     else:
-        emp_eps, threshold, mia_scores, mia_labels = _audit_from_scores(
-            scores_in,
-            scores_out,
-            float(args.alpha),
-            float(args.delta),
-            bool(args.holdout_audit),
-            seed=int(args.seed),
-        )
-
-        np.save(os.path.join(out_folder, 'scores_in.npy'), scores_in)
-        np.save(os.path.join(out_folder, 'scores_out.npy'), scores_out)
-        np.save(os.path.join(out_folder, 'emp_eps_loss.npy'), np.asarray(emp_eps, dtype=np.float32))
-        np.save(os.path.join(out_folder, 'mia_threshold.npy'), np.asarray(threshold, dtype=np.float32))
-        np.save(os.path.join(out_folder, 'mia_scores.npy'), mia_scores)
-        np.save(os.path.join(out_folder, 'mia_labels.npy'), mia_labels)
+        np.save(os.path.join(out_folder, f'scores_in{suffix}.npy'), scores_in)
+        np.save(os.path.join(out_folder, f'scores_out{suffix}.npy'), scores_out)
+        print(f"[Rank {rank}] Saved scores")
+    
+    # Wait for all ranks to finish
+    if world_size > 1:
+        dist.barrier()
+    
+    # Rank 0 combines results from all ranks
+    emp_eps, threshold, mia_scores, mia_labels = None, None, None, None
+    if rank == 0:
+        print("\n[Rank 0] Combining results from all ranks...")
+        combined_scores_in = []
+        combined_scores_out = []
+        
+        for r in range(world_size):
+            suffix = f'_rank{r}' if r > 0 else ''
+            try:
+                if not args.fit_world_only:
+                    combined_scores_in.extend(np.load(f'{out_folder}/scores_in{suffix}.npy'))
+                    combined_scores_out.extend(np.load(f'{out_folder}/scores_out{suffix}.npy'))
+                else:
+                    if args.fit_world_only == 'in':
+                        combined_scores_in.extend(np.load(f'{out_folder}/scores_in{suffix}.npy'))
+                    else:
+                        combined_scores_out.extend(np.load(f'{out_folder}/scores_out{suffix}.npy'))
+            except FileNotFoundError:
+                print(f"Warning: Could not find results for rank {r}")
+        
+        # Save combined results
+        if not args.fit_world_only:
+            scores_in_combined = np.asarray(combined_scores_in, dtype=np.float32)
+            scores_out_combined = np.asarray(combined_scores_out, dtype=np.float32)
+            
+            np.save(os.path.join(out_folder, 'scores_in.npy'), scores_in_combined)
+            np.save(os.path.join(out_folder, 'scores_out.npy'), scores_out_combined)
+            
+            # Compute audit
+            emp_eps, threshold, mia_scores, mia_labels = _audit_from_scores(
+                scores_in_combined,
+                scores_out_combined,
+                float(args.alpha),
+                float(args.delta),
+                bool(args.holdout_audit),
+                seed=int(args.seed),
+            )
+            
+            np.save(os.path.join(out_folder, 'emp_eps_loss.npy'), np.asarray(emp_eps, dtype=np.float32))
+            np.save(os.path.join(out_folder, 'mia_threshold.npy'), np.asarray(threshold, dtype=np.float32))
+            np.save(os.path.join(out_folder, 'mia_scores.npy'), mia_scores)
+            np.save(os.path.join(out_folder, 'mia_labels.npy'), mia_labels)
+            
+            print(f'Empirical eps: {emp_eps}')
+        else:
+            if args.fit_world_only == 'in':
+                np.save(os.path.join(out_folder, 'scores_in.npy'), np.asarray(combined_scores_in, dtype=np.float32))
+            else:
+                np.save(os.path.join(out_folder, 'scores_out.npy'), np.asarray(combined_scores_out, dtype=np.float32))
+            print(f"Saved combined scores for world '{args.fit_world_only}'")
 
     dill.dump(
         {
@@ -969,13 +1069,28 @@ def main():
         open(os.path.join(out_folder, 'meta.dill'), 'wb'),
     )
 
-    if not args.fit_world_only:
-        print(f"\nAUDIT RESULTS")
-        print(f"Theoretical epsilon: {args.epsilon}")
-        print(f"Empirical epsilon: {emp_eps}")
-    else:
-        print(f"\nFit world '{args.fit_world_only}' only - no audit performed")
+    if rank == 0:
+        if not args.fit_world_only:
+            print(f"\nAUDIT RESULTS")
+            print(f"Theoretical epsilon: {args.epsilon}")
+            print(f"Empirical epsilon: {emp_eps}")
+        else:
+            print(f"\nFit world '{args.fit_world_only}' only - no audit performed")
+    
+    print(f"[Rank {rank}] Finished!")
+    
+    # Only destroy process group if we initialized it (distributed mode)
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('\nInterrupted by user')
+    except Exception as e:
+        print(f'\nError in main: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        raise
