@@ -6,7 +6,7 @@
 #SBATCH -N 20
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 4:00:00
-#SBATCH -A ASC25081
+#SBATCH -A ASC25102
 #SBATCH --array=0-29
 
 module load cuda/12.4
