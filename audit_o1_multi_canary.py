@@ -45,6 +45,44 @@ def _make_canaries_blank(X_ref: torch.Tensor, y_ref: torch.Tensor, n_canaries: i
     return Xc, yc
 
 
+def _make_canaries_mislabeled(
+    X_ref: torch.Tensor,
+    y_ref: torch.Tensor,
+    *,
+    n_canaries: int,
+    out_dim: int,
+    target_class: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Create `n_canaries` canaries by taking the last `n_canaries` samples and relabeling them.
+
+    We relabel deterministically to `target_class`, but if a sample already has that label,
+    we flip it to `(target_class + 1) % out_dim` to guarantee it is actually mislabeled.
+    """
+    target_class = int(target_class)
+    out_dim = int(out_dim)
+
+    if int(n_canaries) < 1:
+        raise ValueError(f"n_canaries must be >= 1, got {n_canaries}")
+
+    if out_dim <= 1:
+        raise ValueError(f"out_dim must be > 1 to mislabel, got {out_dim}")
+    if target_class < 0 or target_class >= out_dim:
+        raise ValueError(f"target_class must be in [0, {out_dim}), got {target_class}")
+
+    if X_ref.shape[0] < int(n_canaries):
+        raise ValueError(f"Need at least n_canaries samples. Got n={int(X_ref.shape[0])} n_canaries={int(n_canaries)}")
+
+    Xc = X_ref[-int(n_canaries):].clone()
+    y_true = y_ref[-int(n_canaries):].clone().long().view(-1)
+
+    y_mis = torch.full_like(y_true, fill_value=int(target_class))
+    same = (y_true == y_mis)
+    if torch.any(same):
+        y_mis[same] = (int(target_class) + 1) % int(out_dim)
+
+    return Xc, y_mis
+
+
 def _load_canaries_from_pt_dict(pt_path: str, ref_X: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict]:
     """Load multiple canaries from a single .pt file.
 
@@ -380,10 +418,12 @@ def main():
     parser.add_argument('--k_plus', type=int, default=1, help='number of top-scoring canaries guessed IN')
     parser.add_argument('--k_minus', type=int, default=1, help='number of bottom-scoring canaries guessed OUT')
 
-    parser.add_argument('--target_type', type=str, default='blank', help='canary type (blank or filelist)')
+    parser.add_argument('--target_type', type=str, default='blank', help='canary type (blank, mislabeled, or pt)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='path to a .pt dict containing canaries + labels; used when --target_type=pt')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target')
+    parser.add_argument('--mislabeled_target_class', type=int, default=1,
+                        help='target class for mislabeled canaries (default: 1)')
 
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='debug/o1_audit', help='output folder')
@@ -467,6 +507,10 @@ def main():
     else:
         X, y, out_dim = load_data(args.data_name, args.n_df - 1, split='train')
     y = y.long()
+    
+    # Load test set
+    X_test, y_test, _ = load_data(args.data_name, None, split='test')
+    y_test = y_test.long()
 
     n = len(X)
     m = int(args.n_canaries)
@@ -478,6 +522,14 @@ def main():
     canary_meta = {}
     if args.target_type == 'blank':
         X_canary, y_canary = _make_canaries_blank(X, y, n_canaries=m, blank_alpha=float(args.blank_alpha))
+    elif args.target_type == 'mislabeled':
+        X_canary, y_canary = _make_canaries_mislabeled(
+            X,
+            y,
+            n_canaries=m,
+            out_dim=int(out_dim),
+            target_class=int(args.mislabeled_target_class),
+        )
     elif args.target_type == 'pt':
         if args.canary_pt is None:
             raise ValueError("--canary_pt is required when --target_type=pt")
@@ -486,11 +538,16 @@ def main():
         if m != int(args.n_canaries):
             raise ValueError(f"Loaded {m} canaries from pt, but --n_canaries was {args.n_canaries}")
     else:
-        raise ValueError(f"Unsupported --target_type {args.target_type} (expected blank or pt)")
+        raise ValueError(f"Unsupported --target_type {args.target_type} (expected blank, mislabeled, or pt)")
 
     # Non-auditing examples: always included
-    X_base = X[:-m]
-    y_base = y[:-m]
+    # For mislabeled canaries we exclude the clean versions from the base set (no co-occurrence).
+    if args.target_type == 'mislabeled':
+        X_base = X[:-m]
+        y_base = y[:-m]
+    else:
+        X_base = X
+        y_base = y
 
     # Sample inclusion mask S for canaries: +1 included, -1 excluded (coin flips)
     S = rng.integers(low=0, high=2, size=m, dtype=np.int64)
@@ -548,6 +605,12 @@ def main():
         canary_indices=canary_indices_in_train,
     )
     print(f"Training done in {time.time() - start:.2f}s")
+    
+    # Compute and print accuracies
+    train_acc = test_model(model, X_in, y_in, batch_size=256, device=str(device))
+    test_acc = test_model(model, X_test, y_test, batch_size=256, device=str(device))
+    print(f"Train accuracy: {train_acc * 100:.2f}%")
+    print(f"Test accuracy: {test_acc * 100:.2f}%")
 
     # Log canary drop information
     if defense_stats is not None:
