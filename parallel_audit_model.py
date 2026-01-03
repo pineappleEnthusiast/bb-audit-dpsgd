@@ -717,7 +717,7 @@ def main():
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
     parser.add_argument('--defense_k', type=int, default=5, help='number of samples dropped per class per epoch when defense is enabled')
-    parser.add_argument('--defense_apply_ascent', action='store_true', default=True, help='apply gradient ascent to high-scoring samples (default: True when defense is enabled)')
+    parser.add_argument('--defense_apply_ascent', action='store_true', default=False, help='apply gradient ascent to high-scoring samples')
     parser.add_argument('--defense_filter_every', type=int, default=1, help='apply defense filtering every N epochs (default: 1, i.e., every epoch)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')

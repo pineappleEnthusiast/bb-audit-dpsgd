@@ -68,7 +68,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c "
     --defense_k $DEFENSE_K \
     --defense_apply_ascent \
     --defense_score_fn grad_norm \
-    --defense_score_norm l2 \
+    --defense_score_norm linf \
     --holdout_audit \
     --out cifar10_varying_defense_bandwidth/$OUT_NAME"
 

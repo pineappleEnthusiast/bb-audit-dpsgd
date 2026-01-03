@@ -25,7 +25,7 @@ DELTA=1e-5
 SEED=0
 TARGET_TYPE="blank"
 DEFENSE_SCORE_FN="grad_norm"
-DEFENSE_SCORE_NORM="l2"
+DEFENSE_SCORE_NORM="linf"
 DEFENSE_K=5
 
 # Parent output folder

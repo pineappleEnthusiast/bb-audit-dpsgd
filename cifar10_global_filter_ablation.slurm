@@ -31,7 +31,7 @@ BLOCK_SIZE=3125
 SEED=0
 TARGET_TYPE="blank"
 SCORE_FN="gradient_kurtosis"
-SCORE_NORM="l2"
+SCORE_NORM="linf"
 
 # Parent output folder
 PARENT_OUT="cifar10_global_filter_ablation"

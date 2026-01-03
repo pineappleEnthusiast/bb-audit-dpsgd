@@ -26,7 +26,7 @@ SEED=0
 TARGET_TYPE="blank"
 DEFENSE_K=5
 DEFENSE_SCORE_FN="grad_norm"
-DEFENSE_SCORE_NORM="l2"
+DEFENSE_SCORE_NORM="linf"
 
 # Parent output folder
 PARENT_OUT="gradient_ascent_ablation"
@@ -184,7 +184,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --holdout_audit \
     '"${DEFENSE_FLAG}"' \
     '"${ASCENT_FLAG}"' \
-    --out '"${PARENT_OUT}"'/'"${OUT_NAME}"''
+    --out '"${PARENT_OUT}/${OUT_NAME}"'
 
 echo "=========================================="
 echo "Task ${SLURM_ARRAY_TASK_ID} completed: ${OUT_NAME}"

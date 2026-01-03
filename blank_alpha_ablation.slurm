@@ -26,7 +26,7 @@ DELTA=1e-5
 SEED=0
 TARGET_TYPE="blank"
 DEFENSE_SCORE_FN="grad_norm"
-DEFENSE_SCORE_NORM="l2"
+DEFENSE_SCORE_NORM="linf"
 
 # Parent output folder
 PARENT_OUT="blank_alpha_ablation"

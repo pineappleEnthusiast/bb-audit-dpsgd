@@ -71,7 +71,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c "
     --defense_k 5 \
     --defense_apply_ascent \
     --defense_score_fn grad_norm \
-    --defense_score_norm l2 \
+    --defense_score_norm linf \
     --defense_filter_every $FILTER_EVERY \
     --holdout_audit \
     --out cifar10_varying_filter_epochs/$OUT_NAME"
