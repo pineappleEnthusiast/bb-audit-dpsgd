@@ -15,6 +15,33 @@ from utils.data import load_data
 from parallel_audit_multi_canary import train_model_multi_canary
 
 
+def test_model(model, X, y, batch_size=128, device='cuda:0'):
+    device = torch.device(device)
+    model = model.to(device)
+    X = X.to(device)
+    y = y.to(device)
+
+    test_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(X, y),
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    model.eval()
+    acc = 0
+    total = 0
+    with torch.no_grad():
+        for curr_X, curr_y in test_loader:
+            curr_X = curr_X.to(device)
+            curr_y = curr_y.to(device)
+            curr_y_hat = torch.argmax(model(curr_X), dim=1)
+            acc += torch.sum(curr_y_hat == curr_y).cpu().item()
+            total += len(curr_y)
+
+    model.train()
+    return acc / total if total > 0 else 0.0
+
+
 def _make_canaries_blank(X_ref: torch.Tensor, y_ref: torch.Tensor, n_canaries: int, blank_alpha: float):
     """Create `n_canaries` blank canaries matching X_ref shape.
 
