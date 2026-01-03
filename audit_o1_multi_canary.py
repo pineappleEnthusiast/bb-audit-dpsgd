@@ -581,18 +581,26 @@ def main():
     S = np.where(S == 1, 1, -1).astype(np.int8)
 
     include_mask = (S == 1)
-    X_in = torch.vstack([X_base, X_canary[include_mask]])
-    y_in = torch.cat([y_base, y_canary[include_mask]])
-
     included_canary_positions = np.where(include_mask)[0].astype(np.int64)
-    canary_indices_in_train = None
-    if args.defense:
-        # The included canaries are appended to the end of X_in.
-        base_len = int(X_base.shape[0])
-        n_included = int(include_mask.sum())
-        canary_indices_in_train = np.arange(base_len, base_len + n_included, dtype=np.int64)
+    n_included = int(include_mask.sum())
 
-    print(f"Base size={len(X_base)} canaries={m} included={int(include_mask.sum())} excluded={int((~include_mask).sum())}")
+    # Keep training set size fixed by replacing the last n_included base samples with the included canaries.
+    # This avoids batch-size changes due to random include/exclude.
+    X_in = X_base.clone()
+    y_in = y_base.clone()
+    if n_included > 0:
+        if int(X_in.shape[0]) < n_included:
+            raise ValueError(f"Base dataset too small to replace {n_included} samples (base size={int(X_in.shape[0])})")
+        X_in[-n_included:] = X_canary[include_mask]
+        y_in[-n_included:] = y_canary[include_mask]
+
+    canary_indices_in_train = None
+    if args.defense and n_included > 0:
+        # Included canaries occupy the last n_included positions of X_in.
+        base_len = int(X_in.shape[0])
+        canary_indices_in_train = np.arange(base_len - n_included, base_len, dtype=np.int64)
+
+    print(f"Base size={len(X_base)} canaries={m} included={n_included} excluded={int((~include_mask).sum())}")
     print(f"Training set size={len(X_in)}")
 
     gen = torch.Generator(device='cpu')
