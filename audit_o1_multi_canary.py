@@ -78,14 +78,12 @@ def _make_canaries_mislabeled(
     *,
     n_canaries: int,
     out_dim: int,
-    target_class: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Create `n_canaries` canaries by taking the last `n_canaries` samples and relabeling them.
 
-    We relabel deterministically to `target_class`, but if a sample already has that label,
-    we flip it to `(target_class + 1) % out_dim` to guarantee it is actually mislabeled.
+    Each canary is deterministically mislabeled to a class different from its true label:
+        y_mis = (y_true + 1) % out_dim
     """
-    target_class = int(target_class)
     out_dim = int(out_dim)
 
     if int(n_canaries) < 1:
@@ -93,8 +91,6 @@ def _make_canaries_mislabeled(
 
     if out_dim <= 1:
         raise ValueError(f"out_dim must be > 1 to mislabel, got {out_dim}")
-    if target_class < 0 or target_class >= out_dim:
-        raise ValueError(f"target_class must be in [0, {out_dim}), got {target_class}")
 
     if X_ref.shape[0] < int(n_canaries):
         raise ValueError(f"Need at least n_canaries samples. Got n={int(X_ref.shape[0])} n_canaries={int(n_canaries)}")
@@ -102,11 +98,7 @@ def _make_canaries_mislabeled(
     Xc = X_ref[-int(n_canaries):].clone()
     y_true = y_ref[-int(n_canaries):].clone().long().view(-1)
 
-    y_mis = torch.full_like(y_true, fill_value=int(target_class))
-    same = (y_true == y_mis)
-    if torch.any(same):
-        y_mis[same] = (int(target_class) + 1) % int(out_dim)
-
+    y_mis = (y_true + 1) % int(out_dim)
     return Xc, y_mis
 
 
@@ -449,8 +441,6 @@ def main():
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='path to a .pt dict containing canaries + labels; used when --target_type=pt')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target')
-    parser.add_argument('--mislabeled_target_class', type=int, default=1,
-                        help='target class for mislabeled canaries (default: 1)')
 
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='debug/o1_audit', help='output folder')
@@ -555,7 +545,6 @@ def main():
             y,
             n_canaries=m,
             out_dim=int(out_dim),
-            target_class=int(args.mislabeled_target_class),
         )
     elif args.target_type == 'pt':
         if args.canary_pt is None:
