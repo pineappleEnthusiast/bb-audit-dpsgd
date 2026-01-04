@@ -477,6 +477,9 @@ def main():
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm',
                         help='defense scoring function name (default: grad_norm)')
 
+    parser.add_argument('--debug_mode', action='store_true',
+                        help='if set, enter an interactive loop after training to recompute empirical epsilon for different k_plus/k_minus values without retraining')
+
     args = parser.parse_args()
 
     if args.optimizer != 'sgd':
@@ -659,52 +662,89 @@ def main():
         logits = model(X_canary.to(dev))
         scores = (-F.cross_entropy(logits, y_canary.to(dev), reduction='none')).detach().cpu().numpy().astype(np.float32)
 
-    # Guess T with abstention
-    T = compute_T_from_scores(scores, args.k_plus, args.k_minus)
+    def _compute_and_print_empirical_eps(*, k_plus: int, k_minus: int):
+        T_local = compute_T_from_scores(scores, int(k_plus), int(k_minus))
+        W_local = compute_W(S, T_local)
 
-    # Compute W
-    W = compute_W(S, T)
+        guessed_local = (T_local != 0)
+        n_guessed_local = int(guessed_local.sum())
+        n_correct_local = int(((T_local[guessed_local] * S[guessed_local]) > 0).sum()) if n_guessed_local > 0 else 0
 
-    # Useful summary stats on guessed items only
-    guessed = (T != 0)
-    n_guessed = int(guessed.sum())
-    n_correct = int(((T[guessed] * S[guessed]) > 0).sum()) if n_guessed > 0 else 0
+        emp_eps_local = None
+        emp_eps_aux_local = None
+        if str(args.empirical_eps_method) == 'pvalue':
+            emp_eps_local = get_eps_audit(
+                m=m,
+                r=n_guessed_local,
+                v=n_correct_local,
+                delta=float(args.delta),
+                alpha=float(args.alpha),
+                n_iter=30,
+            )
+        elif str(args.empirical_eps_method) == 'fdp_gaussian':
+            noises = np.logspace(
+                np.log10(float(args.fdp_noise_max)),
+                np.log10(float(args.fdp_noise_min)),
+                num=int(args.fdp_noise_steps),
+                base=10.0,
+                dtype=np.float64,
+            )
+            emp_eps_local, emp_eps_aux_local = get_empirical_epsilon_fdp_gaussian(
+                m=m,
+                c=n_correct_local,
+                c_prime=n_guessed_local,
+                delta=float(args.delta),
+                tau=float(args.alpha),
+                candidate_noises=noises,
+            )
+        else:
+            raise ValueError(f"Unknown --empirical_eps_method: {args.empirical_eps_method}")
 
-    emp_eps = None
-    emp_eps_aux = None
-    if str(args.empirical_eps_method) == 'pvalue':
-        emp_eps = get_eps_audit(
-            m=m,
-            r=n_guessed,
-            v=n_correct,
-            delta=float(args.delta),
-            alpha=float(args.alpha),
-            n_iter=30,
-        )
-    elif str(args.empirical_eps_method) == 'fdp_gaussian':
-        noises = np.logspace(
-            np.log10(float(args.fdp_noise_max)),
-            np.log10(float(args.fdp_noise_min)),
-            num=int(args.fdp_noise_steps),
-            base=10.0,
-            dtype=np.float64,
-        )
-        emp_eps, emp_eps_aux = get_empirical_epsilon_fdp_gaussian(
-            m=m,
-            c=n_correct,
-            c_prime=n_guessed,
-            delta=float(args.delta),
-            tau=float(args.alpha),
-            candidate_noises=noises,
-        )
-    else:
-        raise ValueError(f"Unknown --empirical_eps_method: {args.empirical_eps_method}")
+        print(f"k_plus={int(k_plus)} k_minus={int(k_minus)} guessed={n_guessed_local}/{m} correct={n_correct_local}/{n_guessed_local}")
+        print(f"W={W_local}")
+        print(f"Empirical epsilon (alpha={args.alpha}, delta={args.delta}): {emp_eps_local}")
+        return T_local, W_local, emp_eps_local, emp_eps_aux_local, n_guessed_local, n_correct_local
 
-    print(f"k_plus={args.k_plus} k_minus={args.k_minus} guessed={n_guessed}/{m} correct={n_correct}/{n_guessed}")
-    print(f"W={W}")
-    print(f"Empirical epsilon (alpha={args.alpha}, delta={args.delta}): {emp_eps}")
+    # Initial empirical epsilon
+    T, W, emp_eps, emp_eps_aux, n_guessed, n_correct = _compute_and_print_empirical_eps(
+        k_plus=int(args.k_plus),
+        k_minus=int(args.k_minus),
+    )
 
-    # Save outputs
+    # Optional interactive loop (no retraining)
+    if bool(args.debug_mode):
+        while True:
+            try:
+                resp = input("[debug_mode] Enter k_plus,k_minus or 'q' to quit: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[debug_mode] Exiting.")
+                break
+
+            if resp.lower() in {'q', 'quit', 'exit'}:
+                break
+            if resp == '':
+                continue
+
+            parts = [p.strip() for p in resp.split(',')]
+            if len(parts) != 2:
+                print("[debug_mode] Expected format: k_plus,k_minus (e.g. 1,1) or 'q'")
+                continue
+            try:
+                k_plus_new = int(parts[0])
+                k_minus_new = int(parts[1])
+            except ValueError:
+                print("[debug_mode] k_plus and k_minus must be integers")
+                continue
+
+            try:
+                T, W, emp_eps, emp_eps_aux, n_guessed, n_correct = _compute_and_print_empirical_eps(
+                    k_plus=k_plus_new,
+                    k_minus=k_minus_new,
+                )
+            except Exception as e:
+                print(f"[debug_mode] Error computing empirical epsilon: {e}")
+
+    # Save outputs (final values)
     np.save(os.path.join(args.out, 'S.npy'), S)
     np.save(os.path.join(args.out, 'T.npy'), T)
     np.save(os.path.join(args.out, 'scores.npy'), scores)
