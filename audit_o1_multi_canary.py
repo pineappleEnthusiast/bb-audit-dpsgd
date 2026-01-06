@@ -752,7 +752,11 @@ def main():
                           f"W={W_local}, emp_eps={eps:.6f}")
 
     if best_result is not None:
-        k_plus, k_minus, T, W, emp_eps, n_guessed, n_correct = best_result
+        if len(best_result) == 8:
+            k_plus, k_minus, T, W, emp_eps, n_guessed, n_correct, emp_eps_aux = best_result
+        else:
+            k_plus, k_minus, T, W, emp_eps, n_guessed, n_correct = best_result
+            emp_eps_aux = None
         print(f"\n=== Best Result ===")
         print(f"k_plus = {k_plus}")
         print(f"k_minus = {k_minus}")
@@ -765,6 +769,7 @@ def main():
         T = compute_T_from_scores(scores, int(args.k_plus), int(args.k_minus))
         W = compute_W(S, T)
         emp_eps = 0.0
+        emp_eps_aux = None
 
     # Save outputs (final values)
     np.save(os.path.join(args.out, 'S.npy'), S)
