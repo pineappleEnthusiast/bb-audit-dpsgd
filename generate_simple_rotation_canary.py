@@ -20,7 +20,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from utils.dpsgd import Models, xavier_init_model, init_wideresnet
+from models import Models
+from models.wideresnet import WSConv2d
 from utils.data import load_data
 
 
@@ -40,6 +41,36 @@ def compute_per_sample_gradient(model, x, y_target, device):
         if param.grad is not None:
             grad[name] = param.grad.detach().clone()
     return grad
+
+
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    model.apply(init_weights)
+
+    
+
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
 
 
 def simple_gradient_rotation_canary(D_train, model_init, device='cpu'):
@@ -67,7 +98,8 @@ def simple_gradient_rotation_canary(D_train, model_init, device='cpu'):
     x_canary, y_true, _ = candidates[0]
 
     # Mislabel it
-    num_classes = model_init(model_init(torch.randn(1, *x_canary.shape).to(device))).shape[1]
+    out = model_init(torch.randn(1, *x_canary.shape).to(device))
+    num_classes = out.shape[1]
     y_wrong = (y_true + 1) % num_classes
 
     return x_canary, y_wrong
@@ -79,8 +111,12 @@ def main():
     parser.add_argument('--model_name', type=str, default='cnn', choices=list(Models.keys()), help='model to use')
     parser.add_argument('--output', type=str, default='simple_rotation_canary.pt', help='output file')
     parser.add_argument('--seed', type=int, default=0, help='random seed')
+    parser.add_argument('--fixed_init', action='store_true', help='Use fixed initialization (seed=0)')
 
     args = parser.parse_args()
+
+    if args.fixed_init:
+        args.seed = 0
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
