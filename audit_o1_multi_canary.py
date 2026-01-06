@@ -202,6 +202,51 @@ def compute_W(S: np.ndarray, T: np.ndarray) -> int:
     return int(np.maximum(0, prod).sum())
 
 
+def _compute_empirical_eps(k_plus_k_minus, scores, S, m, args):
+    k_plus, k_minus = k_plus_k_minus
+    try:
+        T_local = compute_T_from_scores(scores, int(k_plus), int(k_minus))
+        W_local = compute_W(S, T_local)
+
+        guessed_local = (T_local != 0)
+        n_guessed_local = int(guessed_local.sum())
+        n_correct_local = int(((T_local[guessed_local] * S[guessed_local]) > 0).sum()) if n_guessed_local > 0 else 0
+
+        emp_eps_local = None
+        if str(args.empirical_eps_method) == 'pvalue':
+            emp_eps_local = get_eps_audit(
+                m=m,
+                r=n_guessed_local,
+                v=n_correct_local,
+                delta=float(args.delta),
+                alpha=float(args.alpha),
+                n_iter=30,
+            )
+        elif str(args.empirical_eps_method) == 'fdp_gaussian':
+            noises = np.logspace(
+                np.log10(float(args.fdp_noise_max)),
+                np.log10(float(args.fdp_noise_min)),
+                num=int(args.fdp_noise_steps),
+                base=10.0,
+                dtype=np.float64,
+            )
+            emp_eps_local, _ = get_empirical_epsilon_fdp_gaussian(
+                m=m,
+                c=n_correct_local,
+                c_prime=n_guessed_local,
+                delta=float(args.delta),
+                tau=float(args.alpha),
+                candidate_noises=noises,
+            )
+        else:
+            raise ValueError(f"Unknown --empirical_eps_method: {args.empirical_eps_method}")
+
+        return (k_plus, k_minus, T_local, W_local, emp_eps_local, n_guessed_local, n_correct_local)
+    except Exception as e:
+        print(f"[WARN] Error computing for k_plus={k_plus}, k_minus={k_minus}: {e}")
+        return None
+
+
 def _logsumexp(log_values: list[float]) -> float:
     if len(log_values) == 0:
         return float('-inf')
@@ -663,94 +708,6 @@ def main():
         logits = model(X_canary.to(dev))
         scores = (-F.cross_entropy(logits, y_canary.to(dev), reduction='none')).detach().cpu().numpy().astype(np.float32)
 
-    def _compute_and_print_empirical_eps(*, k_plus: int, k_minus: int):
-        T_local = compute_T_from_scores(scores, int(k_plus), int(k_minus))
-        W_local = compute_W(S, T_local)
-
-        guessed_local = (T_local != 0)
-        n_guessed_local = int(guessed_local.sum())
-        n_correct_local = int(((T_local[guessed_local] * S[guessed_local]) > 0).sum()) if n_guessed_local > 0 else 0
-
-        emp_eps_local = None
-        emp_eps_aux_local = None
-        if str(args.empirical_eps_method) == 'pvalue':
-            emp_eps_local = get_eps_audit(
-                m=m,
-                r=n_guessed_local,
-                v=n_correct_local,
-                delta=float(args.delta),
-                alpha=float(args.alpha),
-                n_iter=30,
-            )
-        elif str(args.empirical_eps_method) == 'fdp_gaussian':
-            noises = np.logspace(
-                np.log10(float(args.fdp_noise_max)),
-                np.log10(float(args.fdp_noise_min)),
-                num=int(args.fdp_noise_steps),
-                base=10.0,
-                dtype=np.float64,
-            )
-            emp_eps_local, emp_eps_aux_local = get_empirical_epsilon_fdp_gaussian(
-                m=m,
-                c=n_correct_local,
-                c_prime=n_guessed_local,
-                delta=float(args.delta),
-                tau=float(args.alpha),
-                candidate_noises=noises,
-            )
-        else:
-            raise ValueError(f"Unknown --empirical_eps_method: {args.empirical_eps_method}")
-
-        print(f"k_plus={int(k_plus)} k_minus={int(k_minus)} guessed={n_guessed_local}/{m} correct={n_correct_local}/{n_guessed_local}")
-        print(f"W={W_local}")
-        print(f"Empirical epsilon (alpha={args.alpha}, delta={args.delta}): {emp_eps_local}")
-        return T_local, W_local, emp_eps_local, emp_eps_aux_local, n_guessed_local, n_correct_local
-
-    # Function to compute empirical epsilon for a single (k_plus, k_minus) pair
-    def _compute_empirical_eps(k_plus_k_minus):
-        k_plus, k_minus = k_plus_k_minus
-        try:
-            T_local = compute_T_from_scores(scores, int(k_plus), int(k_minus))
-            W_local = compute_W(S, T_local)
-
-            guessed_local = (T_local != 0)
-            n_guessed_local = int(guessed_local.sum())
-            n_correct_local = int(((T_local[guessed_local] * S[guessed_local]) > 0).sum()) if n_guessed_local > 0 else 0
-
-            emp_eps_local = None
-            if str(args.empirical_eps_method) == 'pvalue':
-                emp_eps_local = get_eps_audit(
-                    m=m,
-                    r=n_guessed_local,
-                    v=n_correct_local,
-                    delta=float(args.delta),
-                    alpha=float(args.alpha),
-                    n_iter=30,
-                )
-            elif str(args.empirical_eps_method) == 'fdp_gaussian':
-                noises = np.logspace(
-                    np.log10(float(args.fdp_noise_max)),
-                    np.log10(float(args.fdp_noise_min)),
-                    num=int(args.fdp_noise_steps),
-                    base=10.0,
-                    dtype=np.float64,
-                )
-                emp_eps_local, _ = get_empirical_epsilon_fdp_gaussian(
-                    m=m,
-                    c=n_correct_local,
-                    c_prime=n_guessed_local,
-                    delta=float(args.delta),
-                    tau=float(args.alpha),
-                    candidate_noises=noises,
-                )
-            else:
-                raise ValueError(f"Unknown --empirical_eps_method: {args.empirical_eps_method}")
-
-            return (k_plus, k_minus, T_local, W_local, emp_eps_local, n_guessed_local, n_correct_local)
-        except Exception as e:
-            print(f"[WARN] Error computing for k_plus={k_plus}, k_minus={k_minus}: {e}")
-            return None
-
     # Generate all valid (k_plus, k_minus) pairs where k_plus + k_minus <= m
     k_pairs = [(kp, km) for kp in range(0, m + 1) 
               for km in range(0, m + 1 - kp) 
@@ -763,7 +720,7 @@ def main():
     best_result = None
     
     with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(_compute_empirical_eps, pair) for pair in k_pairs]
+        futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args) for pair in k_pairs]
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
