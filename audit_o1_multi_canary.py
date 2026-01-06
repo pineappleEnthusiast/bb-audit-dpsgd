@@ -202,7 +202,7 @@ def compute_W(S: np.ndarray, T: np.ndarray) -> int:
     return int(np.maximum(0, prod).sum())
 
 
-def _compute_empirical_eps(k_plus_k_minus, scores, S, m, args):
+def _compute_empirical_eps(k_plus_k_minus, scores, S, m, args, precomputed_noises=None):
     k_plus, k_minus = k_plus_k_minus
     try:
         T_local = compute_T_from_scores(scores, int(k_plus), int(k_minus))
@@ -223,13 +223,17 @@ def _compute_empirical_eps(k_plus_k_minus, scores, S, m, args):
                 n_iter=30,
             )
         elif str(args.empirical_eps_method) == 'fdp_gaussian':
-            noises = np.logspace(
-                np.log10(float(args.fdp_noise_max)),
-                np.log10(float(args.fdp_noise_min)),
-                num=int(args.fdp_noise_steps),
-                base=10.0,
-                dtype=np.float64,
-            )
+            # Use precomputed noises if available
+            if precomputed_noises is not None:
+                noises = precomputed_noises
+            else:
+                noises = np.logspace(
+                    np.log10(float(args.fdp_noise_max)),
+                    np.log10(float(args.fdp_noise_min)),
+                    num=int(args.fdp_noise_steps),
+                    base=10.0,
+                    dtype=np.float64,
+                )
             emp_eps_local, _ = get_empirical_epsilon_fdp_gaussian(
                 m=m,
                 c=n_correct_local,
@@ -708,10 +712,25 @@ def main():
         logits = model(X_canary.to(dev))
         scores = (-F.cross_entropy(logits, y_canary.to(dev), reduction='none')).detach().cpu().numpy().astype(np.float32)
 
+    # Precompute noises array for FDP Gaussian method (avoid redundant computation)
+    precomputed_noises = None
+    if str(args.empirical_eps_method) == 'fdp_gaussian':
+        precomputed_noises = np.logspace(
+            np.log10(float(args.fdp_noise_max)),
+            np.log10(float(args.fdp_noise_min)),
+            num=int(args.fdp_noise_steps),
+            base=10.0,
+            dtype=np.float64,
+        )
+
     # Generate all valid (k_plus, k_minus) pairs where k_plus + k_minus <= m
+    # Filter out trivial cases and prioritize balanced pairs
     k_pairs = [(kp, km) for kp in range(0, m + 1) 
               for km in range(0, m + 1 - kp) 
               if (kp > 0 or km > 0)]
+    
+    # Sort pairs to prioritize balanced splits (likely to yield higher epsilon)
+    k_pairs.sort(key=lambda pair: -min(pair[0], pair[1]))
 
     print(f"Searching for max empirical epsilon across {len(k_pairs)} (k_plus, k_minus) pairs...")
     
@@ -720,7 +739,7 @@ def main():
     best_result = None
     
     with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args) for pair in k_pairs]
+        futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
