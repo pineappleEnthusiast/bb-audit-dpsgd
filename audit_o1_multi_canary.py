@@ -729,8 +729,8 @@ def main():
               for km in range(0, m + 1 - kp) 
               if (kp > 0 or km > 0)]
     
-    # Sort pairs to prioritize balanced splits (likely to yield higher epsilon)
-    k_pairs.sort(key=lambda pair: -min(pair[0], pair[1]))
+    # Shuffle for broader exploration of search space
+    np.random.shuffle(k_pairs)
 
     print(f"Searching for max empirical epsilon across {len(k_pairs)} (k_plus, k_minus) pairs...")
     
