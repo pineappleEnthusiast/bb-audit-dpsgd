@@ -129,7 +129,7 @@ def main():
     D_train = list(zip(X, y))
 
     # Initialize model
-    model_init = Models[args.model_name](X.shape[1:], out_dim).to(device)
+    model_init = Models[args.model_name](X.shape, out_dim).to(device)
     if args.model_name == 'cnn':
         xavier_init_model(model_init)
     else:
