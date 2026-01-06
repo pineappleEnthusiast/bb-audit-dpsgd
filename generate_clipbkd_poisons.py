@@ -1,3 +1,20 @@
+#!/usr/bin/env python3
+"""
+Generate clipbkd poisons.
+
+This script creates poisons (adversarial examples) along the least variance direction of the data, scaled by the average norm with some jitter. This generates inputs that are likely to have large gradients and be sensitive to clipping defenses.
+
+How it works:
+- Compute the least variance direction using PCA on flattened training data.
+- Generate k poisons by scaling this direction with average data norm plus jitter.
+- Assign all poisons the label 0.
+
+Note: Run audits using parallel_audit_model.py for parallelized evaluation.
+
+Sample usage:
+    python generate_clipbkd_poisons.py --data_name cifar10 --k 10 --out poisons.pt
+"""
+
 import argparse
 import os
 import time
@@ -84,6 +101,8 @@ def main():
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     payload = {
+        "canary": X_poison.detach().cpu(),
+        "canary_label": y_poison.detach().cpu(),
         "X_poison": X_poison.detach().cpu(),
         "y_poison": y_poison.detach().cpu(),
         "meta": {
