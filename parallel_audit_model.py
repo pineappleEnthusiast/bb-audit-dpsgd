@@ -691,9 +691,13 @@ def main():
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, clipbkd, badnets, or path to target sample)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
+    parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
+                        help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
+    parser.add_argument('--mislabeled_target_class', type=int, default=1,
+                        help='Target class for mislabeled canary (default: 1). The canary will be a true class 0 sample relabeled as this class.')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
@@ -858,6 +862,18 @@ def main():
             target_y = y_out[-1].unsqueeze(0)
             if rank == 0:
                 print("Using gradient-space canary")
+        elif args.target_type == 'mislabeled':
+            # Find first sample with true label 0
+            class_0_indices = (y_out == 0).nonzero(as_tuple=True)[0]
+            if len(class_0_indices) == 0:
+                raise ValueError("No class 0 samples found in dataset for mislabeled canary")
+            # Use first class 0 sample deterministically
+            target_idx = class_0_indices[0].item()
+            target_X = X_out[target_idx].unsqueeze(0)
+            # Mislabel it as the specified target class
+            target_y = torch.tensor([args.mislabeled_target_class], dtype=torch.long)
+            if rank == 0:
+                print(f"Using mislabeled canary: true class 0 sample (index {target_idx}) relabeled as class {args.mislabeled_target_class}")
         elif args.target_type == 'blank':
             blank_img = torch.zeros_like(X_out[[0]])
             if args.blank_alpha > 0:
@@ -996,18 +1012,25 @@ def main():
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(
         out_folder, args.fit_world_only, rank)
     
-    # Create crafted gradient if needed
+    # Create or load crafted gradient if needed
     crafted_grad = None
-    if args.target_type == 'gradient_space_canary' and args.canary_pt is None:
-        if rank == 0:
-            print('Creating crafted gradient')
-        temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
-        if args.model_name == 'cnn':
-            xavier_init_model(temp_model)
-        else:
-            init_wideresnet(temp_model)
-        crafted_grad = craft_gradient(model=temp_model, device=device)
-        del temp_model
+    if args.target_type == 'gradient_space_canary':
+        if args.gradient_space_canary_pt is not None:
+            if not os.path.exists(args.gradient_space_canary_pt):
+                raise FileNotFoundError(f"--gradient_space_canary_pt not found: {args.gradient_space_canary_pt}")
+            crafted_grad = torch.load(args.gradient_space_canary_pt, map_location='cpu')
+            if rank == 0:
+                print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
+        elif args.canary_pt is None:
+            if rank == 0:
+                print('Creating crafted gradient')
+            temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+            if args.model_name == 'cnn':
+                xavier_init_model(temp_model)
+            else:
+                init_wideresnet(temp_model)
+            crafted_grad = craft_gradient(model=temp_model, device=device)
+            del temp_model
 
     # Distribute repetitions across GPUs
     # TODO: fix distribute reps to account for reps completed
@@ -1048,8 +1071,8 @@ def main():
                 defense_k=int(args.defense_k),
                 defense_filter_every=int(args.defense_filter_every),
                 aug_mult=args.aug_mult,
-                gradient_space_audit=(args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in'),
-                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in') else None,
+                gradient_space_audit=(args.target_type == 'gradient_space_canary' and world == 'in'),
+                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
                 device=device,
                 generator=generator,
                 dl_generator=dl_generator,
@@ -1085,7 +1108,7 @@ def main():
                 
                 output = model(target_X_device)
                 
-                if args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in' and crafted_grad is not None:
+                if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
                     # Calculate parameter update
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
@@ -1108,7 +1131,7 @@ def main():
                 losses[world].append(loss)
 
             if args.store_all_losses:
-                if args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in':
+                if args.target_type == 'gradient_space_canary' and world == 'in':
                     # Not a per-sample loss-based audit; keep placeholder for alignment.
                     all_losses[world].append(np.array([], dtype=np.float32))
                 else:
