@@ -2,7 +2,7 @@ import argparse
 import os
 import time
 import math
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import dill
 import numpy as np
@@ -737,11 +737,17 @@ def main():
     # Use ProcessPoolExecutor for parallel computation
     best_eps = -float('inf')
     best_result = None
+    total_pairs = len(k_pairs)
+    processed = 0
+    progress_interval = max(1, total_pairs // 10)  # Every 10% or at least 1
     
-    with ProcessPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=min(100, os.cpu_count() * 4)) as executor:
         futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
         for future in as_completed(futures):
             result = future.result()
+            processed += 1
+            if processed % progress_interval == 0 or processed == total_pairs:
+                print(f"Progress: {processed}/{total_pairs} pairs processed")
             if result is not None:
                 k_plus, k_minus, T_local, W_local, eps, n_guessed, n_correct = result
                 if eps is not None and eps > best_eps:
