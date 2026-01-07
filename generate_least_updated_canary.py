@@ -148,7 +148,7 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
                 max_grad_norm,
                 drop_mask=None,
                 block_size=1,
-                scores=None,
+                scores=np.zeros(len(curr_X), dtype=np.float32),
                 device=device,
                 global_indices=torch.arange(len(curr_X), device=device),
                 aug_mult=1,
