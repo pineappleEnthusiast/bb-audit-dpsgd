@@ -70,7 +70,7 @@ def main():
     parser.add_argument('--canary_pt', type=str, required=True, help='Path to canary .pt file')
     parser.add_argument('--data_name', type=str, default='mnist')
     parser.add_argument('--model_name', type=str, default='cnn')
-    parser.add_argument('--epochs', type=int, default=10) # Run for enough epochs to see defense triggers
+    parser.add_argument('--epochs', type=int, default=100) # Run for enough epochs to see defense triggers
     parser.add_argument('--lr', type=float, default=3.0) # High LR to make updates visible
     parser.add_argument('--defense_k', type=int, default=5)
     args = parser.parse_args()
