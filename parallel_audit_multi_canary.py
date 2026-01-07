@@ -633,7 +633,7 @@ def train_model_multi_canary(
         print(f" | Time: {epoch_time:.2f}s")
 
         # Defense marking happens at epoch end
-        if defense:
+        if defense and (epoch % defense_filter_every == 0):
             k = int(defense_k)
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
@@ -759,7 +759,7 @@ def main():
 
     parser.add_argument('--defense', action='store_true')
     parser.add_argument('--defense_k', type=int, default=5)
-    parser.add_argument('--defense_apply_ascent', action='store_true', default=True)
+    parser.add_argument('--defense_apply_ascent', action='store_true', default=False)
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'])
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm')
     

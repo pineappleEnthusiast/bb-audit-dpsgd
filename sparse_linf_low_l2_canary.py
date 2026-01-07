@@ -1,3 +1,22 @@
+#!/usr/bin/env python3
+"""
+Generate sparse canaries with high L_inf but low L2 perturbations.
+
+This script creates canaries by perturbing a reference sample with sparse, high-magnitude changes (controlled by eps_linf and k) to achieve high L_inf norm but relatively low L2 norm (since L2 ~ eps * sqrt(k)). This design can exploit defenses that clip based on L2 norm while allowing L_inf attacks.
+
+How it works:
+- Sample a reference input (random or specified index) from the dataset.
+- Apply sparse perturbation: Select k coordinates (or per-channel if specified) and add +/- eps (random sign unless unsigned).
+- Assign audit label based on mode: keep original, random, or shifted.
+- Clamp to range if specified.
+- Save canaries for auditing.
+
+Note: Run audits using parallel_audit_model.py for parallelized evaluation.
+
+Sample usage:
+    python sparse_linf_low_l2_canary.py --data_name cifar10 --m 5 --eps_linf 1.0 --k 10
+"""
+
 import argparse
 import os
 

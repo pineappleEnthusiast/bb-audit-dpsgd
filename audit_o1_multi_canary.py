@@ -711,6 +711,19 @@ def main():
         dev = next(model.parameters()).device
         logits = model(X_canary.to(dev))
         scores = (-F.cross_entropy(logits, y_canary.to(dev), reduction='none')).detach().cpu().numpy().astype(np.float32)
+    
+    # Compute and print mean score gap between included vs excluded canaries
+    scores_included = scores[include_mask]
+    scores_excluded = scores[~include_mask]
+    mean_score_included = float(np.mean(scores_included)) if len(scores_included) > 0 else 0.0
+    mean_score_excluded = float(np.mean(scores_excluded)) if len(scores_excluded) > 0 else 0.0
+    score_gap = mean_score_included - mean_score_excluded
+    
+    print(f"\n=== Canary Score Statistics ===")
+    print(f"Included canaries: n={len(scores_included)}, mean_score={mean_score_included:.6f}")
+    print(f"Excluded canaries: n={len(scores_excluded)}, mean_score={mean_score_excluded:.6f}")
+    print(f"Score gap (included - excluded): {score_gap:.6f}")
+    print(f"================================\n")
 
     # Precompute noises array for FDP Gaussian method (avoid redundant computation)
     precomputed_noises = None
