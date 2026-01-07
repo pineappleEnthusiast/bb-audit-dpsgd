@@ -88,6 +88,8 @@ def main():
     if isinstance(canary_payload, dict):
         canary_X = canary_payload['canary']
         canary_y = canary_payload.get('audit_label', canary_payload.get('target_label', torch.tensor([0])))
+        if not isinstance(canary_y, torch.Tensor):
+            canary_y = torch.tensor([canary_y])
     else:
         # Fallback if just tensor
         canary_X = canary_payload
