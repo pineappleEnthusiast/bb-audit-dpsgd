@@ -26,7 +26,8 @@ from utils.dpsgd import DefenseConfig
 
 
 def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max_grad_norm,
-                                         n_epochs, lr, batch_size, out_dim, device='cuda:0'):
+                                         n_epochs, lr, batch_size, out_dim, device='cuda:0',
+                                         fixed_init=False, seed=0):
     """
     Train a DP-SGD model with defense and find the least updated parameter direction.
     Returns the index of the least updated parameter dimension and the noise level.
@@ -38,6 +39,10 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
         torch.cuda.set_device(device)
 
     # Initialize model
+    if fixed_init:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        
     if model_name == 'lstm':
         vocab_size = out_dim
         model = Models[model_name](vocab_size=vocab_size, out_dim=out_dim).to(device)
@@ -271,6 +276,7 @@ def main():
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument('--output', type=str, default='least_updated_canary.pt', help='output .pt file path')
     parser.add_argument('--noise_margin', type=float, default=1.1, help='norm multiplier above noise level (default: 1.1)')
+    parser.add_argument('--fixed_init', action='store_true', help='Use fixed initialization for reproducibility')
 
     args = parser.parse_args()
 
@@ -295,7 +301,9 @@ def main():
         n_epochs=args.n_epochs,
         lr=args.lr,
         batch_size=args.batch_size,
-        out_dim=out_dim
+        out_dim=out_dim,
+        fixed_init=args.fixed_init,
+        seed=args.seed
     )
 
     # Calculate target norm (slightly above noise level)
