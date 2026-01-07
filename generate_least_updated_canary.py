@@ -146,7 +146,7 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
                 model,
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm,
-                drop_mask=None,
+                drop_mask=np.zeros(len(curr_X), dtype=np.int8),
                 block_size=1,
                 scores=np.zeros(len(curr_X), dtype=np.float32),
                 device=device,
