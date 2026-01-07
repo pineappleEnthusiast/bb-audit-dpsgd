@@ -518,33 +518,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
-
-                # --- DEBUGGING: Track Canary Rank ---
-                canary_idx = len(dataset) - 1
-                if canary_idx in cls_indices.cpu().numpy():
-                    # Find score of canary
-                    loc = (cls_indices.cpu().numpy() == canary_idx).nonzero()[0][0]
-                    canary_score = cls_scores[loc].item()
-                    
-                    # Calculate rank (1-based)
-                    sorted_scores, _ = torch.sort(cls_scores, descending=True)
-                    # rank = number of scores strictly greater + 1
-                    # (handling ties conservatively for now, or just using sort index)
-                    # straightforward: index in sorted array where it appears
-                    
-                    # To be precise matching topk:
-                    is_dropped = (canary_idx in dropped_indices)
-                    
-                    canary_rank_val = (sorted_scores > canary_score).sum().item() + 1
-                    cutoff_val = sorted_scores[min(k-1, len(sorted_scores)-1)].item()
-                    
-                    if rank == 0:
-                        print(f"\n[DEBUG Defense] Epoch {epoch} | Class {cls.item()}")
-                        print(f"       Canary Score: {canary_score:.4e}")
-                        print(f"       Rank: {canary_rank_val}/{len(cls_scores)}")
-                        print(f"       Cutoff (Top-{k}): {cutoff_val:.4e}")
-                        print(f"       Dropped: {is_dropped}")
-                # ------------------------------------
                 
                 if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
                     print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
