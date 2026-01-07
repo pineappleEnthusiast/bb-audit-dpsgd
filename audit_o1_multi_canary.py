@@ -637,7 +637,7 @@ def main():
         y_in[-n_included:] = y_canary[include_mask]
 
     canary_indices_in_train = None
-    if args.defense and n_included > 0:
+    if n_included > 0:
         # Included canaries occupy the last n_included positions of X_in.
         base_len = int(X_in.shape[0])
         canary_indices_in_train = np.arange(base_len - n_included, base_len, dtype=np.int64)
