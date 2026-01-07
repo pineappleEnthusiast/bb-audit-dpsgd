@@ -88,17 +88,19 @@ def compute_per_sample_gradient(model, x, y_target, device):
     x = x.unsqueeze(0).to(device)  # add batch dim
     y_target = torch.tensor([y_target], device=device)
 
-    # Use clip_and_accum_grads for per-sample grad
-    # But since no batch, and no defense, just compute grad
-    model.zero_grad()
-    logits = model(x)
-    loss = F.cross_entropy(logits, y_target)
-    loss.backward()
-
+    args = [x]
+    # We want gradients w.r.t parameters.
+    # Note: If x requires_grad, we need create_graph=True to backprop through the gradient computation w.r.t x.
+    
+    params = list(model.parameters())
+    param_names = [n for n, p in model.named_parameters()]
+    
+    grad_list = torch.autograd.grad(loss, params, create_graph=x.requires_grad, allow_unused=True)
+    
     grad = {}
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grad[name] = param.grad.detach().clone()
+    for name, g in zip(param_names, grad_list):
+        if g is not None:
+            grad[name] = g
     return grad
 
 
