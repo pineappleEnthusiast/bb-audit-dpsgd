@@ -25,7 +25,35 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from utils.dpsgd import Models, xavier_init_model, init_wideresnet
+from models import Models
+import torch.nn as nn
+from models.wideresnet import WSConv2d
+
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    model.apply(init_weights)
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
 from utils.data import load_data
 
 
@@ -175,7 +203,14 @@ def main():
     parser.add_argument('--output', type=str, default='clipbkd_backdoor_canary.pt', help='output file')
     parser.add_argument('--seed', type=int, default=0, help='random seed')
 
+    parser.add_argument('--fixed_init', action='store_true', help='Use fixed initialization (seed 0)')
     args = parser.parse_args()
+
+    if args.fixed_init:
+        torch.manual_seed(0)
+        np.random.seed(0)
+        random.seed(0)
+
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -188,7 +223,9 @@ def main():
     D_train = list(zip(X, y))
 
     # Initialize model
-    model = Models[args.model_name](X.shape[1:], out_dim).to(device)
+    if args.fixed_init:
+        torch.manual_seed(0)
+    model = Models[args.model_name](X.shape).to(device)
     if args.model_name == 'cnn':
         xavier_init_model(model)
     else:
