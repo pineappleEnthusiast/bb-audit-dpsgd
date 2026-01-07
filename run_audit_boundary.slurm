@@ -18,7 +18,7 @@ eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
 
-# 1. Audit WITHOUT Defense (Baseline)
+# 1. Audit WITHOUT Defense
 echo "Starting audit WITHOUT defense..."
 srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
   MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
@@ -33,7 +33,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --target_type pt \
     --canary_pt boundary_canary.pt \
     --aug_mult 1 \
-    --n_reps 2 \
+    --n_reps 400 \
     --n_epochs 100 \
     --lr 3 \
     --batch_size 4000 \
@@ -42,7 +42,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --delta 1e-5 \
     --max_grad_norm 1.0 \
     --fixed_init \
-    --fit_world_only in \
+    --holdout_audit \
     --out debug/boundary_audit/no_defense
 '
 
@@ -61,7 +61,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --target_type pt \
     --canary_pt boundary_canary.pt \
     --aug_mult 1 \
-    --n_reps 2 \
+    --n_reps 400 \
     --n_epochs 100 \
     --lr 3 \
     --batch_size 4000 \
@@ -70,7 +70,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --delta 1e-5 \
     --max_grad_norm 1.0 \
     --fixed_init \
-    --fit_world_only in \
+    --holdout_audit \
     --out debug/boundary_audit/with_defense \
     --defense \
     --defense_k 5 \
