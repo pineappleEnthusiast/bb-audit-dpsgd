@@ -33,8 +33,38 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from utils.dpsgd import Models, xavier_init_model, init_wideresnet
+from models import Models
+from models.wideresnet import WSConv2d
 from utils.data import load_data
+
+
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    model.apply(init_weights)
+
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
+
 
 
 def get_example_from_class(D_train, class_idx):
@@ -111,6 +141,8 @@ def main():
     parser.add_argument('--class_B', type=int, default=1, help='second class')
     parser.add_argument('--output', type=str, default='boundary_canary.pt', help='output file')
     parser.add_argument('--seed', type=int, default=0, help='random seed')
+    parser.add_argument('--fixed_init', action='store_true', help='Use fixed initialization for reproducibility')
+
 
     args = parser.parse_args()
 
@@ -124,11 +156,15 @@ def main():
     D_train = list(zip(X, y))
 
     # Initialize model
-    model_init = Models[args.model_name](X.shape[1:], out_dim).to(device)
+    model_init = Models[args.model_name](X.shape, out_dim).to(device)
+    if args.fixed_init:
+        torch.manual_seed(args.seed)
+    
     if args.model_name == 'cnn':
         xavier_init_model(model_init)
     else:
         init_wideresnet(model_init)
+
 
     # Construct the canary
     x_canary, y_canary = construct_boundary_canary(
