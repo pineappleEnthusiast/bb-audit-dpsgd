@@ -75,6 +75,6 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --defense \
     --defense_k 5 \
     --defense_score_norm linf \
-    --defense_score_fn grad_norm \
+    --defense_score_fn prediction_margin \
     --defense_apply_ascent
 '
