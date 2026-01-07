@@ -19,14 +19,45 @@ import numpy as np
 import argparse
 
 from models import Models
+from models.wideresnet import WSConv2d
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads
 from utils.dpsgd import DefenseConfig
 import torch.nn.functional as F
 
 
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    model.apply(init_weights)
+
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
+
+
+
 def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
-                            n_epochs, lr, batch_size, out_dim, device='cuda:0'):
+                            n_epochs, lr, batch_size, out_dim, device='cuda:0',
+                            fixed_init=False, seed=0):
     """
     Train a DP-SGD model with defense enabled and track the 6th largest L∞ gradient norm for class 0 samples each epoch.
     Returns the minimum of these norms across all epochs.
@@ -38,6 +69,10 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
         torch.cuda.set_device(device)
 
     # Initialize model
+    if fixed_init:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        
     if model_name == 'lstm':
         vocab_size = out_dim
         model = Models[model_name](vocab_size=vocab_size, out_dim=out_dim).to(device)
@@ -45,23 +80,11 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
         model = Models[model_name](X.shape, out_dim=out_dim).to(device)
 
     if model_name == 'cnn':
-        # Xavier initialization
-        def init_weights(m):
-            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-                torch.nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    m.bias.data.fill_(0.01)
-        model.apply(init_weights)
+        xavier_init_model(model)
     else:
         # Kaiming initialization for WideResNet
-        for m in model.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight)
-                nn.init.constant_(m.bias, 0)
+        init_wideresnet(model)
+
 
     model.train()
     criterion = nn.CrossEntropyLoss()
@@ -141,9 +164,9 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                 model,
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm,
-                drop_mask=None,
+                drop_mask=np.zeros(len(curr_X), dtype=np.int8),
                 block_size=1,
-                scores=None,  # Will be computed by defense
+                scores=np.zeros(len(curr_X), dtype=np.float32),  # Will be updated by defense
                 device=device,
                 global_indices=torch.arange(len(curr_X), device=device),
                 aug_mult=1,
@@ -265,6 +288,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=256, help='batch size')
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument('--output', type=str, default='gradient_canary.pt', help='output .pt file path')
+    parser.add_argument('--fixed_init', action='store_true', help='Use fixed initialization for reproducibility')
+
 
     args = parser.parse_args()
 
@@ -289,7 +314,9 @@ def main():
         n_epochs=args.n_epochs,
         lr=args.lr,
         batch_size=args.batch_size,
-        out_dim=out_dim
+        out_dim=out_dim,
+        fixed_init=args.fixed_init,
+        seed=args.seed
     )
 
     if min_norm is None:
