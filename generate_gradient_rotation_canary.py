@@ -125,7 +125,9 @@ def construct_gradient_rotation_canary(model_init, D_train, y_target, num_iterat
         optimizer_t = torch.optim.SGD(model_t.parameters(), lr=1e-3)  # simple optimizer
 
         # Add canary to training data
-        canary_data = [(x_canary.detach(), y_target)]
+        # Ensure y_target is a tensor
+        y_target_tensor = torch.tensor(y_target, device=device).long()
+        canary_data = [(x_canary.detach(), y_target_tensor)]
         extended_data = train_data + canary_data
         extended_loader = torch.utils.data.DataLoader(extended_data, batch_size=256, shuffle=True)
 
