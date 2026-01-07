@@ -88,9 +88,12 @@ def compute_per_sample_gradient(model, x, y_target, device):
     x = x.unsqueeze(0).to(device)  # add batch dim
     y_target = torch.tensor([y_target], device=device)
 
-    args = [x]
     # We want gradients w.r.t parameters.
     # Note: If x requires_grad, we need create_graph=True to backprop through the gradient computation w.r.t x.
+    
+    model.zero_grad()
+    logits = model(x)
+    loss = F.cross_entropy(logits, y_target)
     
     params = list(model.parameters())
     param_names = [n for n, p in model.named_parameters()]
