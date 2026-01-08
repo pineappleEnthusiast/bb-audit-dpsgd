@@ -793,6 +793,7 @@ def main():
     if rank == 0:
         print('Crafting target data point')
 
+    crafted_grad = None
     if args.canary_pt is not None:
         if not os.path.exists(args.canary_pt):
             raise FileNotFoundError(f"--canary_pt not found: {args.canary_pt}")
@@ -835,7 +836,12 @@ def main():
 
         if isinstance(target_X, dict):
             # Gradient space canary - keep as dict
-            pass
+            crafted_grad = target_X
+            args.target_type = 'gradient_space_canary'
+            # Use a dummy tensor for target_X to allow stacking
+            target_X = torch.zeros_like(X_out[[0]])
+            if rank == 0:
+                print(f"Loaded gradient canary dictionary. Setting target_type='gradient_space_canary' and using dummy target_X.")
         else:
             target_X = target_X.clone().detach()
             if target_X.ndim == X_out.ndim - 1:
@@ -1025,7 +1031,7 @@ def main():
         out_folder, args.fit_world_only, rank)
     
     # Create or load crafted gradient if needed
-    crafted_grad = None
+    # crafted_grad already initialized to None or loaded value
     if args.target_type == 'gradient_space_canary':
         if args.gradient_space_canary_pt is not None:
             if not os.path.exists(args.gradient_space_canary_pt):
