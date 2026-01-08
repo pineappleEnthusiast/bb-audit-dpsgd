@@ -267,7 +267,7 @@ def create_canary_gradient(model, target_norm, device='cuda'):
             if info['start_idx'] <= hot_index < info['end_idx']:
                 local_idx = hot_index - info['start_idx']
                 flat_grad = grad.view(-1)
-                flat_grad[local_idx] = target_norm  # Set to target norm
+                flat_grad[local_idx] = float(target_norm)  # Set to target norm
                 grad = flat_grad.view(info['shape'])
             crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
         else:
