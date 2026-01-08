@@ -1133,7 +1133,7 @@ def main():
                     
                     # Calculate cosine similarity
                     update = {n: final_params[n] - init_params[n] for n, p in final_params.items()}
-                    flat_crafted_grad = torch.cat([g.view(-1) for g in crafted_grad.values()])
+                    flat_crafted_grad = torch.cat([g.view(-1).to(device) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
                     
                     flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-10)
