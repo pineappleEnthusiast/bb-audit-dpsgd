@@ -799,21 +799,25 @@ def main():
         payload = torch.load(args.canary_pt, map_location='cpu')
 
         if isinstance(payload, dict):
-            if 'canary' not in payload:
-                raise KeyError(f"Canary .pt dict must contain key 'canary'. Found keys: {list(payload.keys())}")
-            target_X = payload['canary']
-            if 'target_label' in payload:
-                target_y_val = payload['target_label']
-            elif 'canary_label' in payload:
-                target_y_val = payload['canary_label']
-            elif 'label' in payload:
-                target_y_val = payload['label']
-            elif 'true_label' in payload:
-                target_y_val = payload['true_label']
-            elif 'audit_label' in payload:
-                target_y_val = payload['audit_label']
+            if 'canary' in payload:
+                target_X = payload['canary']
+                if 'target_label' in payload:
+                    target_y_val = payload['target_label']
+                elif 'canary_label' in payload:
+                    target_y_val = payload['canary_label']
+                elif 'label' in payload:
+                    target_y_val = payload['label']
+                elif 'true_label' in payload:
+                    target_y_val = payload['true_label']
+                elif 'audit_label' in payload:
+                    target_y_val = payload['audit_label']
+                else:
+                    target_y_val = 9
             else:
+                # Assume the payload itself is the gradient dictionary
+                target_X = payload
                 target_y_val = 9
+
 
         elif torch.is_tensor(payload):
             target_X = payload
