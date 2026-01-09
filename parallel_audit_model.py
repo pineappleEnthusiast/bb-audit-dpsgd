@@ -1117,8 +1117,11 @@ def main():
                     flat_crafted_grad = torch.cat([g.squeeze(0).view(-1) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
                     
-                    # Raw inner product: ⟨θ_T - θ_0, g_canary⟩
-                    loss = (flat_update * flat_crafted_grad).sum().item()
+                    flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-12)
+                    flat_update = flat_update / (flat_update.norm() + 1e-12)
+                    
+                    cos_sim = (flat_crafted_grad * flat_update).sum().item()
+                    loss = cos_sim
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
