@@ -1113,16 +1113,12 @@ def main():
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
                     
-                    # Calculate cosine similarity
-                    update = {n: final_params[n] - init_params[n] for n, p in final_params.items()}
+                    update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_crafted_grad = torch.cat([g.squeeze(0).view(-1) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
                     
-                    flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-10)
-                    flat_update = flat_update / (flat_update.norm() + 1e-10)
-                    
-                    cos_sim = (flat_crafted_grad * flat_update).sum().item()
-                    loss = cos_sim
+                    # Raw inner product: ⟨θ_T - θ_0, g_canary⟩
+                    loss = (flat_update * flat_crafted_grad).sum().item()
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
@@ -1157,10 +1153,7 @@ def main():
 
     # Synchronize only in distributed mode
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        if torch.cuda.is_available():
-            dist.barrier(device_ids=[local_rank])
-        else:
-            dist.barrier()
+        dist.barrier()
 
     # Final audit - only rank 0 needs to combine results from all ranks
     if rank == 0:
