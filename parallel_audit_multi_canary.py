@@ -215,6 +215,56 @@ def _make_sanity_check_canaries(X_out: torch.Tensor, y_out: torch.Tensor, n_cana
     return Xc, yc
 
 
+def _make_canaries_mislabeled(
+    X_ref: torch.Tensor,
+    y_ref: torch.Tensor,
+    *,
+    n_canaries: int,
+    out_dim: int,
+    seed: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Create `n_canaries` canaries by taking the last `n_canaries` samples and relabeling them.
+
+    Each canary is randomly mislabeled to a class different from its true label.
+    When possible, avoids reusing labels to maximize diversity.
+    """
+    out_dim = int(out_dim)
+
+    if int(n_canaries) < 1:
+        raise ValueError(f"n_canaries must be >= 1, got {n_canaries}")
+
+    if out_dim <= 1:
+        raise ValueError(f"out_dim must be > 1 to mislabel, got {out_dim}")
+
+    if X_ref.shape[0] < int(n_canaries):
+        raise ValueError(f"Need at least n_canaries samples. Got n={int(X_ref.shape[0])} n_canaries={int(n_canaries)}")
+
+    Xc = X_ref[-int(n_canaries):].clone()
+    y_true = y_ref[-int(n_canaries):].clone().long().view(-1)
+
+    # Create random generator for reproducible mislabeling
+    rng = np.random.default_rng(seed)
+
+    y_mis = []
+    used_labels = set()
+
+    for true_label in y_true.tolist():
+        # Get available labels (all except true label)
+        available = [i for i in range(out_dim) if i != true_label and i not in used_labels]
+
+        # If no unused labels available, allow reuse
+        if not available:
+            available = [i for i in range(out_dim) if i != true_label]
+
+        # Randomly choose from available labels
+        chosen = rng.choice(available)
+        y_mis.append(chosen)
+        used_labels.add(chosen)
+
+    y_mis = torch.tensor(y_mis, dtype=torch.long)
+    return Xc, y_mis
+
+
 def _score_canaries(model: torch.nn.Module, X_canary: torch.Tensor, y_canary: torch.Tensor) -> np.ndarray:
     model.eval()
     with torch.no_grad():
@@ -751,7 +801,7 @@ def main():
     parser.add_argument('--device', type=str, default=None)
 
     parser.add_argument('--n_canaries', type=int, default=1)
-    parser.add_argument('--target_type', type=str, default='blank', choices=['blank', 'sanity_check', 'clipbkd', 'fgsm'])
+    parser.add_argument('--target_type', type=str, default='blank', choices=['blank', 'sanity_check', 'clipbkd', 'fgsm', 'mislabeled'])
     parser.add_argument('--canary_pt', type=str, default=None, help='Path to a .pt file containing canaries + audit labels (overrides --target_type/--n_canaries)')
     parser.add_argument('--blank_alpha', type=float, default=0.0)
 
@@ -895,6 +945,14 @@ def main():
             adv_X, _ = fgsm_attack(fgsm_model, original_X, target_class, epsilon=0.1, max_iter=20, alpha=0.01)
             X_canary = adv_X.detach().cpu()
             y_canary = target_class.detach().cpu()
+        elif args.target_type == 'mislabeled':
+            X_canary, y_canary = _make_canaries_mislabeled(
+                X_out,
+                y_out,
+                n_canaries=n_canaries,
+                out_dim=out_dim,
+                seed=int(args.seed),
+            )
         else:
             raise ValueError(f"Unknown target_type: {args.target_type}")
 
