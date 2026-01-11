@@ -23,7 +23,8 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.decomposition import PCA
 
-from models import Models, WSConv2d
+from models import Models
+from models.wideresnet import WSConv2d
 from utils.data import load_data
 import torch.nn as nn
 
