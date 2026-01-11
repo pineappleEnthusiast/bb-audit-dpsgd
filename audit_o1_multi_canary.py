@@ -79,11 +79,12 @@ def _make_canaries_mislabeled(
     *,
     n_canaries: int,
     out_dim: int,
+    seed: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Create `n_canaries` canaries by taking the last `n_canaries` samples and relabeling them.
 
-    Each canary is deterministically mislabeled to a class different from its true label:
-        y_mis = (y_true + 1) % out_dim
+    Each canary is randomly mislabeled to a class different from its true label.
+    When possible, avoids reusing labels to maximize diversity.
     """
     out_dim = int(out_dim)
 
@@ -99,7 +100,26 @@ def _make_canaries_mislabeled(
     Xc = X_ref[-int(n_canaries):].clone()
     y_true = y_ref[-int(n_canaries):].clone().long().view(-1)
 
-    y_mis = (y_true + 1) % int(out_dim)
+    # Create random generator for reproducible mislabeling
+    rng = np.random.default_rng(seed)
+
+    y_mis = []
+    used_labels = set()
+
+    for true_label in y_true.tolist():
+        # Get available labels (all except true label)
+        available = [i for i in range(out_dim) if i != true_label and i not in used_labels]
+
+        # If no unused labels available, allow reuse
+        if not available:
+            available = [i for i in range(out_dim) if i != true_label]
+
+        # Randomly choose from available labels
+        chosen = rng.choice(available)
+        y_mis.append(chosen)
+        used_labels.add(chosen)
+
+    y_mis = torch.tensor(y_mis, dtype=torch.long)
     return Xc, y_mis
 
 
@@ -598,6 +618,7 @@ def main():
             y,
             n_canaries=m,
             out_dim=int(out_dim),
+            seed=int(args.seed),
         )
     elif args.target_type == 'pt':
         if args.canary_pt is None:
