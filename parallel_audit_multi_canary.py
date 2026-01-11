@@ -801,7 +801,7 @@ def main():
     parser.add_argument('--device', type=str, default=None)
 
     parser.add_argument('--n_canaries', type=int, default=1)
-    parser.add_argument('--target_type', type=str, default='blank', choices=['blank', 'sanity_check', 'clipbkd', 'fgsm', 'mislabeled'])
+    parser.add_argument('--target_type', type=str, default='blank', choices=['blank', 'sanity_check', 'clipbkd', 'fgsm', 'mislabeled', 'pt'])
     parser.add_argument('--canary_pt', type=str, default=None, help='Path to a .pt file containing canaries + audit labels (overrides --target_type/--n_canaries)')
     parser.add_argument('--blank_alpha', type=float, default=0.0)
 
@@ -953,6 +953,21 @@ def main():
                 out_dim=out_dim,
                 seed=int(args.seed),
             )
+        elif args.target_type == 'pt':
+            if args.canary_pt is None:
+                raise ValueError("Must provide --canary_pt when using --target_type pt")
+            X_canary, y_canary, canary_meta = _load_canaries_from_pt_dict(args.canary_pt, X_out[[0]])
+            # n_canaries from file takes precedence if it differs from CLI arg
+            if int(X_canary.shape[0]) != n_canaries:
+                print(f"[Warning] Loaded {X_canary.shape[0]} canaries from file, overriding --n_canaries={n_canaries}")
+                n_canaries = int(X_canary.shape[0])
+            
+            init_state = canary_meta.get('init_model_state', None)
+            if init_state is not None:
+                try:
+                    init_model.load_state_dict(init_state)
+                except Exception:
+                    pass
         else:
             raise ValueError(f"Unknown target_type: {args.target_type}")
 
