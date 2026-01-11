@@ -56,22 +56,22 @@ def init_wideresnet(model):
             nn.init.constant_(m.bias, 0)
 
 
-def compute_per_sample_gradient(model, x, y_target, device):
+def compute_per_sample_gradient(model, x, y_target, device, create_graph=False):
     """Compute per-sample gradient for a single example."""
+    # Ensure model is in eval mode but parameters require grad
     model.eval()
     x = x.unsqueeze(0).to(device)
     y_target = torch.tensor([y_target], device=device)
 
-    model.zero_grad()
     logits = model(x)
     loss = F.cross_entropy(logits, y_target)
-    loss.backward()
-
-    grad_list = []
-    for param in model.parameters():
-        if param.grad is not None:
-            grad_list.append(param.grad.detach().view(-1))
     
+    # Compute gradients w.r.t. parameters
+    params = list(model.parameters())
+    grads = torch.autograd.grad(loss, params, create_graph=create_graph, retain_graph=create_graph)
+    
+    # Flatten and concatenate
+    grad_list = [g.view(-1) for g in grads]
     return torch.cat(grad_list)
 
 
@@ -87,7 +87,7 @@ def compute_gradient_subspace(model, D_train, num_samples=1000, device='cpu'):
     sampled_data = random.sample(D_train, min(num_samples, len(D_train)))
     
     for i, (x, y) in enumerate(sampled_data):
-        g = compute_per_sample_gradient(model, x, y, device)
+        g = compute_per_sample_gradient(model, x, y, device, create_graph=False)
         gradients.append(g.cpu().numpy())
         
         if (i + 1) % 100 == 0:
@@ -130,7 +130,7 @@ def create_orthogonal_canary(model, D_train, clip_norm, y_target, num_iterations
         optimizer.zero_grad()
         
         # Compute canary gradient
-        g_canary = compute_per_sample_gradient(model, x_canary, y_target, device)
+        g_canary = compute_per_sample_gradient(model, x_canary, y_target, device, create_graph=True)
         g_canary_norm = torch.norm(g_canary, p=2)
         
         # Normalize to unit vector for direction analysis
@@ -190,7 +190,7 @@ def validate_clipbkd_canary(model, x_canary, y_canary, D_train, clip_norm, devic
     Verify that canary has unique gradient direction and bounded norm
     """
     # Compute canary gradient
-    g_canary = compute_per_sample_gradient(model, x_canary, y_canary, device)
+    g_canary = compute_per_sample_gradient(model, x_canary, y_canary, device, create_graph=False)
     canary_norm = torch.norm(g_canary, p=2).item()
     g_canary_unit = g_canary / torch.norm(g_canary, p=2)
     
@@ -202,7 +202,7 @@ def validate_clipbkd_canary(model, x_canary, y_canary, D_train, clip_norm, devic
     train_grads = []
     sampled_data = random.sample(D_train, min(100, len(D_train)))
     for x, y in sampled_data:
-        g = compute_per_sample_gradient(model, x, y, device)
+        g = compute_per_sample_gradient(model, x, y, device, create_graph=False)
         g_unit = g / (torch.norm(g, p=2) + 1e-8)
         train_grads.append(g_unit)
     
