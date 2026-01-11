@@ -23,8 +23,36 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.decomposition import PCA
 
-from utils.dpsgd import Models, xavier_init_model, init_wideresnet
+from models import Models, WSConv2d
 from utils.data import load_data
+import torch.nn as nn
+
+
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+    model.apply(init_weights)
+
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
 
 
 def compute_per_sample_gradient(model, x, y_target, device):
