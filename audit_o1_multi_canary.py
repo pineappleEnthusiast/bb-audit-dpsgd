@@ -546,6 +546,8 @@ def main():
                         help='norm used for defense score computation (default: linf)')
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm',
                         help='defense scoring function name (default: grad_norm)')
+    parser.add_argument('--defense_global_filter', action='store_true',
+                        help='if set, apply defense filtering globally across all samples instead of per-class (default: per-class)')
 
     parser.add_argument('--debug_mode', action='store_true',
                         help='if set, enter an interactive loop after training to recompute empirical epsilon for different k_plus/k_minus values without retraining')
@@ -671,10 +673,6 @@ def main():
     dl_gen = torch.Generator(device='cpu')
     dl_gen.manual_seed(int(args.seed) + 2)
 
-    # Train once
-    start = time.time()
-    # Note: train_model_multi_canary is the copied training loop derived from parallel_audit_model.
-    # It supports multi-canary defense drop tracking via canary_indices.
     model, _drop_mask, defense_stats = train_model_multi_canary(
         model_name=args.model_name,
         X=X_in,
@@ -695,6 +693,7 @@ def main():
         defense_filter_every=1,
         defense_score_fn=str(args.defense_score_fn),
         defense_score_norm=str(args.defense_score_norm),
+        defense_global_filter=bool(args.defense_global_filter),
         device=str(device),
         generator=gen,
         dl_generator=dl_gen,
@@ -777,6 +776,7 @@ def main():
     
     with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
         futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
+        search_start_time = time.time()
         for future in as_completed(futures):
             result = future.result()
             processed += 1
@@ -790,6 +790,16 @@ def main():
                     print(f"[NEW BEST] k_plus={k_plus}, k_minus={k_minus}, "
                           f"guessed={n_guessed}/{m}, correct={n_correct}/{n_guessed}, "
                           f"W={W_local}, emp_eps={eps:.6f}")
+            
+            # Check for timeout after processing each result
+            if time.time() - search_start_time > 1200:  # 20 minutes
+                print("Timeout reached after 20 minutes, using best result found so far")
+                break
+        
+        # Cancel any remaining futures to free up resources
+        for future in futures:
+            if not future.done():
+                future.cancel()
 
     if best_result is not None:
         if len(best_result) == 8:
@@ -845,6 +855,26 @@ def main():
             open(os.path.join(args.out, 'defense_stats.dill'), 'wb')
         )
 
+        # Log defense impact on correctly guessed canaries
+        correct_in_mask = (T == 1) & (S == 1)
+        correct_out_mask = (T == -1) & (S == -1)
+        correct_in_count = int(np.sum(correct_in_mask))
+        correct_out_count = int(np.sum(correct_out_mask))
+        if correct_in_count > 0:
+            dropped_in = int(np.sum(canary_drop_epochs_aligned[correct_in_mask] >= 0))
+            not_dropped_in = correct_in_count - dropped_in
+            print(f"\nCorrectly guessed 'in' canaries: {correct_in_count} total, {not_dropped_in} not filtered, {dropped_in} filtered out")
+        else:
+            print("\nNo correctly guessed 'in' canaries")
+        if correct_out_count > 0:
+            dropped_out = int(np.sum(canary_drop_epochs_aligned[correct_out_mask] >= 0))
+            not_dropped_out = correct_out_count - dropped_out
+            print(f"Correctly guessed 'out' canaries: {correct_out_count} total, {not_dropped_out} not filtered, {dropped_out} filtered out")
+        else:
+            print("No correctly guessed 'out' canaries")
+    else:
+        print("\nNo defense applied, so no canaries were filtered")
+
     meta = {
         'data_name': args.data_name,
         'model_name': args.model_name,
@@ -869,12 +899,15 @@ def main():
         'defense_apply_ascent': bool(args.defense_apply_ascent),
         'defense_score_fn': str(args.defense_score_fn),
         'defense_score_norm': str(args.defense_score_norm),
+        'defense_global_filter': bool(args.defense_global_filter),
         'emp_eps': float(emp_eps),
         'empirical_eps_method': str(args.empirical_eps_method),
         'fdp_strongest_valid_noise': float(emp_eps_aux) if emp_eps_aux is not None else None,
         'fdp_noise_min': float(args.fdp_noise_min),
         'fdp_noise_max': float(args.fdp_noise_max),
         'fdp_noise_steps': int(args.fdp_noise_steps),
+        'scores': scores,
+        'inclusion_indicators': S,
     }
     meta.update(canary_meta)
     dill.dump(meta, open(os.path.join(args.out, 'meta.dill'), 'wb'))

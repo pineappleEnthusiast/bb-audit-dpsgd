@@ -347,6 +347,7 @@ def train_model_multi_canary(
     defense_filter_every: int,
     defense_score_fn: str,
     defense_score_norm: str,
+    defense_global_filter: bool,
     device: str,
     generator: torch.Generator | None,
     dl_generator: torch.Generator | None,
@@ -685,21 +686,35 @@ def train_model_multi_canary(
         # Defense marking happens at epoch end
         if defense and (epoch % defense_filter_every == 0):
             k = int(defense_k)
-            unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
 
             # Track how many samples are marked before this epoch's filtering
             n_marked_before = int((drop_mask == 1).sum())
 
-            for cls in unique_classes:
-                cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
-                if len(cls_indices) == 0:
-                    continue
-                cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
-                _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
-                topk_global_indices = cls_indices[topk_indices]
-                dropped_indices = topk_global_indices.cpu().numpy()
-                drop_mask[dropped_indices] = 1
+            if defense_global_filter:
+                # GLOBAL FILTERING: Filter top k scores across entire dataset (not per-class)
+                active_indices = active_mask.nonzero(as_tuple=True)[0]
+                
+                if len(active_indices) > 0:
+                    active_scores = torch.tensor(scores[active_indices.cpu().numpy()], device=y.device)
+                    _, topk_indices = torch.topk(active_scores, min(k, len(active_scores)))
+                    
+                    topk_global_indices = active_indices[topk_indices]
+                    
+                    dropped_indices = topk_global_indices.cpu().numpy()
+                    drop_mask[dropped_indices] = 1
+            else:
+                # PER-CLASS FILTERING: Filter top k per class
+                unique_classes = torch.unique(y).cpu()
+                for cls in unique_classes:
+                    cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
+                    if len(cls_indices) == 0:
+                        continue
+                    cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+                    _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
+                    topk_global_indices = cls_indices[topk_indices]
+                    dropped_indices = topk_global_indices.cpu().numpy()
+                    drop_mask[dropped_indices] = 1
 
             # Check how many samples were newly marked in this epoch
             n_marked_after = int((drop_mask == 1).sum())
@@ -931,6 +946,7 @@ def main():
                 defense_filter_every=1,
                 defense_score_fn=str(args.defense_score_fn),
                 defense_score_norm=str(args.defense_score_norm),
+                defense_global_filter=False,  # Default to per-class for FGSM helper model
                 device=str(device),
                 generator=None,
                 dl_generator=None,
@@ -1016,6 +1032,7 @@ def main():
                 defense_filter_every=1,
                 defense_score_fn=str(args.defense_score_fn),
                 defense_score_norm=str(args.defense_score_norm),
+                defense_global_filter=False,  # Default to per-class for parallel audit
                 device=str(device),
                 generator=gen,
                 dl_generator=dl_gen,
