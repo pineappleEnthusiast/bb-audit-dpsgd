@@ -714,7 +714,7 @@ def main():
     # Options for Forgetting Canary Candidates
     parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
     parser.add_argument('--defense_k', type=int, default=5, help='number of samples dropped per class per epoch when defense is enabled')
-    parser.add_argument('--defense_apply_ascent', action='store_true', default=True, help='apply gradient ascent to high-scoring samples (default: True when defense is enabled)')
+    parser.add_argument('--defense_apply_ascent', action='store_true', default=False, help='apply gradient ascent to high-scoring samples')
     parser.add_argument('--defense_filter_every', type=int, default=1, help='apply defense filtering every N epochs (default: 1, i.e., every epoch)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
@@ -743,11 +743,6 @@ def main():
     if args.max_grad_norm == -1:
         args.max_grad_norm = None
 
-    # Reproducibility
-    np.random.seed(args.seed + rank)  # Different seed per rank
-    torch.manual_seed(args.seed + rank)
-    torch.cuda.manual_seed_all(args.seed + rank)  # Different seed per rank for CUDA
-
     out_folder = f'{args.out}/{args.data_name}_{args.model_name}_eps{args.epsilon}'
     os.makedirs(out_folder, exist_ok=True)
     os.makedirs(f'{out_folder}/models', exist_ok=True)
@@ -760,24 +755,36 @@ def main():
     else:
         X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
 
-    # Initialize model
+    # Initialize model with SAME seed across all GPUs for fixed_init
     if rank == 0:
         print('Initializing model')
     init_model = None
     if args.fixed_init is not None:
+        # Use same seed for all GPUs to ensure identical initialization
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        
         init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
         if args.model_name == 'cnn':
             xavier_init_model(init_model)
         else:
             init_wideresnet(init_model)
-        if args.fixed_init == '':
+        # Check if fixed_init is empty or just whitespace (use random init)
+        if args.fixed_init.strip() == '':
             if args.model_name == 'cnn':
                 xavier_init_model(init_model)
             else:
                 init_wideresnet(init_model)
         else:
+            # Load from file path
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
+    
+    # NOW set per-rank seeds for everything else (after init_model is created)
+    # This ensures data loading and other operations are still independent per GPU
+    np.random.seed(args.seed + rank)
+    torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)
 
     # Craft target
     if rank == 0:
@@ -981,9 +988,6 @@ def main():
     X_in, y_in = torch.vstack((X_out[:-1], target_X)), torch.cat((y_out[:-1], target_y))
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
 
-    generator = torch.Generator().manual_seed(0)
-    dl_generator = torch.Generator().manual_seed(1)
-    
     if rank == 0:
         print('Training models')
     
@@ -1020,6 +1024,11 @@ def main():
         # Each rank trains its assigned models
         for rep_idx, rep in enumerate(my_reps):
             print(f"[Rank {rank}] Training rep {rep_idx+1}/{len(my_reps)} (global rep {rep})")
+            
+            # Create unique generators for each repetition
+            # Use rep (global repetition number) to ensure uniqueness across all GPUs
+            generator = torch.Generator().manual_seed(args.seed + rep * 2)
+            dl_generator = torch.Generator().manual_seed(args.seed + rep * 2 + 1)
             
             model = train_model(
                 args.model_name, 
@@ -1192,17 +1201,28 @@ def main():
         
         if not args.fit_world_only:
             def audit_canary(losses, args):        
-                k = len(losses['in'])
+                # Convert to numpy arrays for indexing
+                losses_in = np.array(losses['in'])
+                losses_out = np.array(losses['out'])
+                n = len(losses_in)
                 t_losses = {'in': None, 'out': None}
                 holdout_losses = {'in': None, 'out': None}
 
                 if args.holdout_audit:
-                    k = len(losses['in']) // 2
-                
-                t_losses['in'] = losses['in'][:k]
-                t_losses['out'] = losses['out'][:k]
-                holdout_losses['in'] = losses['in'][k:]
-                holdout_losses['out'] = losses['out'][k:]
+                    # Use random sampling for holdout split to avoid ordering effects
+                    np.random.seed(args.seed)  # Use same seed for reproducibility
+                    indices = np.random.permutation(n)
+                    threshold_indices = indices[:n // 2]
+                    holdout_indices = indices[n // 2:]
+                    
+                    t_losses['in'] = losses_in[threshold_indices]
+                    t_losses['out'] = losses_out[threshold_indices]
+                    holdout_losses['in'] = losses_in[holdout_indices]
+                    holdout_losses['out'] = losses_out[holdout_indices]
+                else:
+                    # No holdout - use all data for threshold selection
+                    t_losses['in'] = losses_in
+                    t_losses['out'] = losses_out
 
                 # Calculate empirical epsilon using GDP
                 mia_scores = np.concatenate([t_losses['in'], t_losses['out']])
@@ -1211,15 +1231,17 @@ def main():
                 max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
 
                 if args.holdout_audit:
-                    emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
-                        [holdout_losses['in'], holdout_losses['out']]), 
+                    emp_eps_loss = compute_eps_lower_from_mia_given_t(
+                        np.concatenate([holdout_losses['in'], holdout_losses['out']]), 
                         np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
                         args.alpha, 
                         args.delta, 
                         max_t, 
                         'GDP')
+                    # Return holdout scores/labels for saving
+                    return emp_eps_loss, np.concatenate([holdout_losses['in'], holdout_losses['out']]), np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])])
                 
-                return emp_eps_loss, mia_scores, mia_labels
+                return emp_eps_loss, np.concatenate([t_losses['in'], t_losses['out']]), np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
             
             emp_eps_loss, mia_scores, mia_labels = audit_canary(combined_losses, args)
 
