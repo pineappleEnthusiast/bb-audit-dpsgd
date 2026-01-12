@@ -673,6 +673,7 @@ def main():
     dl_gen = torch.Generator(device='cpu')
     dl_gen.manual_seed(int(args.seed) + 2)
 
+    start = time.time()
     model, _drop_mask, defense_stats = train_model_multi_canary(
         model_name=args.model_name,
         X=X_in,
