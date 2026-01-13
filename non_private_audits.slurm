@@ -112,7 +112,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     '"${DEFENSE_ARGS}"' \
     --holdout_audit \
     --out '"${PARENT_OUT}/${OUT_NAME}"'
-
+'
 echo "=========================================="
 echo "Task ${SLURM_ARRAY_TASK_ID} completed: ${OUT_NAME}"
 echo "Results saved in: ${PARENT_OUT}/${OUT_NAME}/"
