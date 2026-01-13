@@ -26,10 +26,13 @@ from utils.dpsgd import DefenseConfig
 
 
 def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max_grad_norm,
-                                         n_epochs, lr, batch_size, out_dim, device='cuda:0'):
+                                         n_epochs, lr, batch_size, out_dim, defense_k=5, device='cuda:0'):
     """
     Train a DP-SGD model with defense and find the least updated parameter direction.
     Returns the index of the least updated parameter dimension and the noise level.
+    
+    Args:
+        defense_k: Number of samples to filter per class per epoch (default: 5)
     """
 
     # Move everything to device
@@ -97,9 +100,10 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
         drop_last=False
     )
     
-    # Initialize scores array for defense mechanism
+    # Initialize scores array and drop_mask for defense mechanism
     n_samples = len(X)
     scores = np.zeros(n_samples, dtype=np.float32)
+    drop_mask = np.zeros(n_samples, dtype=np.int32)  # 0 = keep, 1 = dropped by defense, 2 = other
 
     for epoch in range(n_epochs):
         epoch_start = time.time()
@@ -113,8 +117,8 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
             batch_start_idx = batch_idx * batch_size
             batch_end_idx = min(batch_start_idx + len(curr_X), n_samples)
             
-            # Create drop_mask: 0 = keep sample, no filtering
-            drop_mask = np.zeros(len(curr_X), dtype=np.int32)
+            # Get drop_mask slice for this batch
+            batch_drop_mask = drop_mask[batch_start_idx:batch_end_idx]
             
             # Global indices for this batch
             global_indices = torch.arange(batch_start_idx, batch_end_idx, device=device)
@@ -156,7 +160,7 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
                 model,
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm,
-                drop_mask=drop_mask,
+                drop_mask=batch_drop_mask,
                 block_size=len(curr_X),  # Process entire batch at once
                 scores=scores,  # Pass the scores array to be updated
                 device=device,
@@ -197,6 +201,28 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
 
         epoch_time = time.time() - epoch_start
         print(f"Epoch {epoch} completed in {epoch_time:.2f}s")
+        
+        # Defense operations - filter top-k scoring samples per class
+        if defense_k > 0:
+            k = int(defense_k)
+            unique_classes = torch.unique(y).cpu()
+            active_mask = torch.from_numpy(drop_mask == 0)
+            
+            for cls in unique_classes:
+                cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
+                if len(cls_indices) == 0:
+                    continue
+                    
+                cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+                _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
+                
+                topk_global_indices = cls_indices[topk_indices]
+                dropped_indices = topk_global_indices.cpu().numpy()
+                drop_mask[dropped_indices] = 1
+                
+                print(f"  Class {cls.item()}: Dropped {len(dropped_indices)} samples (indices: {dropped_indices[:5]}...)")
+            
+            scores.fill(0)
 
     # Compute total parameter updates
     print("Computing parameter updates...")
@@ -233,7 +259,12 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
 
 def create_least_updated_gradient(model, target_index, target_norm, device='cuda'):
     """
-    Create a 1-hot gradient vector at the specified parameter index with the given L∞ norm.
+    Create a dense gradient with the target L∞ norm, emphasizing the least-updated direction.
+    
+    Instead of a 1-hot gradient (which is too sparse and easily detected), this creates
+    a realistic-looking dense gradient where:
+    - The least-updated parameter has the maximum magnitude (target_norm)
+    - Other parameters have smaller random values to look like a real gradient
     """
     params = {}
     total_elements = 0
@@ -260,12 +291,17 @@ def create_least_updated_gradient(model, target_index, target_norm, device='cuda
     for name, info in params.items():
         param = info['param']
         if param.requires_grad:
-            grad = torch.zeros_like(param)
+            # Create a dense gradient with random values
+            # Use a normal distribution scaled to be smaller than target_norm
+            grad = torch.randn_like(param) * (target_norm * 0.3)
+            
+            # Set the least-updated parameter to have the maximum magnitude
             if info['start_idx'] <= target_index < info['end_idx']:
                 local_idx = target_index - info['start_idx']
                 flat_grad = grad.view(-1)
                 flat_grad[local_idx] = target_norm  # Set to target norm
                 grad = flat_grad.view(info['shape'])
+            
             crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
         else:
             crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
@@ -286,6 +322,7 @@ def main():
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument('--output', type=str, default='least_updated_canary.pt', help='output .pt file path')
     parser.add_argument('--noise_margin', type=float, default=1.1, help='norm multiplier above noise level (default: 1.1)')
+    parser.add_argument('--defense_k', type=int, default=5, help='number of samples to filter per class per epoch (default: 5)')
 
     args = parser.parse_args()
 
@@ -300,6 +337,7 @@ def main():
 
     # Train model and find least updated direction
     print("Training model and finding least updated direction...")
+    print(f"Defense enabled with k={args.defense_k}")
     least_updated_idx, noise_level = train_and_find_least_updated_direction(
         model_name=args.model_name,
         X=X,
@@ -310,12 +348,18 @@ def main():
         n_epochs=args.n_epochs,
         lr=args.lr,
         batch_size=args.batch_size,
-        out_dim=out_dim
+        out_dim=out_dim,
+        defense_k=args.defense_k
     )
 
     # Calculate target norm (slightly above noise level)
     target_norm = args.noise_margin * noise_level
     print(f"Target norm: {target_norm:.6f} (noise level: {noise_level:.6f}, margin: {args.noise_margin})")
+    
+    # If epsilon is None, use a default target norm
+    if target_norm == 0:
+        target_norm = args.max_grad_norm * 0.5
+        print(f"No DP noise, using default target norm: {target_norm:.6f}")
 
     # Create canary gradient with the computed parameters
     print(f"Creating canary gradient at parameter index {least_updated_idx}...")
