@@ -111,7 +111,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --aug_mult '"${AUG_MULT}"' \
     '"${DEFENSE_ARGS}"' \
     --holdout_audit \
-    --out '"${PARENT_OUT}"'/'"${OUT_NAME}"''
+    --out '"${PARENT_OUT}/${OUT_NAME}"'
 
 echo "=========================================="
 echo "Task ${SLURM_ARRAY_TASK_ID} completed: ${OUT_NAME}"

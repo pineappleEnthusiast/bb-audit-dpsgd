@@ -84,7 +84,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --defense_score_norm '"${SCORE_NORM}"' \
     --defense_apply_ascent \
     --holdout_audit \
-    --out '"${PARENT_OUT}"'/'"${OUT_NAME}"''
+    --out '"${PARENT_OUT}/${OUT_NAME}"'
 
 echo "=========================================="
 echo "Task ${SLURM_ARRAY_TASK_ID} completed: ${OUT_NAME}"
