@@ -182,8 +182,8 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                 global_idx = batch_start_idx + local_idx
                 if global_idx < len(scores):
                     norm_value = float(scores[global_idx])
-                    # Only track class 0 samples
-                    if curr_y[local_idx].item() == 0:
+                    # Only track class 0 samples that haven't been filtered out
+                    if curr_y[local_idx].item() == 0 and drop_mask[global_idx] == 0:
                         class_0_norms.append(norm_value)
 
             # Apply the accumulated gradients
