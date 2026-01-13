@@ -88,7 +88,8 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                             loss_volatility_k=5, grad_norm_percentile_k=20, grad_dir_volatility_k=5,
                             grad_dir_proj_dim=64, dir_unique_k=5, rand_proj_var_m=10, maxmin_proj_k=10,
                             grad_rank_mode='effdim', grad_rank_eps=1e-12, grad_accel_proj_dim=64,
-                            grad_jerk_proj_dim=64, alignment_proj_k=10, grad_scatter_k=5, block_size=None, device='cuda:0'):
+                            grad_jerk_proj_dim=64, alignment_proj_k=10, grad_scatter_k=5, block_size=None, 
+                            aug_mult=1, device='cuda:0'):
     """
     Train a DP-SGD model with defense enabled and track the 6th largest L∞ gradient norm for class 0 samples each epoch.
     Returns the minimum of these norms across all epochs.
@@ -186,6 +187,7 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
     grad_accel_proj = None
     grad_jerk_hist = None
     grad_jerk_hist_pos = None
+    grad_jerk_proj = None
     dir_unique_hist = None
     dir_unique_hist_pos = None
     alignment_proj_mat = None
@@ -309,8 +311,6 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                 dir_unique_k=int(dir_unique_k),
                 grad_scatter_k=int(grad_scatter_k)
             )
-            
-            # Clip & accumulate gradients (no world_size/rank needed)
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model,
                 curr_X, curr_y, optimizer, criterion,
