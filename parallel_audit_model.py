@@ -522,7 +522,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 drop_mask[dropped_indices] = 1
                 
                 if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
-                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
+                    canary_score = float(scores[X.shape[0] - 1])
+                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set! Score: {canary_score:.6f}")
                     canary_dropped_epoch = int(epoch)
         
             scores.fill(0)
