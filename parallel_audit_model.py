@@ -1020,7 +1020,12 @@ def main():
         if args.gradient_space_canary_pt is not None:
             if not os.path.exists(args.gradient_space_canary_pt):
                 raise FileNotFoundError(f"--gradient_space_canary_pt not found: {args.gradient_space_canary_pt}")
-            crafted_grad = torch.load(args.gradient_space_canary_pt, map_location='cpu')
+            payload = torch.load(args.gradient_space_canary_pt, map_location='cpu')
+            if isinstance(payload, dict) and 'gradient' in payload:
+                crafted_grad = payload['gradient']
+            else:
+                # Backward compatibility: direct gradient dictionary
+                crafted_grad = payload
             if rank == 0:
                 print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
         elif args.canary_pt is None:

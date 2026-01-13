@@ -352,10 +352,14 @@ def main():
 
     canary_gradient = create_canary_gradient(dummy_model, min_norm)
 
-    # Save to file
-    torch.save(canary_gradient, args.output)
+    # Save to file in dictionary format to match other canary formats
+    canary_dict = {
+        'gradient': canary_gradient,
+        'target_class': 0  # Default target class for gradient space canary
+    }
+    torch.save(canary_dict, args.output)
     print(f"Saved gradient canary to {args.output}")
-
+    
     # Verify the norm
     flat_grad = torch.cat([g.view(-1) for g in canary_gradient.values()])
     actual_norm = flat_grad.abs().max().item()
