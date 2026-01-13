@@ -355,7 +355,8 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                 if global_idx < len(scores):
                     norm_value = float(scores[global_idx])
                     # Only track class 0 samples that haven't been filtered out
-                    if curr_y[local_idx].item() == 0 and drop_mask[global_idx] == 0:
+                    # Exclude the last sample (index len(X)-1) as it will be replaced by the canary during audit
+                    if curr_y[local_idx].item() == 0 and drop_mask[global_idx] == 0 and global_idx != len(X) - 1:
                         class_0_norms.append(norm_value)
 
             # Apply the accumulated gradients
