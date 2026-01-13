@@ -89,7 +89,7 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                             grad_dir_proj_dim=64, dir_unique_k=5, rand_proj_var_m=10, maxmin_proj_k=10,
                             grad_rank_mode='effdim', grad_rank_eps=1e-12, grad_accel_proj_dim=64,
                             grad_jerk_proj_dim=64, alignment_proj_k=10, grad_scatter_k=5, block_size=None, 
-                            aug_mult=1, device='cuda:0'):
+                            aug_mult=1, generator=None, dl_generator=None, num_workers=4, persistent_workers=True, device='cuda:0'):
     """
     Train a DP-SGD model with defense enabled and track the 6th largest L∞ gradient norm for class 0 samples each epoch.
     Returns the minimum of these norms across all epochs.
@@ -153,7 +153,7 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
         dataset,
         replacement=False,
         num_samples=None,
-        generator=torch.Generator().manual_seed(0)
+        generator=generator
     )
     
     loader = DataLoader(
@@ -161,9 +161,10 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
         batch_size=batch_size,
         sampler=sampler,
         pin_memory=True,
-        num_workers=4,
-        persistent_workers=True,
-        drop_last=False
+        num_workers=int(num_workers),
+        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
+        drop_last=False,
+        generator=dl_generator
     )
 
     # Track the 6th largest L∞ norm for class 0 samples each epoch
@@ -508,6 +509,11 @@ def main():
     # Train model and track gradients
     print("Training model and tracking gradients...")
     print(f"Defense enabled with k={args.defense_k}")
+    
+    # Create generators for reproducibility
+    generator = torch.Generator().manual_seed(args.seed)
+    dl_generator = torch.Generator().manual_seed(args.seed + 1)
+    
     min_norm = train_and_track_gradients(
         model_name=args.model_name,
         X=X,
@@ -521,7 +527,9 @@ def main():
         out_dim=out_dim,
         defense_k=args.defense_k,
         defense_apply_ascent=args.defense_apply_ascent,
-        block_size=args.block_size
+        block_size=args.block_size,
+        generator=generator,
+        dl_generator=dl_generator
     )
 
     if min_norm is None:
