@@ -28,6 +28,57 @@ from opacus.grad_sample import GradSampleModule
 import torch.nn.functional as F
 
 
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+    model.apply(init_weights)
+
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
+
+
+class IndexedTensorDataset(Dataset):
+    """A dataset that includes the index of each sample."""
+    def __init__(self, *tensors):
+        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
+        self.tensors = tensors
+        
+    def __getitem__(self, index):
+        return tuple(tensor[index] for tensor in self.tensors) + (index,)
+        
+    def __len__(self):
+        return self.tensors[0].size(0)
+
+
+class AugmentationFunction:
+    def __init__(self, image_size=32, channels=3):
+        self.base_transforms = v2.Compose([
+            v2.RandomCrop(image_size, padding=4),
+            v2.RandomHorizontalFlip(p=0.5),
+        ])
+    
+    def __call__(self, x):
+        return self.base_transforms(x)
+
+
 def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                             n_epochs, lr, batch_size, out_dim, defense_k=5, defense_apply_ascent=False, 
                             defense_score_norm='linf', defense_score_fn='grad_norm', defense_filter_every=1,
