@@ -96,13 +96,28 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
         shuffle=True,
         drop_last=False
     )
+    
+    # Initialize scores array for defense mechanism
+    n_samples = len(X)
+    scores = np.zeros(n_samples, dtype=np.float32)
 
     for epoch in range(n_epochs):
         epoch_start = time.time()
         optimizer.zero_grad()
+        
+        # Reset scores for this epoch
+        scores.fill(0.0)
 
         for batch_idx, (curr_X, curr_y) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device), curr_y.to(device)
+            batch_start_idx = batch_idx * batch_size
+            batch_end_idx = min(batch_start_idx + len(curr_X), n_samples)
+            
+            # Create drop_mask: 0 = keep sample, no filtering
+            drop_mask = np.zeros(len(curr_X), dtype=np.int32)
+            
+            # Global indices for this batch
+            global_indices = torch.arange(batch_start_idx, batch_end_idx, device=device)
 
             defense_cfg = DefenseConfig(
                 score_fn='grad_norm',
@@ -141,11 +156,11 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
                 model,
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm,
-                drop_mask=None,
-                block_size=1,
-                scores=None,
+                drop_mask=drop_mask,
+                block_size=len(curr_X),  # Process entire batch at once
+                scores=scores,  # Pass the scores array to be updated
                 device=device,
-                global_indices=torch.arange(len(curr_X), device=device),
+                global_indices=global_indices,
                 aug_mult=1,
                 aug_fn=None,
                 world_size=1,
@@ -169,8 +184,8 @@ def train_and_find_least_updated_direction(model_name, X, y, epsilon, delta, max
                             noise = noise_std * torch.randn_like(grad)
                             grad.add_(noise)
 
-                        # Average the noisy gradient
-                        grad.div_(float(len(curr_X)))
+                        # Average the noisy gradient over batch size
+                        grad.div_(float(batch_size))
 
                         if param.grad is None:
                             param.grad = grad.clone()
