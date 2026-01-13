@@ -15,6 +15,7 @@ import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.utils.data as data
 import numpy as np
 import argparse
 
@@ -26,6 +27,7 @@ from utils.dpsgd import DefenseConfig
 from models.lstm import LSTM
 from opacus.grad_sample import GradSampleModule
 import torch.nn.functional as F
+from torch.utils.data import Dataset
 
 
 def xavier_init_model(model):
