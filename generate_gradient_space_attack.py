@@ -87,7 +87,7 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                             loss_volatility_k=5, grad_norm_percentile_k=20, grad_dir_volatility_k=5,
                             grad_dir_proj_dim=64, dir_unique_k=5, rand_proj_var_m=10, maxmin_proj_k=10,
                             grad_rank_mode='effdim', grad_rank_eps=1e-12, grad_accel_proj_dim=64,
-                            grad_jerk_proj_dim=64, alignment_proj_k=10, grad_scatter_k=5, device='cuda:0'):
+                            grad_jerk_proj_dim=64, alignment_proj_k=10, grad_scatter_k=5, block_size=None, device='cuda:0'):
     """
     Train a DP-SGD model with defense enabled and track the 6th largest L∞ gradient norm for class 0 samples each epoch.
     Returns the minimum of these norms across all epochs.
@@ -134,7 +134,7 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
     else:
         noise_multiplier = 0
 
-    block_size = min(block_size, batch_size)
+    block_size = min(block_size, batch_size) if block_size is not None else batch_size
 
     if len(X.shape) > 2:
         aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
@@ -491,6 +491,7 @@ def main():
     parser.add_argument('--output', type=str, default='gradient_canary.pt', help='output .pt file path')
     parser.add_argument('--defense_k', type=int, default=5, help='number of samples to filter per class per epoch (default: 5)')
     parser.add_argument('--defense_apply_ascent', action='store_true', default=False, help='apply gradient ascent to high-scoring samples')
+    parser.add_argument('--block_size', type=int, help='process samples within a batch in blocks to conserve GPU space')
 
     args = parser.parse_args()
 
@@ -518,7 +519,8 @@ def main():
         batch_size=args.batch_size,
         out_dim=out_dim,
         defense_k=args.defense_k,
-        defense_apply_ascent=args.defense_apply_ascent
+        defense_apply_ascent=args.defense_apply_ascent,
+        block_size=args.block_size
     )
 
     if min_norm is None:
