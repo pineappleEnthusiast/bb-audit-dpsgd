@@ -26,10 +26,13 @@ import torch.nn.functional as F
 
 
 def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
-                            n_epochs, lr, batch_size, out_dim, device='cuda:0'):
+                            n_epochs, lr, batch_size, out_dim, defense_k=5, device='cuda:0'):
     """
     Train a DP-SGD model with defense enabled and track the 6th largest L∞ gradient norm for class 0 samples each epoch.
     Returns the minimum of these norms across all epochs.
+    
+    Args:
+        defense_k: Number of samples to filter per class per epoch (default: 5)
     """
 
     # Move everything to device
@@ -93,6 +96,11 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
 
     # Track the 6th largest L∞ norm for class 0 samples each epoch
     epoch_6th_largest_norms = []
+    
+    # Initialize scores array and drop_mask for defense mechanism
+    n_samples = len(X)
+    scores = np.zeros(n_samples, dtype=np.float32)
+    drop_mask = np.zeros(n_samples, dtype=np.int32)  # 0 = keep, 1 = dropped by defense, 2 = other
 
     for epoch in range(n_epochs):
         epoch_start = time.time()
@@ -100,9 +108,20 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
 
         # Track L∞ norms for class 0 samples in this epoch (will be extracted from defense scores)
         class_0_norms = []
+        
+        # Reset scores for this epoch
+        scores.fill(0.0)
 
         for batch_idx, (curr_X, curr_y) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device), curr_y.to(device)
+            batch_start_idx = batch_idx * batch_size
+            batch_end_idx = min(batch_start_idx + len(curr_X), n_samples)
+            
+            # Get drop_mask slice for this batch
+            batch_drop_mask = drop_mask[batch_start_idx:batch_end_idx]
+            
+            # Global indices for this batch
+            global_indices = torch.arange(batch_start_idx, batch_end_idx, device=device)
 
             defense_cfg = DefenseConfig(
                 score_fn='grad_norm',
@@ -141,11 +160,11 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                 model,
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm,
-                drop_mask=None,
-                block_size=1,
-                scores=None,  # Will be computed by defense
+                drop_mask=batch_drop_mask,
+                block_size=len(curr_X),  # Process entire batch at once
+                scores=scores,  # Pass the scores array to be updated
                 device=device,
-                global_indices=torch.arange(len(curr_X), device=device),
+                global_indices=global_indices,
                 aug_mult=1,
                 aug_fn=None,
                 world_size=1,
@@ -159,11 +178,12 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
 
             # Extract L∞ gradient norms from defense scores (these are per-sample norms)
             # scores contains the gradient norms computed by the defense mechanism
-            for sample_idx in range(len(curr_X)):
-                if sample_idx < len(scores):
-                    norm_value = scores[sample_idx]
+            for local_idx in range(len(curr_X)):
+                global_idx = batch_start_idx + local_idx
+                if global_idx < len(scores):
+                    norm_value = float(scores[global_idx])
                     # Only track class 0 samples
-                    if curr_y[sample_idx] == 0:
+                    if curr_y[local_idx].item() == 0:
                         class_0_norms.append(norm_value)
 
             # Apply the accumulated gradients
@@ -178,8 +198,8 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                             noise = noise_std * torch.randn_like(grad)
                             grad.add_(noise)
 
-                        # Average the noisy gradient
-                        grad.div_(float(len(curr_X)))
+                        # Average the noisy gradient over batch size
+                        grad.div_(float(batch_size))
 
                         if param.grad is None:
                             param.grad = grad.clone()
@@ -200,6 +220,28 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
 
         epoch_time = time.time() - epoch_start
         print(f"Epoch {epoch} completed in {epoch_time:.2f}s")
+        
+        # Defense operations - filter top-k scoring samples per class
+        if defense_k > 0:
+            k = int(defense_k)
+            unique_classes = torch.unique(y).cpu()
+            active_mask = torch.from_numpy(drop_mask == 0)
+            
+            for cls in unique_classes:
+                cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
+                if len(cls_indices) == 0:
+                    continue
+                    
+                cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+                _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
+                
+                topk_global_indices = cls_indices[topk_indices]
+                dropped_indices = topk_global_indices.cpu().numpy()
+                drop_mask[dropped_indices] = 1
+                
+                print(f"  Class {cls.item()}: Dropped {len(dropped_indices)} samples (indices: {dropped_indices[:5]}...)")
+            
+            scores.fill(0)
 
     # Find the minimum of the 6th largest norms across epochs
     if epoch_6th_largest_norms:
@@ -265,6 +307,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=256, help='batch size')
     parser.add_argument('--seed', type=int, default=0, help='random seed')
     parser.add_argument('--output', type=str, default='gradient_canary.pt', help='output .pt file path')
+    parser.add_argument('--defense_k', type=int, default=5, help='number of samples to filter per class per epoch (default: 5)')
 
     args = parser.parse_args()
 
@@ -279,6 +322,7 @@ def main():
 
     # Train model and track gradients
     print("Training model and tracking gradients...")
+    print(f"Defense enabled with k={args.defense_k}")
     min_norm = train_and_track_gradients(
         model_name=args.model_name,
         X=X,
@@ -289,7 +333,8 @@ def main():
         n_epochs=args.n_epochs,
         lr=args.lr,
         batch_size=args.batch_size,
-        out_dim=out_dim
+        out_dim=out_dim,
+        defense_k=args.defense_k
     )
 
     if min_norm is None:
