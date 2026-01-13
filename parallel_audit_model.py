@@ -80,12 +80,14 @@ def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
     for i in range(max_iter):
         output = model(X_adv)
         _, predicted = torch.max(output, 1)
-        # Targeted attack: success when model predicts target class y
-        if predicted == y:
-            return X_adv.detach(), i + 1, True
-            
+        
         # Handle both scalar and tensor y
-        y_idx = y.item() if y.dim() > 0 else y
+        y_idx = y.item() if isinstance(y, torch.Tensor) else int(y)
+        predicted_idx = predicted.item() if isinstance(predicted, torch.Tensor) else int(predicted)
+        
+        # Targeted attack: success when model predicts target class y
+        if predicted_idx == y_idx:
+            return X_adv.detach(), i + 1, True
         confidence = F.softmax(output, dim=1)[0, y_idx].item()
         if confidence > best_confidence:
             best_confidence = confidence
