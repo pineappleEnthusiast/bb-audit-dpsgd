@@ -792,6 +792,9 @@ def main():
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed_all(args.seed + rank)
 
+    # Initialize gradient_space_canary_target_class early (will be set later if gradient space canary is loaded)
+    gradient_space_canary_target_class = None
+
     # Craft target
     if rank == 0:
         print('Crafting target data point')
@@ -1021,7 +1024,6 @@ def main():
     
     # Create or load crafted gradient if needed
     crafted_grad = None
-    gradient_space_canary_target_class = None
     if args.target_type == 'gradient_space_canary':
         if args.gradient_space_canary_pt is not None:
             if not os.path.exists(args.gradient_space_canary_pt):
