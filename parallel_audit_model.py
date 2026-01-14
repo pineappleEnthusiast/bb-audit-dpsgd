@@ -862,7 +862,11 @@ def main():
         # Craft target
         if args.target_type == 'gradient_space_canary':
             target_X = X_out[-1].unsqueeze(0)
-            target_y = y_out[-1].unsqueeze(0)
+            # Use the target class from the canary file if available, otherwise use the last sample's label
+            if gradient_space_canary_target_class is not None:
+                target_y = torch.tensor([gradient_space_canary_target_class], dtype=torch.long)
+            else:
+                target_y = y_out[-1].unsqueeze(0)
             if rank == 0:
                 print("Using gradient-space canary")
         elif args.target_type == 'mislabeled':
@@ -1017,6 +1021,7 @@ def main():
     
     # Create or load crafted gradient if needed
     crafted_grad = None
+    gradient_space_canary_target_class = None
     if args.target_type == 'gradient_space_canary':
         if args.gradient_space_canary_pt is not None:
             if not os.path.exists(args.gradient_space_canary_pt):
@@ -1024,11 +1029,16 @@ def main():
             payload = torch.load(args.gradient_space_canary_pt, map_location='cpu')
             if isinstance(payload, dict) and 'gradient' in payload:
                 crafted_grad = payload['gradient']
+                # Extract target class if available
+                if 'target_class' in payload:
+                    gradient_space_canary_target_class = payload['target_class']
             else:
                 # Backward compatibility: direct gradient dictionary
                 crafted_grad = payload
             if rank == 0:
                 print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
+                if gradient_space_canary_target_class is not None:
+                    print(f"  Target class: {gradient_space_canary_target_class}")
         elif args.canary_pt is None:
             if rank == 0:
                 print('Creating crafted gradient')
