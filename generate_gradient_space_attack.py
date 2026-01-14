@@ -555,6 +555,8 @@ def main():
     }
     torch.save(canary_dict, args.output)
     print(f"Saved gradient canary to {args.output}")
+    print(f"Dictionary keys: {canary_dict.keys()}")
+    print(f"Target class in dict: {canary_dict['target_class']}")
     
     # Verify the norm
     flat_grad = torch.cat([g.view(-1) for g in canary_gradient.values()])
