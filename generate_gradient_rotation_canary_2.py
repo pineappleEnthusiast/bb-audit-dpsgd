@@ -44,7 +44,7 @@ def init_wideresnet(model):
 # Training Functions
 # ============================================================================
 
-def train_one_epoch(model, dataset, device, lr=5e-3):
+def train_one_epoch(model, dataset, device, lr=3):
     """Train model for one epoch using SGD"""
     model.train()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -107,6 +107,27 @@ def cosine_similarity(v1, v2):
     return torch.dot(v1, v2) / (torch.norm(v1) * torch.norm(v2) + 1e-8)
 
 
+def evaluate_model(model, dataset, device):
+    """Evaluate model accuracy on dataset"""
+    model.eval()
+    correct = 0
+    total = 0
+    batch_size = 100
+    
+    with torch.no_grad():
+        for i in range(0, len(dataset), batch_size):
+            batch = dataset[i:i + batch_size]
+            batch_x = torch.stack([item[0] for item in batch]).to(device)
+            batch_y = torch.tensor([item[1] for item in batch]).to(device)
+            
+            outputs = model(batch_x)
+            _, predicted = torch.max(outputs.data, 1)
+            total += batch_y.size(0)
+            correct += (predicted == batch_y).sum().item()
+            
+    return 100 * correct / total
+
+
 # ============================================================================
 # Main Canary Generation
 # ============================================================================
@@ -143,8 +164,7 @@ def generate_gradient_rotation_canary(args, device):
         D_temp = D_train + [(x_canary_detached, args.y_target)]
         
         # Train for one epoch with canary
-        for _ in range(5):
-            train_one_epoch(model_t, D_temp, device)
+        train_one_epoch(model_t, D_temp, device)
         
         # Compute Gradient at Epoch t (g_t)
         g_t = compute_per_sample_gradient(model_t, x_canary, args.y_target, device)
@@ -154,15 +174,14 @@ def generate_gradient_rotation_canary(args, device):
         model_t1 = copy.deepcopy(model_t)
         
         # Train for one epoch without canary
-        for _ in range(5):
-            train_one_epoch(model_t1, D_train, device)
+        train_one_epoch(model_t1, D_train, device)
         
         # Compute Gradient at Epoch t+1 (g_{t+1})
         g_t1 = compute_per_sample_gradient(model_t1, x_canary, args.y_target, device)
         
         # Loss Calculation
         cos_sim = cosine_similarity(g_t, g_t1)
-        loss = -grad_norm_t + 50.0 * cos_sim
+        loss = -grad_norm_t + 10.0 * cos_sim
         
         # Update Step
         canary_optimizer.zero_grad()
@@ -181,6 +200,20 @@ def generate_gradient_rotation_canary(args, device):
     
     # Final Output
     print("\nOptimization complete!")
+    
+    # Calculate and print model utility
+    print("Evaluating model utility on test set...")
+    try:
+        X_test, y_test, _ = load_data(args.data_name, n_df=1000, split='test')
+        D_test = list(zip(X_test, y_test))
+        if 'model_t1' in locals():
+            acc = evaluate_model(model_t1, D_test, device)
+            print(f"Final Model Test Accuracy: {acc:.2f}%")
+        else:
+            print("Model not defined (num_iterations=0?)")
+    except Exception as e:
+        print(f"Error evaluating model utility: {e}")
+
     x_canary_final = x_canary.detach().cpu()
     
     canary_dict = {
@@ -227,7 +260,7 @@ def main():
     parser.add_argument(
         '--num_iterations',
         type=int,
-        default=1000,
+        default=100,
         help='Number of optimization iterations (default: 100)'
     )
     
