@@ -1,3 +1,5 @@
+# python generate_gradient_rotation_canary.py --data_name mnist --model_name cnn --num_iterations 100
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,14 +11,40 @@ from typing import Tuple, List
 
 # Import existing utilities and models
 from utils.data import load_data
-from utils.dpsgd import Models, xavier_init_model, init_wideresnet
+from models import Models
 
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+
+    model.apply(init_weights)
+
+
+def init_wideresnet(model):
+    """Initialize model using Kaiming initialization (He init) for ReLU"""
+    for m in model.modules():
+        if isinstance(m, WSConv2d):
+            m._initialize_weights()
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.GroupNorm):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            nn.init.constant_(m.bias, 0)
 
 # ============================================================================
 # Training Functions
 # ============================================================================
 
-def train_one_epoch(model, dataset, device, lr=1e-3):
+def train_one_epoch(model, dataset, device, lr=5e-3):
     """Train model for one epoch using SGD"""
     model.train()
     optimizer = optim.SGD(model.parameters(), lr=lr)
@@ -62,16 +90,14 @@ def compute_per_sample_gradient(model, x, y, device):
     output = model(x)
     loss = criterion(output, y)
     
-    # Backward pass
-    loss.backward()
+    # Compute gradients w.r.t model parameters
+    # We need create_graph=True so that the gradient itself is differentiable w.r.t x
+    # This allows us to optimize x to maximize/minimize properties of the gradient (like norm or direction)
+    params = [p for p in model.parameters() if p.requires_grad]
+    grads = torch.autograd.grad(loss, params, create_graph=True)
     
-    # Collect and flatten all gradients
-    grads = []
-    for param in model.parameters():
-        if param.grad is not None:
-            grads.append(param.grad.flatten())
-    
-    grad_vector = torch.cat(grads)
+    # Flatten and concatenate all gradients
+    grad_vector = torch.cat([g.view(-1) for g in grads])
     
     return grad_vector
 
@@ -89,11 +115,11 @@ def generate_gradient_rotation_canary(args, device):
     """Generate a gradient rotation canary"""
     
     print(f"Loading {args.data_name} dataset...")
-    X, y, out_dim = load_data(args.data_name, n_df=1000, split='train')
+    X, y, out_dim = load_data(args.data_name, n_df=500, split='train')
     D_train = list(zip(X, y))
     
     print(f"Initializing {args.model_name} model...")
-    model_init = Models[args.model_name](X.shape[1:], out_dim).to(device)
+    model_init = Models[args.model_name](X.shape, out_dim).to(device)
     
     if args.model_name == 'cnn':
         xavier_init_model(model_init)
@@ -117,7 +143,8 @@ def generate_gradient_rotation_canary(args, device):
         D_temp = D_train + [(x_canary_detached, args.y_target)]
         
         # Train for one epoch with canary
-        train_one_epoch(model_t, D_temp, device, lr=1e-3)
+        for _ in range(5):
+            train_one_epoch(model_t, D_temp, device)
         
         # Compute Gradient at Epoch t (g_t)
         g_t = compute_per_sample_gradient(model_t, x_canary, args.y_target, device)
@@ -127,14 +154,15 @@ def generate_gradient_rotation_canary(args, device):
         model_t1 = copy.deepcopy(model_t)
         
         # Train for one epoch without canary
-        train_one_epoch(model_t1, D_train, device, lr=1e-3)
+        for _ in range(5):
+            train_one_epoch(model_t1, D_train, device)
         
         # Compute Gradient at Epoch t+1 (g_{t+1})
         g_t1 = compute_per_sample_gradient(model_t1, x_canary, args.y_target, device)
         
         # Loss Calculation
         cos_sim = cosine_similarity(g_t, g_t1)
-        loss = -grad_norm_t + 10.0 * cos_sim
+        loss = -grad_norm_t + 50.0 * cos_sim
         
         # Update Step
         canary_optimizer.zero_grad()
@@ -199,7 +227,7 @@ def main():
     parser.add_argument(
         '--num_iterations',
         type=int,
-        default=100,
+        default=1000,
         help='Number of optimization iterations (default: 100)'
     )
     
@@ -207,7 +235,7 @@ def main():
         '--output',
         type=str,
         default='gradient_rotation_canary_2.pt',
-        help='Output file path (default: gradient_rotation_canary.pt)'
+        help='Output file path (default: gradient_rotation_canary_2.pt)'
     )
     
     args = parser.parse_args()
