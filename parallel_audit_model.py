@@ -1133,8 +1133,8 @@ def main():
                 
                 output = model(target_X_device)
                 
-                if args.target_type == 'gradient_space_canary' and world == 'in' and crafted_grad is not None:
-                    # Calculate parameter update
+                if args.target_type == 'gradient_space_canary':
+                    # For gradient space canary, score by L2 norm of parameter update in both worlds
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
                     
@@ -1151,7 +1151,7 @@ def main():
                 losses[world].append(loss)
 
             if args.store_all_losses:
-                if args.target_type == 'gradient_space_canary' and world == 'in':
+                if args.target_type == 'gradient_space_canary':
                     # Not a per-sample loss-based audit; keep placeholder for alignment.
                     all_losses[world].append(np.array([], dtype=np.float32))
                 else:

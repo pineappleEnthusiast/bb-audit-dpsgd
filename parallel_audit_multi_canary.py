@@ -354,6 +354,8 @@ def train_model_multi_canary(
     num_workers: int,
     persistent_workers: bool,
     canary_indices: np.ndarray | None,
+    is_gradient_space_canary: bool = False,
+    crafted_gradient: dict | None = None,
     loss_volatility_k: int = 5,
     grad_norm_percentile_k: int = 20,
     grad_dir_volatility_k: int = 5,
@@ -614,8 +616,8 @@ def train_model_multi_canary(
                 world_size=1,
                 rank=0,
                 batch_size=int(batch_size),
-                is_gradient_space_canary=False,
-                crafted_gradient=None,
+                is_gradient_space_canary=is_gradient_space_canary,
+                crafted_gradient=crafted_gradient,
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=bool(defense_apply_ascent),
             )
@@ -816,8 +818,10 @@ def main():
     parser.add_argument('--device', type=str, default=None)
 
     parser.add_argument('--n_canaries', type=int, default=1)
-    parser.add_argument('--target_type', type=str, default='blank', choices=['blank', 'sanity_check', 'clipbkd', 'fgsm', 'mislabeled'])
+    parser.add_argument('--target_type', type=str, default='blank', choices=['blank', 'sanity_check', 'clipbkd', 'fgsm', 'mislabeled', 'gradient_space_canary'])
     parser.add_argument('--canary_pt', type=str, default=None, help='Path to a .pt file containing canaries + audit labels (overrides --target_type/--n_canaries)')
+    parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
+                        help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
     parser.add_argument('--blank_alpha', type=float, default=0.0)
 
     parser.add_argument('--aug_mult', type=int, default=1)
@@ -861,6 +865,9 @@ def main():
     y_out = y_out.long()
 
     canary_meta = {}
+    
+    # Initialize gradient_space_canary_target_class early (will be set later if gradient space canary is loaded)
+    gradient_space_canary_target_class = None
 
     # Initialize model with SAME seed across all GPUs for fixed_init
     if rank == 0:
@@ -894,6 +901,41 @@ def main():
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed_all(args.seed + rank)
 
+    # Handle gradient space canary loading
+    crafted_grad = None
+    if args.target_type == 'gradient_space_canary':
+        if args.gradient_space_canary_pt is not None:
+            if not os.path.exists(args.gradient_space_canary_pt):
+                raise FileNotFoundError(f"--gradient_space_canary_pt not found: {args.gradient_space_canary_pt}")
+            payload = torch.load(args.gradient_space_canary_pt, map_location='cpu')
+            if isinstance(payload, dict) and 'gradient' in payload:
+                crafted_grad = payload['gradient']
+                # Extract target class if available
+                if 'target_class' in payload:
+                    gradient_space_canary_target_class = payload['target_class']
+            else:
+                # Backward compatibility: direct gradient dictionary
+                crafted_grad = payload
+            
+            # Move crafted_grad to the correct device
+            if crafted_grad is not None:
+                crafted_grad = {name: g.to(device) for name, g in crafted_grad.items()}
+            
+            if rank == 0:
+                print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
+                if gradient_space_canary_target_class is not None:
+                    print(f"  Target class: {gradient_space_canary_target_class}")
+        elif args.canary_pt is None:
+            if rank == 0:
+                print('Creating crafted gradient')
+            temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+            if args.model_name == 'cnn':
+                xavier_init_model(temp_model)
+            else:
+                init_wideresnet(temp_model)
+            crafted_grad = craft_gradient(model=temp_model, device=device)
+            del temp_model
+    
     # Create/load canaries
     if args.canary_pt is not None:
         X_canary, y_canary, canary_meta = _load_canaries_from_pt_dict(args.canary_pt, X_out[[0]])
@@ -969,6 +1011,16 @@ def main():
                 out_dim=out_dim,
                 seed=int(args.seed),
             )
+        elif args.target_type == 'gradient_space_canary':
+            # For gradient space canary, use the last sample from D- as the canary
+            X_canary = X_out[-1].unsqueeze(0)
+            # Use the target class from the canary file if available, otherwise use the last sample's label
+            if gradient_space_canary_target_class is not None:
+                y_canary = torch.tensor([gradient_space_canary_target_class], dtype=torch.long)
+            else:
+                y_canary = y_out[-1].unsqueeze(0)
+            if rank == 0:
+                print("Using gradient-space canary")
         else:
             raise ValueError(f"Unknown target_type: {args.target_type}")
 
@@ -1039,10 +1091,26 @@ def main():
                 num_workers=0,
                 persistent_workers=False,
                 canary_indices=canary_indices if (world == 'in') else None,
+                is_gradient_space_canary=(args.target_type == 'gradient_space_canary' and world == 'in'),
+                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
             )
 
-            per_canary = _score_canaries(model, X_canary, y_canary)
-            max_score = float(per_canary.max())
+            if args.target_type == 'gradient_space_canary':
+                # For gradient space canary, score by L2 norm of parameter update in both worlds
+                model.eval()
+                with torch.no_grad():
+                    final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
+                    init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
+                    
+                    update = {n: final_params[n] - init_params[n] for n in final_params}
+                    flat_update = torch.cat([p.view(-1) for p in update.values()])
+                    
+                    update_norm = flat_update.norm().item()
+                    max_score = float(update_norm)
+            else:
+                per_canary = _score_canaries(model, X_canary, y_canary)
+                max_score = float(per_canary.max())
+            
             scores[world].append(max_score)
 
             print(f"[Rank {rank}] world={world} rep={rep} max_canary_score={max_score:.6f} elapsed_s={time.time()-start:.2f}", flush=True)
