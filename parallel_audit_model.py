@@ -1139,14 +1139,10 @@ def main():
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
                     
                     update = {n: final_params[n] - init_params[n] for n in final_params}
-                    flat_crafted_grad = torch.cat([g.squeeze(0).view(-1) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
                     
-                    flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-12)
-                    flat_update = flat_update / (flat_update.norm() + 1e-12)
-                    
-                    cos_sim = (flat_crafted_grad * flat_update).sum().item()
-                    loss = cos_sim
+                    update_norm = flat_update.norm().item()
+                    loss = update_norm
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
