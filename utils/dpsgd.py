@@ -320,8 +320,27 @@ def _flatten_param_diff_like_grads(param_diff_dict, ps_grads):
 def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseConfig, ps_losses=None, ps_logits=None):
     score_fn = defense_cfg.score_fn
 
-    if score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
-        raise ValueError(f"Unsupported defense_score_fn: {score_fn}. Loss-based defense scores have been removed.")
+    if score_fn == 'loss':
+        if ps_losses is None:
+            raise RuntimeError("defense_score_fn='loss' requires per-sample losses")
+        return ps_losses.to(dtype=torch.float32)
+
+    if score_fn == 'loss_momentum':
+        if ps_losses is None:
+            raise RuntimeError("defense_score_fn='loss_momentum' requires per-sample losses")
+        return ps_losses.to(dtype=torch.float32)
+
+    if score_fn == 'loss_volatility':
+        if ps_losses is None:
+            raise RuntimeError("defense_score_fn='loss_volatility' requires per-sample losses")
+        return ps_losses.to(dtype=torch.float32)
+
+    if score_fn == 'grad_norm_x_loss':
+        if ps_losses is None:
+            raise RuntimeError("defense_score_fn='grad_norm_x_loss' requires per-sample losses")
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        grad_norms = per_sample_flat_grads.norm(2, dim=1)
+        return (grad_norms * ps_losses).to(dtype=torch.float32)
 
     if score_fn == 'inv_confidence':
         if ps_logits is None:
@@ -596,9 +615,6 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             theta_t_minus_theta0=theta_t_minus_theta0
         )
 
-    if defense_cfg.score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
-        raise ValueError(f"Unsupported defense_score_fn: {defense_cfg.score_fn}. Loss-based defense scores have been removed.")
-
     ps_losses = None
     ps_logits = None
     if len(X) == 0:
@@ -631,6 +647,13 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 ps_logits = logits
                 ps_losses = None
 
+            if defense_cfg.score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
+                logits = model(X_aug)
+                aug_losses = compute_per_sample_losses_from_logits(logits, y_aug)
+                ps_losses = aug_losses
+            else:
+                ps_losses = None
+
             if isinstance(model_to_use, LSTM):
                 ps_grads = _get_per_sample_grads(GradSampleModule(model), X_aug, y_aug, criterion)
             else:
@@ -654,7 +677,15 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 ps_entropy = aug_entropy.reshape(len(X), aug_mult).mean(dim=1).detach()
                 ps_inv_conf = None
                 ps_margin = None
+            elif defense_cfg.score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
+                ps_losses = aug_losses.reshape(len(X), aug_mult).mean(dim=1).detach()
+                ps_logits = None
+                ps_inv_conf = None
+                ps_margin = None
+                ps_entropy = None
             else:
+                ps_losses = None
+                ps_logits = None
                 ps_inv_conf = None
                 ps_margin = None
                 ps_entropy = None
@@ -682,6 +713,12 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             else:
                 ps_entropy = None
 
+            if defense_cfg.score_fn in {'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'}:
+                logits = model(X)
+                ps_losses = compute_per_sample_losses_from_logits(logits, y).detach()
+            else:
+                ps_losses = None
+
             if isinstance(model_to_use, LSTM):
                 ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
             else:
@@ -691,8 +728,10 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         if is_gradient_space_canary:
             # For the last sample in the block, replace its gradient with a crafted one
             for name in ps_grads.keys():
-                # Replace the last sample's gradient with the crafted one
-                ps_grads[name][canary_local_idx] = crafted_gradient[name]
+                if name in crafted_gradient:
+                    # Squeeze batch dimension and ensure device compatibility
+                    crafted_grad_tensor = crafted_gradient[name].squeeze(0).to(device=ps_grads[name].device, dtype=ps_grads[name].dtype)
+                    ps_grads[name][canary_local_idx] = crafted_grad_tensor
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
@@ -821,7 +860,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     batch_size_in = len(X)
 
     # Get indices of non-dropped samples
-    # TODO: bug is here
     active_indices = (torch.tensor(drop_mask, device=device) != 2)
 
     gradient_ascent_indices = torch.tensor(drop_mask, device=device)[active_indices] == 1
