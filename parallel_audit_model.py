@@ -1133,18 +1133,17 @@ def main():
                 
                 output = model(target_X_device)
                 
-                if args.target_type == 'gradient_space_canary' and crafted_grad is not None:
-                    # For gradient space canary, score by inner product of crafted gradient and parameter update
+                if args.target_type == 'gradient_space_canary':
+                    # For gradient space canary, score by L∞ norm of parameter update
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
 
                     update = {n: final_params[n] - init_params[n] for n in final_params}
-                    flat_crafted_grad = torch.cat([g.squeeze(0).view(-1) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
 
-                    # Inner product: dot product of crafted gradient and parameter update
-                    inner_product = (flat_crafted_grad * flat_update).sum().item()
-                    loss = inner_product
+                    # L∞ norm: maximum absolute parameter change
+                    update_linf = flat_update.abs().max().item()
+                    loss = update_linf
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
