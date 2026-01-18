@@ -114,12 +114,12 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
         else:
             init_wideresnet(model)
 
-    if model_name == "lstm" and not isinstance(model, GradSampleModule):
-        model = GradSampleModule(model)
-
     model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
+
+    # Save initial parameters
+    init_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
     # Set DP noise
     if epsilon is not None:
@@ -432,16 +432,16 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
     if epoch_6th_largest_norms:
         min_norm = min(epoch_6th_largest_norms)
         print(f"\nMinimum of 6th largest norms across epochs: {min_norm:.6f}")
-        return min_norm
+        return min_norm, model, init_params
     else:
         print("\nNo valid norm measurements found")
-        return None
+        return None, None, None
 
 
-def create_canary_gradient(model, target_norm, device='cuda'):
+def create_canary_gradient(model, target_norm, hot_index=None, device='cuda'):
     """
-    Create a 1-hot gradient vector with the specified L∞ norm.
-    Similar to craft_gradient but with custom norm.
+    Create a 1-hot gradient vector with the specified L∞ norm at the given index.
+    If hot_index is None, uses the middle index.
     """
     params = {}
     total_elements = 0
@@ -460,8 +460,9 @@ def create_canary_gradient(model, target_norm, device='cuda'):
     if total_elements == 0:
         raise ValueError("Model has no trainable parameters")
 
-    # Create 1-hot gradient at the middle index
-    hot_index = total_elements // 2
+    # Create 1-hot gradient at the specified index
+    if hot_index is None:
+        hot_index = total_elements // 2
     crafted_grad = {}
 
     for name, info in params.items():
@@ -515,7 +516,7 @@ def main():
     generator = torch.Generator().manual_seed(args.seed)
     dl_generator = torch.Generator().manual_seed(args.seed + 1)
     
-    min_norm = train_and_track_gradients(
+    min_norm, final_model, init_params = train_and_track_gradients(
         model_name=args.model_name,
         X=X,
         y=y,
@@ -537,7 +538,14 @@ def main():
         print("Failed to compute gradient norm - exiting")
         return
 
-    # Create canary gradient with the computed norm
+    # Compute the parameter updates to find the index with smallest change
+    final_params = final_model.state_dict()
+    update = {n: final_params[n] - init_params[n] for n in init_params}
+    flat_update = torch.cat([p.view(-1) for p in update.values()])
+    hot_index = torch.argmin(flat_update.abs()).item()
+    print(f"Selected 1-hot index: {hot_index} with update magnitude: {flat_update[hot_index].abs().item():.6f}")
+
+    # Create canary gradient with the computed norm at the selected index
     print(f"Creating canary gradient with norm {min_norm:.6f}...")
 
     # Create a dummy model to get parameter structure
@@ -546,7 +554,7 @@ def main():
     else:
         dummy_model = Models[args.model_name](X.shape, out_dim=out_dim)
 
-    canary_gradient = create_canary_gradient(dummy_model, min_norm)
+    canary_gradient = create_canary_gradient(dummy_model, min_norm, hot_index)
 
     # Save to file in dictionary format to match other canary formats
     canary_dict = {
