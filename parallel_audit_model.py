@@ -1133,22 +1133,17 @@ def main():
                 
                 output = model(target_X_device)
                 
-                if args.target_type == 'gradient_space_canary':
-                    # For gradient space canary, score by L2 norm of parameter update in both worlds
+                if args.target_type == 'gradient_space_canary' and crafted_grad is not None:
+                    # For gradient space canary, score by L∞ norm of parameter update
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
 
                     update = {n: final_params[n] - init_params[n] for n in final_params}
-                    flat_crafted_grad = torch.cat([g.squeeze(0).view(-1) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
 
-                    # Normalize both vectors for cosine similarity
-                    flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-12)
-                    flat_update = flat_update / (flat_update.norm() + 1e-12)
-
-                    # Cosine similarity: measures alignment between crafted gradient and parameter update
-                    cos_sim = (flat_crafted_grad * flat_update).sum().item()
-                    loss = cos_sim
+                    # L∞ norm: maximum absolute parameter change
+                    update_linf = flat_update.abs().max().item()
+                    loss = update_linf
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
