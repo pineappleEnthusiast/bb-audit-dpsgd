@@ -106,9 +106,8 @@ def train_model(model_name, X, y, n_epochs, lr, batch_size, out_dim, device='cud
 def compute_gradient_norm(model, x, y, criterion):
     """Compute gradient norm for a single sample"""
     model.eval()
-    with torch.no_grad():
-        output = model(x.unsqueeze(0))
-    loss = criterion(output, y.unsqueeze(0))
+    output = model(x.unsqueeze(0))
+    loss = criterion(output, y)
     
     model.zero_grad()
     loss.backward()
