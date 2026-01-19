@@ -155,7 +155,20 @@ def main():
 
     # Step 1: Perform SVD on feature matrix X
     print("Performing SVD on feature matrix...")
-    U, s, Vh = torch.svd(X)
+    print(f"Feature matrix shape: {X.shape}, dtype: {X.dtype}")
+    
+    # Check for NaN/inf values
+    if torch.isnan(X).any() or torch.isinf(X).any():
+        print("Warning: Feature matrix contains NaN or inf values, cleaning...")
+        X = torch.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+    
+    # Flatten spatial dimensions if needed (e.g., for CNN features)
+    if len(X.shape) > 2:
+        X = X.view(X.shape[0], -1)
+        print(f"Flattened feature matrix to shape: {X.shape}")
+    
+    # Use SVD with full_matrices=False for numerical stability
+    U, s, Vh = torch.linalg.svd(X, full_matrices=False)
     # Vh[-1] is the direction of least variance (smallest singular value)
 
     # Step 2: Generate canary feature vector
