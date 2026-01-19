@@ -37,7 +37,7 @@ class Residual(nn.Module):
 def metasmooth_conv_bn(channels_in, channels_out, kernel_size=3, stride=1, padding=1, groups=1):
     return nn.Sequential(
         nn.Conv2d(channels_in, channels_out, kernel_size=kernel_size, stride=stride, padding=padding, groups=groups, bias=False),
-        nn.BatchNorm2d(channels_out),
+        nn.BatchNorm2d(channels_out, track_running_stats=False),
         nn.GELU()
     )
 
