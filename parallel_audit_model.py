@@ -1134,19 +1134,15 @@ def main():
                 output = model(target_X_device)
                 
                 if args.target_type == 'gradient_space_canary' and crafted_grad is not None:
-                    # For gradient space canary, score by parameter update at the 1-hot index of crafted gradient
+                    # For gradient space canary, score by L∞ norm of parameter update
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
 
                     update = {n: final_params[n] - init_params[n] for n in final_params}
-                    flat_crafted_grad = torch.cat([g.squeeze(0).view(-1) for g in crafted_grad.values()])
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
 
-                    # Find the 1-hot index (index of non-zero entry in crafted gradient)
-                    hot_index = torch.argmax(flat_crafted_grad.abs()).item()
-                    
-                    # Score by parameter update at the hot index
-                    loss = flat_update[hot_index].item()
+                    # Score by L∞ norm of parameter update
+                    loss = flat_update.abs().max().item()
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
