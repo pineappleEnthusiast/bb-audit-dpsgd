@@ -200,8 +200,12 @@ def main():
     max_grad_norm = 0
     best_y = 0
     
+    # Get device from model parameters
+    model_device = next(model.parameters()).device
+    x_p = x_p.to(model_device)
+    
     for y_candidate in range(out_dim):
-        target = torch.tensor([y_candidate], dtype=torch.long, device=model.device)
+        target = torch.tensor([y_candidate], dtype=torch.long, device=model_device)
         grad_norm = compute_gradient_norm(model, x_p, target, criterion)
         if grad_norm > max_grad_norm:
             max_grad_norm = grad_norm
