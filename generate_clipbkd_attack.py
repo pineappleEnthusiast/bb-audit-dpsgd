@@ -219,15 +219,15 @@ def main():
     y_p = best_y
     print(f"Selected target label: {y_p} with gradient norm: {max_grad_norm:.6f}")
 
-    # Save canary
+    # Save canary in format expected by parallel_audit_model.py
     canary_dict = {
-        'feature': x_p.cpu(),
-        'label': y_p
+        'canary': x_p.cpu(),
+        'target_class': y_p
     }
     torch.save(canary_dict, args.output)
     print(f"Saved ClipBKD canary to {args.output}")
     print(f"Canary feature shape: {x_p.shape}")
-    print(f"Canary label: {y_p}")
+    print(f"Canary target class: {y_p}")
 
 
 if __name__ == '__main__':
