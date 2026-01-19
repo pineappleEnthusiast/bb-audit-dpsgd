@@ -222,12 +222,12 @@ def main():
     # Save canary in format expected by parallel_audit_model.py
     canary_dict = {
         'canary': x_p.cpu(),
-        'target_class': y_p
+        'target_label': y_p
     }
     torch.save(canary_dict, args.output)
     print(f"Saved ClipBKD canary to {args.output}")
     print(f"Canary feature shape: {x_p.shape}")
-    print(f"Canary target class: {y_p}")
+    print(f"Canary target label: {y_p}")
 
 
 if __name__ == '__main__':
