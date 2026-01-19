@@ -639,7 +639,7 @@ def metagradient_attack(
         # For audit, we just need the canaries saved at the end
         
     # Save Final Canaries
-    save_path = "generated_metagradient_canaries.pt"
+    save_path = "metagradient_canaries.pt"
     torch.save(canaries.detach().cpu(), save_path)
     print(f"Canaries saved to {save_path}")
 
