@@ -327,7 +327,7 @@ def metagradient_attack(
         print(f"=== Meta Iteration {meta_iter+1}/{meta_iterations} ===")
         
         # 3a. Partition Canaries
-        perm = torch.randperm(canary_count)
+        perm = torch.randperm(canary_count, device=device)
         split = canary_count // 2
         idx_in = perm[:split]
         idx_out = perm[split:]
@@ -592,6 +592,7 @@ def metagradient_attack(
                     canaries.grad = torch.zeros_like(canaries)
                 
                 # We need to scatter add
+                c_abs_idx = c_abs_idx.to(canaries.device)
                 canaries.grad.index_add_(0, c_abs_idx, grad_c_batch)
                 
             # Update current gradients for next iteration (t-1)
