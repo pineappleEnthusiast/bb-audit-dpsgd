@@ -562,9 +562,13 @@ def metagradient_attack(
             # Compute gradients of dot_product w.r.t inputs (params_t, mom_t, x_input)
             # x_input depends on canaries. params_t depends on previous step.
             
+            grad_inputs = list(params_t.values()) + list(mom_t.values())
+            if len(c_abs_idx) > 0:
+                grad_inputs.append(x_input)
+
             grads_result = torch.autograd.grad(
                 dot_product, 
-                list(params_t.values()) + list(mom_t.values()) + [x_input], 
+                grad_inputs, 
                 retain_graph=False # One step only
             )
             
@@ -574,10 +578,11 @@ def metagradient_attack(
             
             grad_params_t = dict(zip(params_t.keys(), grads_result[:n_p]))
             grad_mom_t = dict(zip(mom_t.keys(), grads_result[n_p:n_p+n_m]))
-            grad_x = grads_result[-1]
             
             # Accumulate canary gradients
             if len(c_abs_idx) > 0:
+                grad_x = grads_result[-1]
+                
                 # grad_x corresponds to [mnist..., canary...]
                 # Extract canary part
                 n_c = len(c_abs_idx)
