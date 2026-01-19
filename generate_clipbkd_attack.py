@@ -155,20 +155,36 @@ def main():
 
     # Step 1: Perform SVD on feature matrix X
     print("Performing SVD on feature matrix...")
-    print(f"Feature matrix shape: {X.shape}, dtype: {X.dtype}")
+    print(f"Feature matrix shape: {X.shape}, dtype: {X.dtype}, device: {X.device}")
+    
+    # Move to CPU for SVD computation (more stable)
+    X_cpu = X.cpu()
     
     # Check for NaN/inf values
-    if torch.isnan(X).any() or torch.isinf(X).any():
+    if torch.isnan(X_cpu).any() or torch.isinf(X_cpu).any():
         print("Warning: Feature matrix contains NaN or inf values, cleaning...")
-        X = torch.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+        X_cpu = torch.nan_to_num(X_cpu, nan=0.0, posinf=1e6, neginf=-1e6)
     
     # Flatten spatial dimensions if needed (e.g., for CNN features)
-    if len(X.shape) > 2:
-        X = X.view(X.shape[0], -1)
-        print(f"Flattened feature matrix to shape: {X.shape}")
+    if len(X_cpu.shape) > 2:
+        X_cpu = X_cpu.view(X_cpu.shape[0], -1)
+        print(f"Flattened feature matrix to shape: {X_cpu.shape}")
+    
+    # Ensure double precision for numerical stability
+    X_cpu = X_cpu.double()
     
     # Use SVD with full_matrices=False for numerical stability
-    U, s, Vh = torch.linalg.svd(X, full_matrices=False)
+    try:
+        U, s, Vh = torch.linalg.svd(X_cpu, full_matrices=False)
+    except Exception as e:
+        print(f"SVD failed with error: {e}")
+        print("Falling back to numpy SVD...")
+        X_np = X_cpu.numpy()
+        U_np, s_np, Vh_np = np.linalg.svd(X_np, full_matrices=False)
+        U = torch.from_numpy(U_np)
+        s = torch.from_numpy(s_np)
+        Vh = torch.from_numpy(Vh_np)
+    
     # Vh[-1] is the direction of least variance (smallest singular value)
 
     # Step 2: Generate canary feature vector
