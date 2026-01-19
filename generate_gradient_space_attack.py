@@ -114,6 +114,9 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
         else:
             init_wideresnet(model)
 
+    if model_name == "lstm" and not isinstance(model, GradSampleModule):
+        model = GradSampleModule(model)
+
     model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
