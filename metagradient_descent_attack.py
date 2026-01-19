@@ -339,8 +339,8 @@ def metagradient_attack(
         # We don't physically concat tensors to avoid breaking graph for C.
         # We handle this in batch sampling.
         
-        total_train_indices = list(range(n_train_data + split)) # 0..N-1 are MNIST, N..N+Split-1 are C_in
-        random.shuffle(total_train_indices) # Shuffle once per epoch/training run
+        total_train_indices = np.array(list(range(n_train_data + split))) # 0..N-1 are MNIST, N..N+Split-1 are C_in
+        np.random.shuffle(total_train_indices) # Shuffle once per epoch/training run
         
         # 3b. REPLAY Training (Forward)
         model = MetaSmoothResNet9(num_classes=10).to(device)
