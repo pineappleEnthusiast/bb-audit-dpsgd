@@ -197,23 +197,7 @@ def differentiable_sgd_step(params, buffers, batch_x, batch_y, model, lr, max_gr
     # Compute grads w.r.t params. args: (params, buffers, x, y)
     # vmap over x and y (dims 0), params/buffers are shared (None)
     grad_fn = grad(compute_grad_single)
-    
-    chunk_size = 50
-    if B <= chunk_size:
-        per_sample_grads = vmap(grad_fn, in_dims=(None, None, 0, 0))(params, buffers, batch_x, batch_y)
-    else:
-        # Chunking to save memory
-        per_sample_grads_list = []
-        for i in range(0, B, chunk_size):
-            x_chunk = batch_x[i : i + chunk_size]
-            y_chunk = batch_y[i : i + chunk_size]
-            grads_chunk = vmap(grad_fn, in_dims=(None, None, 0, 0))(params, buffers, x_chunk, y_chunk)
-            per_sample_grads_list.append(grads_chunk)
-            
-        # Merge
-        per_sample_grads = {}
-        for k in params.keys():
-            per_sample_grads[k] = torch.cat([g[k] for g in per_sample_grads_list], dim=0)
+    per_sample_grads = vmap(grad_fn, in_dims=(None, None, 0, 0))(params, buffers, batch_x, batch_y)
     
     # 2. Clip Gradients
     # Flatten all grads for each sample to compute norm
