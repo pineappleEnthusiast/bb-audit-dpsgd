@@ -204,6 +204,12 @@ def main():
     model_device = next(model.parameters()).device
     x_p = x_p.float().to(model_device)  # Convert to float32 and move to model device
     
+    # Reshape x_p back to original image shape if needed
+    if len(X.shape) > 2:
+        original_shape = X.shape[1:]  # (channels, height, width)
+        x_p = x_p.view(*original_shape)
+        print(f"Reshaped canary to image shape: {x_p.shape}")
+    
     for y_candidate in range(out_dim):
         target = torch.tensor([y_candidate], dtype=torch.long, device=model_device)
         grad_norm = compute_gradient_norm(model, x_p, target, criterion)
