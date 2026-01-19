@@ -202,7 +202,7 @@ def main():
     
     # Get device from model parameters
     model_device = next(model.parameters()).device
-    x_p = x_p.to(model_device)
+    x_p = x_p.float().to(model_device)  # Convert to float32 and move to model device
     
     for y_candidate in range(out_dim):
         target = torch.tensor([y_candidate], dtype=torch.long, device=model_device)
