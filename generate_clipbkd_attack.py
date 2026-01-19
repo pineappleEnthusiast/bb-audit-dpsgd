@@ -193,10 +193,10 @@ def main():
     x_p = Vh[-1] * m  # Vh[-1] has norm 1, scale to m
     print(f"Canary feature norm: {torch.norm(x_p).item():.6f}")
 
-    # Step 3: Select target label that maximizes gradient norm
+    # Step 3: Select target label that minimizes gradient norm
     print("Selecting optimal target label...")
     criterion = nn.CrossEntropyLoss()
-    max_grad_norm = 0
+    min_grad_norm = float('inf')
     best_y = 0
     
     # Get device from model parameters
@@ -212,12 +212,12 @@ def main():
     for y_candidate in range(out_dim):
         target = torch.tensor([y_candidate], dtype=torch.long, device=model_device)
         grad_norm = compute_gradient_norm(model, x_p, target, criterion)
-        if grad_norm > max_grad_norm:
-            max_grad_norm = grad_norm
+        if grad_norm < min_grad_norm:
+            min_grad_norm = grad_norm
             best_y = y_candidate
     
     y_p = best_y
-    print(f"Selected target label: {y_p} with gradient norm: {max_grad_norm:.6f}")
+    print(f"Selected target label: {y_p} with gradient norm: {min_grad_norm:.6f}")
 
     # Save canary in format expected by parallel_audit_model.py
     canary_dict = {
