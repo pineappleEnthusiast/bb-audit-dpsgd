@@ -3,9 +3,9 @@
 #SBATCH -o status/non_private_audits_%A_%a.o
 #SBATCH -e status/non_private_audits_%A_%a.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 10
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 4:00:00
+#SBATCH -t 8:00:00
 #SBATCH -A ASC25102
 #SBATCH --array=0-9
 
@@ -20,7 +20,6 @@ cd bb-audit-dpsgd
 # Common hyperparameters
 N_REPS=400
 N_EPOCHS=100
-MAX_GRAD_NORM=-1
 DELTA=1e-5
 SEED=0
 TARGET_TYPE="blank"
@@ -33,38 +32,38 @@ PARENT_OUT="non_private_audits"
 mkdir -p ${PARENT_OUT}
 
 # Define experiment configurations
-# Array format: "dataset|model|lr|batch_size|block_size|epsilon|aug_mult|defense|time|output_name"
+# Array format: "dataset|model|lr|batch_size|block_size|aug_mult|defense|time|output_name"
 experiments=(
     # MNIST experiments (non-private × defense/no_defense)
-    "mnist|cnn|3|4000|4000|-1.0|1|false|4:00:00|mnist_no_defense_non_private"
-    "mnist|cnn|3|4000|4000|-1.0|1|true|4:00:00|mnist_defense_non_private"
+    "mnist|cnn|3|4000|4000|1|false|4:00:00|mnist_no_defense_non_private"
+    "mnist|cnn|3|4000|4000|1|true|4:00:00|mnist_defense_non_private"
     
     # Purchase experiments (non-private × defense/no_defense)
-    "purchase|mlp|10|12143|12143|-1.0|1|false|4:00:00|purchase_no_defense_non_private"
-    "purchase|mlp|10|12143|12143|-1.0|1|true|4:00:00|purchase_defense_non_private"
+    "purchase|mlp|10|12143|12143|1|false|4:00:00|purchase_no_defense_non_private"
+    "purchase|mlp|10|12143|12143|1|true|4:00:00|purchase_defense_non_private"
     
     # CIFAR-10 CNN experiments (non-private × defense/no_defense)
-    "cifar10|cnn|3|3125|3125|-1.0|1|false|4:00:00|cifar10_no_defense_non_private"
-    "cifar10|cnn|3|3125|3125|-1.0|1|true|4:00:00|cifar10_defense_non_private"
+    "cifar10|cnn|3|3125|3125|1|false|4:00:00|cifar10_no_defense_non_private"
+    "cifar10|cnn|3|3125|3125|1|true|4:00:00|cifar10_defense_non_private"
     
     # CIFAR-10 CNN + augmult4 experiments (non-private × defense/no_defense)
-    "cifar10|cnn|3|3125|2000|-1.0|4|false|15:00:00|cifar10_augmult4_no_defense_non_private"
-    "cifar10|cnn|3|3125|2000|-1.0|4|true|15:00:00|cifar10_augmult4_defense_non_private"
+    "cifar10|cnn|3|3125|2000|4|false|15:00:00|cifar10_augmult4_no_defense_non_private"
+    "cifar10|cnn|3|3125|2000|4|true|15:00:00|cifar10_augmult4_defense_non_private"
     
     # CIFAR-10 WideResNet experiments (non-private × defense/no_defense)
-    "cifar10|wideresnet|3|3125|1000|-1.0|1|false|15:00:00|cifar10_wrn_no_defense_non_private"
-    "cifar10|wideresnet|3|3125|1000|-1.0|1|true|15:00:00|cifar10_wrn_defense_non_private"
+    "cifar10|wideresnet|3|3125|1000|1|false|15:00:00|cifar10_wrn_no_defense_non_private"
+    "cifar10|wideresnet|3|3125|1000|1|true|15:00:00|cifar10_wrn_defense_non_private"
 )
 
 # Get current experiment configuration
-IFS='|' read -r DATA_NAME MODEL_NAME LR BATCH_SIZE BLOCK_SIZE EPSILON AUG_MULT DEFENSE TIME_LIMIT OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
+IFS='|' read -r DATA_NAME MODEL_NAME LR BATCH_SIZE BLOCK_SIZE AUG_MULT DEFENSE TIME_LIMIT OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
 
 # Update time limit for this job (note: this won't change the already-submitted job, but documents it)
 echo "=========================================="
 echo "Job Array Task ID: ${SLURM_ARRAY_TASK_ID}"
 echo "Dataset: ${DATA_NAME}"
 echo "Model: ${MODEL_NAME}"
-echo "Epsilon: ${EPSILON} (Non-private)"
+echo "Non-private (epsilon=None)"
 echo "Learning Rate: ${LR}"
 echo "Batch Size: ${BATCH_SIZE}"
 echo "Aug Mult: ${AUG_MULT}"
@@ -100,9 +99,8 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --n_reps '"${N_REPS}"' \
     --n_epochs '"${N_EPOCHS}"' \
     --lr '"${LR}"' \
-    --max_grad_norm '"${MAX_GRAD_NORM}"' \
-    --epsilon '"${EPSILON}"' \
-    --delta '"${DELTA}"' \
+    --epsilon -1 \
+    --max_grad_norm -1 \
     --target_type '"${TARGET_TYPE}"' \
     --batch_size '"${BATCH_SIZE}"' \
     --block_size '"${BLOCK_SIZE}"' \

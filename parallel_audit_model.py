@@ -750,6 +750,8 @@ def main():
     parser.add_argument('--grad_scatter_k', type=int, default=5, help='lookback window for gradient_scatter score (number of recent gradients to track)')
 
     args = parser.parse_args()
+    if args.epsilon == -1:
+        args.epsilon = None
     if args.max_grad_norm == -1:
         args.max_grad_norm = None
 
