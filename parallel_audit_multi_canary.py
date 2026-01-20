@@ -919,7 +919,7 @@ def main():
             
             # Move crafted_grad to the correct device
             if crafted_grad is not None:
-                crafted_grad = {name: g.to(device) for name, g in crafted_grad.items()}
+                crafted_grad = {name: g.to(device) for name, g in crafted_grad.items() if torch.is_tensor(g)}
             
             if rank == 0:
                 print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
