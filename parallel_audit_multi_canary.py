@@ -831,6 +831,7 @@ def main():
     parser.add_argument('--defense_apply_ascent', action='store_true', default=False)
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'])
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm')
+    parser.add_argument('--defense_global_filter', action='store_true', default=False, help='Use global filtering (top-k across entire dataset) instead of per-class filtering')
     
     parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
 
@@ -988,7 +989,7 @@ def main():
                 defense_filter_every=1,
                 defense_score_fn=str(args.defense_score_fn),
                 defense_score_norm=str(args.defense_score_norm),
-                defense_global_filter=False,  # Default to per-class for FGSM helper model
+                defense_global_filter=bool(args.defense_global_filter),
                 device=str(device),
                 generator=None,
                 dl_generator=None,
@@ -1084,7 +1085,7 @@ def main():
                 defense_filter_every=1,
                 defense_score_fn=str(args.defense_score_fn),
                 defense_score_norm=str(args.defense_score_norm),
-                defense_global_filter=False,  # Default to per-class for parallel audit
+                defense_global_filter=bool(args.defense_global_filter),
                 device=str(device),
                 generator=gen,
                 dl_generator=dl_gen,
@@ -1096,7 +1097,7 @@ def main():
             )
 
             if args.target_type == 'gradient_space_canary':
-                # For gradient space canary, score by L2 norm of parameter update in both worlds
+                # For gradient space canary, score by L∞ norm of parameter update in both worlds
                 model.eval()
                 with torch.no_grad():
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
@@ -1105,7 +1106,7 @@ def main():
                     update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
                     
-                    update_norm = flat_update.norm().item()
+                    update_norm = flat_update.norm(p=float('inf')).item()
                     max_score = float(update_norm)
             else:
                 per_canary = _score_canaries(model, X_canary, y_canary)
