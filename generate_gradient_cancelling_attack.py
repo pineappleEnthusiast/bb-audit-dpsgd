@@ -142,22 +142,40 @@ def main():
         if (i + 1) % 100 == 0:
             print(f"  Generated {i + 1}/{args.n_group_b} canaries")
 
-    # Save group A canaries
+    # Convert gradient dictionaries to tensor format for parallel_audit_multi_canary.py
+    # Each canary is a dict of parameter gradients; we need to flatten them into a single tensor
+    def flatten_gradient_dict(grad_dict):
+        """Flatten a gradient dictionary into a single 1D tensor"""
+        flat_grads = []
+        for name in sorted(grad_dict.keys()):
+            g = grad_dict[name].squeeze(0).view(-1)
+            flat_grads.append(g)
+        return torch.cat(flat_grads)
+    
+    # Flatten all canaries
+    group_a_tensors = torch.stack([flatten_gradient_dict(g) for g in group_a_canaries])
+    group_b_tensors = torch.stack([flatten_gradient_dict(g) for g in group_b_canaries])
+    
+    # Create labels (all 0 for group A, all 0 for group B - they're just canaries)
+    group_a_labels = torch.zeros(args.n_group_a, dtype=torch.long)
+    group_b_labels = torch.zeros(args.n_group_b, dtype=torch.long)
+    
+    # Save group A canaries in format expected by parallel_audit_multi_canary.py
     group_a_file = output_dir / 'group_a_canaries.pt'
     torch.save({
-        'canaries': group_a_canaries,
+        'canaries': group_a_tensors,
+        'audit_labels': group_a_labels,
         'norm': args.alpha,
-        'count': args.n_group_a,
         'group': 'A'
     }, group_a_file)
     print(f"\nSaved {args.n_group_a} group A canaries to {group_a_file}")
 
-    # Save group B canaries
+    # Save group B canaries in format expected by parallel_audit_multi_canary.py
     group_b_file = output_dir / 'group_b_canaries.pt'
     torch.save({
-        'canaries': group_b_canaries,
+        'canaries': group_b_tensors,
+        'audit_labels': group_b_labels,
         'norm': beta,
-        'count': args.n_group_b,
         'group': 'B'
     }, group_b_file)
     print(f"Saved {args.n_group_b} group B canaries to {group_b_file}")
