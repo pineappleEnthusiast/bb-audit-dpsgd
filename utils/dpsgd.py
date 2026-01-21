@@ -729,12 +729,21 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             # crafted_gradient is now a dict mapping local indices to gradient dicts
             if isinstance(crafted_gradient, dict):
                 for local_idx, grad_dict in crafted_gradient.items():
+                    # Compute norm before replacement for debugging
+                    orig_flat = torch.cat([ps_grads[name][local_idx].flatten() for name in ps_grads.keys()])
+                    orig_norm = orig_flat.abs().max().item()
+                    
                     # Replace the gradient for this canary
                     for name in ps_grads.keys():
                         if name in grad_dict:
                             # Squeeze batch dimension and ensure device compatibility
                             crafted_grad_tensor = grad_dict[name].squeeze(0).to(device=ps_grads[name].device, dtype=ps_grads[name].dtype)
                             ps_grads[name][local_idx] = crafted_grad_tensor
+                    
+                    # Compute norm after replacement for debugging
+                    new_flat = torch.cat([ps_grads[name][local_idx].flatten() for name in ps_grads.keys()])
+                    new_norm = new_flat.abs().max().item()
+                    print(f"[DEBUG] Replaced gradient at local_idx={local_idx}: orig_norm={orig_norm:.4f}, new_norm={new_norm:.4f}")
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
