@@ -945,9 +945,9 @@ def main():
                     gradients_list = payload['gradients']
                     if not isinstance(gradients_list, list):
                         raise ValueError("'gradients' must be a list of gradient dictionaries")
-                    # Move each gradient to device and filter tensors
+                    # Move each gradient to device, filter tensors, and squeeze batch dimension
                     crafted_grad = [
-                        {name: g.to(device) for name, g in grad_dict.items() if torch.is_tensor(g)}
+                        {name: g.squeeze(0).to(device) for name, g in grad_dict.items() if torch.is_tensor(g)}
                         for grad_dict in gradients_list
                     ]
                     if rank == 0:
