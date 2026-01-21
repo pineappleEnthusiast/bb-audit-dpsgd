@@ -761,7 +761,13 @@ def train_model_multi_canary(
                     
                     if rank == 0:
                         if n_canaries_marked_this_epoch > 0:
+                            # Get scores of newly marked canaries
+                            canary_scores = scores[newly_marked_canaries]
+                            scores_str = ', '.join([f'{s:.4f}' for s in canary_scores[:10]])  # Show first 10
+                            if len(canary_scores) > 10:
+                                scores_str += f', ... ({len(canary_scores)} total)'
                             print(f"  [Defense] Marked {n_newly_marked} samples for filtering (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
+                            print(f"    Dropped canary scores: [{scores_str}]")
                         else:
                             print(f"  [Defense] Marked {n_newly_marked} samples for filtering ({canary_fraction:.1%} of canaries filtered so far)")
                 else:
