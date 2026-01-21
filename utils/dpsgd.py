@@ -733,17 +733,24 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                     orig_flat = torch.cat([ps_grads[name][local_idx].flatten() for name in ps_grads.keys()])
                     orig_norm = orig_flat.abs().max().item()
                     
+                    # Debug: print keys
+                    print(f"[DEBUG] local_idx={local_idx}")
+                    print(f"[DEBUG] ps_grads keys: {list(ps_grads.keys())[:5]}...")  # Show first 5
+                    print(f"[DEBUG] grad_dict keys: {list(grad_dict.keys())[:5]}...")  # Show first 5
+                    
                     # Replace the gradient for this canary
+                    n_replaced = 0
                     for name in ps_grads.keys():
                         if name in grad_dict:
                             # Squeeze batch dimension and ensure device compatibility
                             crafted_grad_tensor = grad_dict[name].squeeze(0).to(device=ps_grads[name].device, dtype=ps_grads[name].dtype)
                             ps_grads[name][local_idx] = crafted_grad_tensor
+                            n_replaced += 1
                     
                     # Compute norm after replacement for debugging
                     new_flat = torch.cat([ps_grads[name][local_idx].flatten() for name in ps_grads.keys()])
                     new_norm = new_flat.abs().max().item()
-                    print(f"[DEBUG] Replaced gradient at local_idx={local_idx}: orig_norm={orig_norm:.4f}, new_norm={new_norm:.4f}")
+                    print(f"[DEBUG] Replaced {n_replaced}/{len(ps_grads)} params: orig_norm={orig_norm:.4f}, new_norm={new_norm:.4f}")
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
