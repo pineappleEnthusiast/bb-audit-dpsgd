@@ -180,6 +180,18 @@ def main():
     }, group_b_file)
     print(f"Saved {args.n_group_b} group B canaries to {group_b_file}")
 
+    # Save gradient dictionaries for gradient space canary use
+    gradient_space_file = output_dir / 'gradient_space_canaries.pt'
+    all_gradients = group_a_canaries + group_b_canaries
+    torch.save({
+        'gradients': all_gradients,
+        'n_group_a': args.n_group_a,
+        'n_group_b': args.n_group_b,
+        'alpha': args.alpha,
+        'beta': beta,
+    }, gradient_space_file)
+    print(f"Saved {len(all_gradients)} gradient space canaries to {gradient_space_file}")
+    
     # Save metadata
     metadata_file = output_dir / 'metadata.pt'
     torch.save({
@@ -189,15 +201,16 @@ def main():
         'beta': beta,
         'total_params': total_params,
         'model_name': args.model_name,
-        'seed': args.seed
+        'seed': args.seed,
+        'gradients': all_gradients,
     }, metadata_file)
     print(f"Saved metadata to {metadata_file}")
 
     # Verify cancellation property
     print(f"\nVerification:")
-    print(f"  Group A total gradient magnitude: {args.n_group_a} * {args.alpha:.6f} = {args.n_group_a * args.alpha:.6f}")
-    print(f"  Group B total gradient magnitude: {args.n_group_b} * {beta:.6f} = {args.n_group_b * beta:.6f}")
-    print(f"  Cancellation check: {abs(args.n_group_a * args.alpha + args.n_group_b * beta):.10f} (should be ~0)")
+    print(f"  Group A total gradient contribution: {args.n_group_a} * {args.alpha:.6f} = {args.n_group_a * args.alpha:.6f}")
+    print(f"  Group B total gradient contribution: {args.n_group_b} * (-{beta:.6f}) = {args.n_group_b * (-beta):.6f}")
+    print(f"  Cancellation check (sum): {args.n_group_a * args.alpha + args.n_group_b * (-beta):.10f} (should be ~0)")
 
 
 if __name__ == '__main__':
