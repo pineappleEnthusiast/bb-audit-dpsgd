@@ -144,7 +144,7 @@ def setup_logger(log_file=None):
     return logger
 
 # Training Functions
-def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_epochs, learning_rate, device='cuda', optimizer_type='sgd', momentum=0.9, weight_decay=0.0, logger=None):
+def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_epochs, learning_rate, device='cuda', optimizer_type='sgd', momentum=0.9, weight_decay=0.0, logger=None, use_defense=True):
     """Train model with HAMP defense."""
     model.to(device)
     
@@ -152,17 +152,19 @@ def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_e
         optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     else:
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        
-    if logger:
-        logger.info(f"Generating high-entropy soft labels (γ={gamma})...")
-        
-    soft_labels_dict = {}
-    model.eval()
-    with torch.no_grad():
-        for batch_idx, (data, labels) in enumerate(train_loader):
-            labels = labels.to(device)
-            soft_labels = generate_high_entropy_soft_labels(labels, num_classes, gamma)
-            soft_labels_dict[batch_idx] = soft_labels.cpu() # Store on CPU to save GPU memory
+    
+    soft_labels_dict = None
+    if use_defense:
+        if logger:
+            logger.info(f"Generating high-entropy soft labels (γ={gamma})...")
+            
+        soft_labels_dict = {}
+        model.eval()
+        with torch.no_grad():
+            for batch_idx, (data, labels) in enumerate(train_loader):
+                labels = labels.to(device)
+                soft_labels = generate_high_entropy_soft_labels(labels, num_classes, gamma)
+                soft_labels_dict[batch_idx] = soft_labels.cpu()
             
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
     
@@ -186,22 +188,18 @@ def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_e
             data = data.to(device)
             hard_labels = hard_labels.to(device)
             
-            soft_labels = soft_labels_dict[batch_idx].to(device)
-            
             outputs = model(data)
-            log_probs = F.log_softmax(outputs, dim=1)
             
-            # KL Divergence between model output and high-entropy soft labels
-            kl_loss = F.kl_div(log_probs, soft_labels, reduction='batchmean')
-            
-            # Entropy regularization (minimize entropy of predictions to encourage confidence on the soft labels)
-            # Note: The paper minimizes L = KL + α * H(y'). Wait, usually we want to minimize KL.
-            # Minimizing KL(p || q) where q is high entropy...
-            # The prompt says: Loss = KL_loss - alpha * entropy.
-            # Subtracting entropy means we maximize entropy? Or minimize negative entropy?
-            # Entropy is positive. Subtracting it means we want larger entropy.
-            possible_entropy = compute_entropy(outputs)
-            loss = kl_loss - alpha * possible_entropy
+            if soft_labels_dict is not None:
+                # HAMP training with soft labels
+                soft_labels = soft_labels_dict[batch_idx].to(device)
+                log_probs = F.log_softmax(outputs, dim=1)
+                kl_loss = F.kl_div(log_probs, soft_labels, reduction='batchmean')
+                entropy = compute_entropy(outputs)
+                loss = kl_loss - alpha * entropy
+            else:
+                # Standard training with hard labels
+                loss = F.cross_entropy(outputs, hard_labels)
             
             optimizer.zero_grad()
             loss.backward()
@@ -216,7 +214,7 @@ def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_e
         epoch_train_loss = train_loss / len(train_loader)
         epoch_train_acc = 100.0 * correct / total
         
-        val_loss, val_acc = evaluate_hamp(model, val_loader, num_classes, gamma, alpha, device)
+        val_loss, val_acc = evaluate_hamp(model, val_loader, num_classes, gamma, alpha, device, use_defense)
         
         history['train_loss'].append(epoch_train_loss)
         history['train_acc'].append(epoch_train_acc)
@@ -247,7 +245,7 @@ def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_e
             
     return model, history
 
-def evaluate_hamp(model, data_loader, num_classes, gamma, alpha, device='cuda'):
+def evaluate_hamp(model, data_loader, num_classes, gamma, alpha, device='cuda', use_defense=True):
     """Evaluate model on validation/test set."""
     model.eval()
     total_loss = 0.0
@@ -261,12 +259,15 @@ def evaluate_hamp(model, data_loader, num_classes, gamma, alpha, device='cuda'):
             
             outputs = model(data)
             
-            # For loss calculation evaluation
-            soft_labels = generate_high_entropy_soft_labels(labels, num_classes, gamma)
-            log_probs = F.log_softmax(outputs, dim=1)
-            kl_loss = F.kl_div(log_probs, soft_labels, reduction='batchmean')
-            entropy = compute_entropy(outputs)
-            loss = kl_loss - alpha * entropy
+            if use_defense:
+                # For loss calculation evaluation
+                soft_labels = generate_high_entropy_soft_labels(labels, num_classes, gamma)
+                log_probs = F.log_softmax(outputs, dim=1)
+                kl_loss = F.kl_div(log_probs, soft_labels, reduction='batchmean')
+                entropy = compute_entropy(outputs)
+                loss = kl_loss - alpha * entropy
+            else:
+                loss = F.cross_entropy(outputs, labels)
             
             total_loss += loss.item()
             _, predicted = outputs.max(1)
@@ -454,7 +455,7 @@ def train_single_config(args, gamma, alpha, logger):
     trained_model, history = train_hamp(
         model, train_loader, val_loader, 10, gamma, alpha,
         args.epochs, args.lr, args.device, args.optimizer, args.momentum, args.weight_decay,
-        logger
+        logger, not args.no_defense
     )
     
     test_results = test_hamp_model(
@@ -503,6 +504,7 @@ def main():
     parser.add_argument('--verbose', action='store_true', default=True, help='Print training progress')
     parser.add_argument('--canary', type=str, default=None, choices=['blank'], help='Inject a canary into training set')
     parser.add_argument('--log_file', type=str, default=None, help='Path to save log file')
+    parser.add_argument('--no_defense', action='store_true', help='Train without HAMP defense (standard training)')
 
     args = parser.parse_args()
     
