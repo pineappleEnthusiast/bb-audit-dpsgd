@@ -379,7 +379,7 @@ def train_model_multi_canary(
     persistent_workers: bool,
     canary_indices: np.ndarray | None,
     is_gradient_space_canary: bool = False,
-    crafted_gradient: dict | None = None,
+    global_idx_to_grad: dict | None = None,
     loss_volatility_k: int = 5,
     grad_norm_percentile_k: int = 20,
     grad_dir_volatility_k: int = 5,
@@ -642,7 +642,7 @@ def train_model_multi_canary(
                 rank=0,
                 batch_size=int(batch_size),
                 is_gradient_space_canary=is_gradient_space_canary,
-                crafted_gradient=crafted_gradient,
+                global_idx_to_grad=global_idx_to_grad,
                 canary_indices=canary_indices_np,
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=bool(defense_apply_ascent),
@@ -1040,6 +1040,8 @@ def main():
                 num_workers=0,
                 persistent_workers=False,
                 canary_indices=None,
+                is_gradient_space_canary=False,
+                global_idx_to_grad=None,
                 rank=rank,
             )
 
@@ -1084,6 +1086,17 @@ def main():
     X_in = torch.vstack((X_out[:-n_canaries], X_canary))
     y_in = torch.cat((y_out[:-n_canaries], y_canary.long()))
     canary_indices = np.arange(len(X_in) - n_canaries, len(X_in), dtype=np.int64)
+
+    # Create global index to gradient mapping for gradient space canaries (once, outside training loop)
+    global_idx_to_grad = None
+    if args.target_type == 'gradient_space_canary' and crafted_grad is not None:
+        if isinstance(crafted_grad, list):
+            global_idx_to_grad = {int(canary_indices[pos]): crafted_grad[pos] for pos in range(len(canary_indices))}
+        else:
+            # Single gradient: use for all canaries
+            global_idx_to_grad = {int(canary_idx): crafted_grad for canary_idx in canary_indices}
+        if rank == 0:
+            print(f"Created global index to gradient mapping for {len(global_idx_to_grad)} canaries")
 
     # Load test set for accuracy evaluation
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
@@ -1152,7 +1165,7 @@ def main():
                 persistent_workers=False,
                 canary_indices=canary_indices if (world == 'in') else None,
                 is_gradient_space_canary=(args.target_type == 'gradient_space_canary' and world == 'in'),
-                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
+                global_idx_to_grad=global_idx_to_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
                 rank=rank,
             )
 
