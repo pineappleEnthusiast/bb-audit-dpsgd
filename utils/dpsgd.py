@@ -850,7 +850,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          block_size=1024, scores=None, device='cuda',
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None, drop_mask=None,
-                         is_gradient_space_canary=False, crafted_gradient=None, canary_indices=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None, defense_apply_ascent=True):
+                         is_gradient_space_canary=False, global_idx_to_grad=None, canary_indices=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None, defense_apply_ascent=True):
 
     if scores is None:
         raise ValueError("scores array must be provided")
@@ -872,18 +872,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     
     # Check if any canaries are in this batch and we should apply gradient space canary
     canary_mask = None
-    global_idx_to_grad = None
     if is_gradient_space_canary and canary_indices is not None:
         # Create a mask for which samples in the batch are canaries
         canary_indices_set = set(canary_indices.tolist() if hasattr(canary_indices, 'tolist') else canary_indices)
         canary_mask = torch.tensor([idx.item() in canary_indices_set for idx in global_indices], device=device)
-        
-        # Create a lookup dictionary mapping global index to crafted gradient (for O(1) lookup)
-        if isinstance(crafted_gradient, list):
-            global_idx_to_grad = {int(canary_indices[pos]): crafted_gradient[pos] for pos in range(len(canary_indices))}
-        else:
-            # Single gradient: use for all canaries
-            global_idx_to_grad = {int(canary_idx): crafted_gradient for canary_idx in canary_indices}
     
     if len(X) == 0:
         return {}, scores
