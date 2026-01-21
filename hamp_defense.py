@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 import argparse
 import time
+import torch.nn.functional as F
 
 from models import Models
 from utils.data import load_data
@@ -18,6 +19,40 @@ def xavier_init_model(model):
             if m.bias is not None:
                 m.bias.data.fill_(0.01)
     model.apply(init_weights)
+
+
+def create_soft_labels(y, num_classes, gamma=0.0):
+    """
+    Convert hard labels to soft labels with controlled entropy.
+    
+    Args:
+        y: Hard labels (batch_size,)
+        num_classes: Number of classes
+        gamma: Entropy control parameter in [0, 1]
+               - gamma=0: Hard labels (100% on ground-truth class)
+               - gamma=1: Uniform distribution (1/num_classes on all classes)
+               - gamma=0.8: Ground-truth gets ~20% probability
+    
+    Returns:
+        Soft labels (batch_size, num_classes)
+    
+    Example:
+        For gamma=0.8 and num_classes=10:
+        - Ground-truth class: 0.2 (20%)
+        - Other 9 classes: 0.8/9 ≈ 0.089 each (total 80%)
+    """
+    if gamma == 0.0:
+        # Return one-hot encoded labels
+        return F.one_hot(y, num_classes=num_classes).float()
+    
+    batch_size = y.size(0)
+    soft_labels = torch.ones(batch_size, num_classes, device=y.device) * (gamma / num_classes)
+    
+    # Set ground-truth class probability
+    ground_truth_prob = 1.0 - gamma + (gamma / num_classes)
+    soft_labels.scatter_(1, y.unsqueeze(1), ground_truth_prob)
+    
+    return soft_labels
 
 
 def test_model(model, X, y, batch_size=128, device='cuda'):
@@ -44,7 +79,7 @@ def test_model(model, X, y, batch_size=128, device='cuda'):
 
 
 def train_model(model_name, X_train, y_train, X_test, y_test, n_epochs, lr, batch_size, 
-                out_dim=10, device='cuda', num_workers=2):
+                out_dim=10, device='cuda', num_workers=2, gamma=0.0):
     """
     Train a model using standard SGD (no DP).
     
@@ -60,6 +95,7 @@ def train_model(model_name, X_train, y_train, X_test, y_test, n_epochs, lr, batc
         out_dim: Output dimension (number of classes)
         device: Device to train on
         num_workers: Number of data loading workers
+        gamma: Soft label entropy parameter (0=hard labels, 1=uniform)
     
     Returns:
         Trained model
@@ -77,8 +113,15 @@ def train_model(model_name, X_train, y_train, X_test, y_test, n_epochs, lr, batc
     if model_name == 'cnn':
         xavier_init_model(model)
     
+    # Print soft label info
+    if gamma > 0:
+        ground_truth_prob = 1.0 - gamma + (gamma / out_dim)
+        other_prob = gamma / out_dim
+        print(f"Using soft labels with gamma={gamma:.2f}")
+        print(f"  Ground-truth class probability: {ground_truth_prob:.4f} ({ground_truth_prob*100:.2f}%)")
+        print(f"  Other class probability: {other_prob:.4f} ({other_prob*100:.2f}%) each")
+    
     model.train()
-    criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
     
     # Create DataLoader
@@ -104,7 +147,16 @@ def train_model(model_name, X_train, y_train, X_test, y_test, n_epochs, lr, batc
             # Forward pass
             optimizer.zero_grad()
             output = model(curr_X)
-            loss = criterion(output, curr_y)
+            
+            # Compute loss with soft or hard labels
+            if gamma > 0:
+                # Soft labels: use KL divergence
+                soft_targets = create_soft_labels(curr_y, out_dim, gamma)
+                log_probs = F.log_softmax(output, dim=1)
+                loss = F.kl_div(log_probs, soft_targets, reduction='batchmean')
+            else:
+                # Hard labels: use cross-entropy
+                loss = F.cross_entropy(output, curr_y)
             
             # Backward pass
             loss.backward()
@@ -139,8 +191,14 @@ def main():
     parser.add_argument('--num_workers', type=int, default=2, help='Number of data loading workers')
     parser.add_argument('--seed', type=int, default=0, help='Random seed')
     parser.add_argument('--save_path', type=str, default=None, help='Path to save trained model')
+    parser.add_argument('--gamma', type=float, default=0.0, 
+                        help='Soft label entropy parameter (0=hard labels, 0.8=20%% ground-truth prob, 1=uniform)')
     
     args = parser.parse_args()
+    
+    # Validate gamma
+    if not (0.0 <= args.gamma <= 1.0):
+        raise ValueError(f"gamma must be in [0, 1], got {args.gamma}")
     
     # Set random seed
     torch.manual_seed(args.seed)
@@ -166,6 +224,7 @@ def main():
         lr=args.lr,
         batch_size=args.batch_size,
         out_dim=out_dim,
+        gamma=args.gamma,
         device=args.device,
         num_workers=args.num_workers
     )
