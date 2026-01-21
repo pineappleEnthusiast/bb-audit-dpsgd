@@ -318,7 +318,7 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
                 rank=0,
                 batch_size=batch_size,
                 is_gradient_space_canary=False,
-                crafted_gradient=None,
+                global_idx_to_grad=None,
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=defense_apply_ascent
             )
