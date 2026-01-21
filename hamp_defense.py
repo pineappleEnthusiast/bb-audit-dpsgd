@@ -426,7 +426,9 @@ def train_single_config(args, gamma, alpha, logger):
         args.data_name, args.data_path, args.batch_size, args.num_workers, args.canary, logger
     )
     
-    model = create_model(args.model_name, num_classes, input_shape)
+    # Models e.g. CNN expect (Batch, Channels, Height, Width) or similar where index 1 is Channels
+    model_init_shape = (1, *input_shape)
+    model = create_model(args.model_name, num_classes, model_init_shape)
     
     trained_model, history = train_hamp(
         model, train_loader, val_loader, num_classes, gamma, alpha,
