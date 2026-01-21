@@ -730,10 +730,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
             if isinstance(crafted_gradient, dict):
                 for local_idx, grad_dict in crafted_gradient.items():
                     # Replace the gradient for this canary
-                    for name in ps_grads.keys():
-                        if name in grad_dict:
-                            # Gradients are already squeezed and on correct device from loading
-                            ps_grads[name][local_idx] = grad_dict[name]
+                    # Assume grad_dict has all the same keys as ps_grads for efficiency
+                    for name, grad_tensor in grad_dict.items():
+                        ps_grads[name][local_idx] = grad_tensor
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
@@ -873,14 +872,18 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     
     # Check if any canaries are in this batch and we should apply gradient space canary
     canary_mask = None
-    canary_idx_to_position = None
+    global_idx_to_grad = None
     if is_gradient_space_canary and canary_indices is not None:
         # Create a mask for which samples in the batch are canaries
         canary_indices_set = set(canary_indices.tolist() if hasattr(canary_indices, 'tolist') else canary_indices)
         canary_mask = torch.tensor([idx.item() in canary_indices_set for idx in global_indices], device=device)
         
-        # Create a lookup dictionary mapping canary index to position (for O(1) lookup)
-        canary_idx_to_position = {int(canary_idx): pos for pos, canary_idx in enumerate(canary_indices)}
+        # Create a lookup dictionary mapping global index to crafted gradient (for O(1) lookup)
+        if isinstance(crafted_gradient, list):
+            global_idx_to_grad = {int(canary_indices[pos]): crafted_gradient[pos] for pos in range(len(canary_indices))}
+        else:
+            # Single gradient: use for all canaries
+            global_idx_to_grad = {int(canary_idx): crafted_gradient for canary_idx in canary_indices}
     
     if len(X) == 0:
         return {}, scores
@@ -908,23 +911,14 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         
         # Build mapping from local indices to crafted gradients for canaries in this block
         canary_gradient_map = None
-        if block_contains_canary:
+        if block_contains_canary and global_idx_to_grad is not None:
             canary_gradient_map = {}
-            
             for local_idx, global_idx in enumerate(curr_global_indices):
                 if curr_canary_mask[local_idx]:
-                    # Use O(1) lookup to find which canary this is
-                    canary_position = canary_idx_to_position.get(global_idx.item())
-                    
-                    if canary_position is not None:
-                        # Get the corresponding gradient
-                        if isinstance(crafted_gradient, list):
-                            # Multiple gradients: use the position to index
-                            if canary_position < len(crafted_gradient):
-                                canary_gradient_map[local_idx] = crafted_gradient[canary_position]
-                        else:
-                            # Single gradient: use for all canaries
-                            canary_gradient_map[local_idx] = crafted_gradient
+                    # O(1) lookup to get the crafted gradient for this global index
+                    grad = global_idx_to_grad.get(global_idx.item())
+                    if grad is not None:
+                        canary_gradient_map[local_idx] = grad
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, score_aux_block, dir_embeds_block = clip_and_accum_grads_block(
