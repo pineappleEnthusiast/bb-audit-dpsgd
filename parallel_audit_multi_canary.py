@@ -1137,6 +1137,26 @@ def main():
             dl_gen.manual_seed(rep_seed + 1)
 
             start = time.time()
+            
+            # For gradient space canaries, we need to save the initial model state before training
+            # to compute the parameter update norm as the score
+            if args.target_type == 'gradient_space_canary':
+                # Create a fresh model for this repetition
+                if init_model is None:
+                    rep_init_model = Models[args.model_name](curr_X.shape, out_dim=out_dim)
+                    if args.model_name == 'cnn':
+                        xavier_init_model(rep_init_model)
+                    else:
+                        init_wideresnet(rep_init_model)
+                else:
+                    rep_init_model = copy.deepcopy(init_model)
+                
+                # Save initial parameters before training
+                rep_init_model = rep_init_model.to(device)
+                init_params_saved = {n: p.detach().clone() for n, p in rep_init_model.named_parameters()}
+            else:
+                rep_init_model = init_model
+            
             model, _drop_mask, _defense_stats = train_model_multi_canary(
                 model_name=args.model_name,
                 X=curr_X,
@@ -1148,7 +1168,7 @@ def main():
                 lr=float(args.lr),
                 block_size=min(int(args.block_size), int(args.batch_size)),
                 batch_size=min(int(args.batch_size), int(curr_X.shape[0])),
-                init_model=init_model,
+                init_model=rep_init_model,
                 out_dim=out_dim,
                 aug_mult=int(args.aug_mult),
                 defense=bool(args.defense),
@@ -1174,13 +1194,16 @@ def main():
                 model.eval()
                 with torch.no_grad():
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
-                    init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
+                    # Use the saved initial parameters from before training
+                    init_params = init_params_saved
                     
                     update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
                     
                     update_norm = flat_update.norm(p=float('inf')).item()
                     max_score = float(update_norm)
+                    if rank == 0:
+                        print(f"[Rank {rank}] Gradient space canary score (L∞ norm of update): {max_score:.6f}")
             else:
                 per_canary = _score_canaries(model, X_canary, y_canary)
                 max_score = float(per_canary.max())
