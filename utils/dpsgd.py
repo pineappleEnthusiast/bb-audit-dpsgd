@@ -874,10 +874,14 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     
     # Check if any canaries are in this batch and we should apply gradient space canary
     canary_mask = None
+    canary_idx_to_position = None
     if is_gradient_space_canary and canary_indices is not None:
         # Create a mask for which samples in the batch are canaries
         canary_indices_set = set(canary_indices.tolist() if hasattr(canary_indices, 'tolist') else canary_indices)
         canary_mask = torch.tensor([idx.item() in canary_indices_set for idx in global_indices], device=device)
+        
+        # Create a lookup dictionary mapping canary index to position (for O(1) lookup)
+        canary_idx_to_position = {int(canary_idx): pos for pos, canary_idx in enumerate(canary_indices)}
     
     if len(X) == 0:
         return {}, scores
@@ -907,16 +911,11 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         canary_gradient_map = None
         if block_contains_canary:
             canary_gradient_map = {}
-            curr_canary_indices = curr_global_indices[curr_canary_mask]
             
             for local_idx, global_idx in enumerate(curr_global_indices):
                 if curr_canary_mask[local_idx]:
-                    # Find which canary this is (position in canary_indices array)
-                    canary_position = None
-                    for pos, canary_idx in enumerate(canary_indices):
-                        if global_idx.item() == canary_idx:
-                            canary_position = pos
-                            break
+                    # Use O(1) lookup to find which canary this is
+                    canary_position = canary_idx_to_position.get(global_idx.item())
                     
                     if canary_position is not None:
                         # Get the corresponding gradient
