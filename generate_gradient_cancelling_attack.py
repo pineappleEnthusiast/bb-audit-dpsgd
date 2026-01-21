@@ -111,10 +111,18 @@ def main():
     if device.type == 'cuda':
         torch.cuda.set_device(device)
     
+    # Determine input shape based on dataset
+    if args.data_name == 'mnist':
+        input_shape = (1, 1, 28, 28)
+    elif args.data_name in ['cifar10', 'cifar100']:
+        input_shape = (1, 3, 32, 32)
+    else:
+        raise ValueError(f"Unknown data_name: {args.data_name}")
+    
     if args.model_name == 'lstm':
         dummy_model = Models[args.model_name](vocab_size=args.out_dim, out_dim=args.out_dim)
     else:
-        dummy_model = Models[args.model_name]((1, 3, 32, 32), out_dim=args.out_dim)
+        dummy_model = Models[args.model_name](input_shape, out_dim=args.out_dim)
 
     # Count total parameters
     total_params = sum(p.numel() for p in dummy_model.parameters() if p.requires_grad)
