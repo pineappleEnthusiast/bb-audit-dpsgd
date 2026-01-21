@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from torch.utils.data import DataLoader, TensorDataset
 
 from models import Models
 from utils.data import load_data
@@ -326,6 +327,29 @@ def _audit_from_scores(
     return float(emp_eps), float(t), mia_scores, mia_labels
 
 
+def test_model(model, X, y, batch_size=128):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    X = X.to(device)
+    y = y.to(device)
+
+    test_loader = DataLoader(TensorDataset(X, y), batch_size=batch_size, shuffle=False)
+
+    model.eval()
+    acc = 0
+    total = 0
+    with torch.no_grad():
+        for curr_X, curr_y in test_loader:
+            curr_X = curr_X.to(device)
+            curr_y = curr_y.to(device)
+            curr_y_hat = torch.argmax(model(curr_X), dim=1)
+            acc += torch.sum(curr_y_hat == curr_y).cpu().item()
+            total += len(curr_y)
+
+    model.train()
+    return acc / total if total > 0 else 0.0
+
+
 def train_model_multi_canary(
     *,
     model_name: str,
@@ -618,6 +642,7 @@ def train_model_multi_canary(
                 batch_size=int(batch_size),
                 is_gradient_space_canary=is_gradient_space_canary,
                 crafted_gradient=crafted_gradient,
+                canary_indices=canary_indices_np,
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=bool(defense_apply_ascent),
             )
@@ -909,23 +934,39 @@ def main():
             if not os.path.exists(args.gradient_space_canary_pt):
                 raise FileNotFoundError(f"--gradient_space_canary_pt not found: {args.gradient_space_canary_pt}")
             payload = torch.load(args.gradient_space_canary_pt, map_location='cpu')
-            if isinstance(payload, dict) and 'gradient' in payload:
-                crafted_grad = payload['gradient']
-                # Extract target class if available
-                if 'target_class' in payload:
-                    gradient_space_canary_target_class = payload['target_class']
+            
+            # Support multiple gradient space canaries
+            if isinstance(payload, dict):
+                if 'gradients' in payload:
+                    # Multiple gradients: list of gradient dicts
+                    gradients_list = payload['gradients']
+                    if not isinstance(gradients_list, list):
+                        raise ValueError("'gradients' must be a list of gradient dictionaries")
+                    # Move each gradient to device and filter tensors
+                    crafted_grad = [
+                        {name: g.to(device) for name, g in grad_dict.items() if torch.is_tensor(g)}
+                        for grad_dict in gradients_list
+                    ]
+                    if rank == 0:
+                        print(f"Loaded {len(crafted_grad)} gradient space canaries from {args.gradient_space_canary_pt}")
+                elif 'gradient' in payload:
+                    # Single gradient
+                    single_grad = payload['gradient']
+                    crafted_grad = {name: g.to(device) for name, g in single_grad.items() if torch.is_tensor(g)}
+                    if rank == 0:
+                        print(f"Loaded single gradient space canary from {args.gradient_space_canary_pt}")
+                    # Extract target class if available
+                    if 'target_class' in payload:
+                        gradient_space_canary_target_class = payload['target_class']
+                        if rank == 0:
+                            print(f"  Target class: {gradient_space_canary_target_class}")
+                else:
+                    # Backward compatibility: direct gradient dictionary
+                    crafted_grad = {name: g.to(device) for name, g in payload.items() if torch.is_tensor(g)}
+                    if rank == 0:
+                        print(f"Loaded gradient space canary (legacy format) from {args.gradient_space_canary_pt}")
             else:
-                # Backward compatibility: direct gradient dictionary
-                crafted_grad = payload
-            
-            # Move crafted_grad to the correct device
-            if crafted_grad is not None:
-                crafted_grad = {name: g.to(device) for name, g in crafted_grad.items() if torch.is_tensor(g)}
-            
-            if rank == 0:
-                print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
-                if gradient_space_canary_target_class is not None:
-                    print(f"  Target class: {gradient_space_canary_target_class}")
+                raise ValueError(f"Expected dict from {args.gradient_space_canary_pt}, got {type(payload)}")
         elif args.canary_pt is None:
             if rank == 0:
                 print('Creating crafted gradient')
@@ -1013,15 +1054,22 @@ def main():
                 seed=int(args.seed),
             )
         elif args.target_type == 'gradient_space_canary':
-            # For gradient space canary, use the last sample from D- as the canary
-            X_canary = X_out[-1].unsqueeze(0)
-            # Use the target class from the canary file if available, otherwise use the last sample's label
-            if gradient_space_canary_target_class is not None:
-                y_canary = torch.tensor([gradient_space_canary_target_class], dtype=torch.long)
+            # For gradient space canary, determine number of canaries
+            if isinstance(crafted_grad, list):
+                n_canaries = len(crafted_grad)
             else:
-                y_canary = y_out[-1].unsqueeze(0)
+                n_canaries = 1
+            
+            # Use the last n_canaries samples from D- as the canaries
+            X_canary = X_out[-n_canaries:]
+            y_canary = y_out[-n_canaries:]
+            
+            # Override labels if target_class is provided (single canary case)
+            if gradient_space_canary_target_class is not None and n_canaries == 1:
+                y_canary = torch.tensor([gradient_space_canary_target_class], dtype=torch.long)
+            
             if rank == 0:
-                print("Using gradient-space canary")
+                print(f"Using {n_canaries} gradient-space canary(ies)")
         else:
             raise ValueError(f"Unknown target_type: {args.target_type}")
 
@@ -1032,6 +1080,13 @@ def main():
     X_in = torch.vstack((X_out[:-n_canaries], X_canary))
     y_in = torch.cat((y_out[:-n_canaries], y_canary.long()))
     canary_indices = np.arange(len(X_in) - n_canaries, len(X_in), dtype=np.int64)
+
+    # Load test set for accuracy evaluation
+    X_test, y_test, _ = load_data(args.data_name, None, split='test')
+    
+    # Track accuracies
+    train_set_accs = []
+    test_set_accs = []
 
     if rank == 0:
         print('Training models')
@@ -1115,6 +1170,16 @@ def main():
             scores[world].append(max_score)
 
             print(f"[Rank {rank}] world={world} rep={rep} max_canary_score={max_score:.6f} elapsed_s={time.time()-start:.2f}", flush=True)
+            
+            # Get test set accuracy from first 5 reps
+            if rep < 5 and world == 'in':
+                if len(X_out) > 0:
+                    train_acc = test_model(model, X_in, y_in)
+                    train_set_accs.append(train_acc)
+                    print(f'[Rank {rank}] Train set acc: {train_acc:.4f}')
+                test_acc = test_model(model, X_test, y_test)
+                test_set_accs.append(test_acc)
+                print(f'[Rank {rank}] Test set acc: {test_acc:.4f}')
 
     scores_in = np.asarray(scores['in'], dtype=np.float32)
     scores_out = np.asarray(scores['out'], dtype=np.float32)

@@ -725,13 +725,16 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 ps_grads = get_per_sample_grads(model, X, y, criterion)
         
         # Apply gradient-space audit after getting the gradients but before clipping
-        if is_gradient_space_canary:
-            # For the last sample in the block, replace its gradient with a crafted one
-            for name in ps_grads.keys():
-                if name in crafted_gradient:
-                    # Squeeze batch dimension and ensure device compatibility
-                    crafted_grad_tensor = crafted_gradient[name].squeeze(0).to(device=ps_grads[name].device, dtype=ps_grads[name].dtype)
-                    ps_grads[name][canary_local_idx] = crafted_grad_tensor
+        if is_gradient_space_canary and crafted_gradient is not None:
+            # crafted_gradient is now a dict mapping local indices to gradient dicts
+            if isinstance(crafted_gradient, dict):
+                for local_idx, grad_dict in crafted_gradient.items():
+                    # Replace the gradient for this canary
+                    for name in ps_grads.keys():
+                        if name in grad_dict:
+                            # Squeeze batch dimension and ensure device compatibility
+                            crafted_grad_tensor = grad_dict[name].squeeze(0).to(device=ps_grads[name].device, dtype=ps_grads[name].dtype)
+                            ps_grads[name][local_idx] = crafted_grad_tensor
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
@@ -849,7 +852,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                          block_size=1024, scores=None, device='cuda',
                          global_indices=None, aug_mult: int = 1, aug_fn=None,
                          world_size=1, rank=0, batch_size=None, drop_mask=None,
-                         is_gradient_space_canary=False, crafted_gradient=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None, defense_apply_ascent=True):
+                         is_gradient_space_canary=False, crafted_gradient=None, canary_indices=None, defense_cfg: Optional[DefenseConfig] = None, defense_score_norm='linf', defense_score_fn='grad_norm', delta_theta=None, theta_t_minus_theta0=None, defense_apply_ascent=True):
 
     if scores is None:
         raise ValueError("scores array must be provided")
@@ -869,11 +872,15 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     y = y[active_indices]
     global_indices = global_indices[active_indices]
     
-    # Check if the canary is in this batch and we should apply gradient space canary
-    apply_gradient_space_canary = is_gradient_space_canary and (global_indices == (len(scores) - 1)).any()
+    # Check if any canaries are in this batch and we should apply gradient space canary
+    canary_mask = None
+    if is_gradient_space_canary and canary_indices is not None:
+        # Create a mask for which samples in the batch are canaries
+        canary_indices_set = set(canary_indices.tolist() if hasattr(canary_indices, 'tolist') else canary_indices)
+        canary_mask = torch.tensor([idx.item() in canary_indices_set for idx in global_indices], device=device)
     
     if len(X) == 0:
-        return None, scores
+        return {}, scores
     
     # Process in blocks for memory efficiency
     accum_grad = None
@@ -891,23 +898,43 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         # Skip if no samples in this block
         if len(curr_X) == 0:
             continue
-            
-        # Check if this block contains the last sample (canary)
-        block_contains_canary = apply_gradient_space_canary and (curr_global_indices == (len(scores) - 1)).any()
-
-        # Get the local index of the last sample in the current block
+        
+        # Check if this block contains any canaries and build mapping
+        curr_canary_mask = canary_mask[idx_block] if canary_mask is not None else None
+        block_contains_canary = curr_canary_mask is not None and curr_canary_mask.any()
+        
+        # Build mapping from local indices to crafted gradients for canaries in this block
+        canary_gradient_map = None
         if block_contains_canary:
-            last_sample_local_idx = (curr_global_indices == (len(scores) - 1)).nonzero()[0].item()
-        else:
-            last_sample_local_idx = None
+            canary_gradient_map = {}
+            curr_canary_indices = curr_global_indices[curr_canary_mask]
+            
+            for local_idx, global_idx in enumerate(curr_global_indices):
+                if curr_canary_mask[local_idx]:
+                    # Find which canary this is (position in canary_indices array)
+                    canary_position = None
+                    for pos, canary_idx in enumerate(canary_indices):
+                        if global_idx.item() == canary_idx:
+                            canary_position = pos
+                            break
+                    
+                    if canary_position is not None:
+                        # Get the corresponding gradient
+                        if isinstance(crafted_gradient, list):
+                            # Multiple gradients: use the position to index
+                            if canary_position < len(crafted_gradient):
+                                canary_gradient_map[local_idx] = crafted_gradient[canary_position]
+                        else:
+                            # Single gradient: use for all canaries
+                            canary_gradient_map[local_idx] = crafted_gradient
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, score_aux_block, dir_embeds_block = clip_and_accum_grads_block(
             model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
             device=device, aug_mult=aug_mult, aug_fn=aug_fn,
             is_gradient_space_canary=block_contains_canary,
-            crafted_gradient=crafted_gradient,
-            canary_local_idx=last_sample_local_idx,
+            crafted_gradient=canary_gradient_map if block_contains_canary else None,
+            canary_local_idx=None,  # No longer used, replaced by canary_gradient_map
             curr_gradient_ascent_indices=curr_gradient_ascent_indices,
             defense_cfg=defense_cfg,
             defense_score_norm=defense_score_norm,
