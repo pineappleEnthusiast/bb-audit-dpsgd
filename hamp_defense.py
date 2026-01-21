@@ -15,6 +15,7 @@ import logging
 import time
 
 from utils.data import load_data
+from models import Models
 
 # Utility Functions
 def compute_entropy(predictions, eps=1e-12):
@@ -385,30 +386,26 @@ def get_dataloaders(data_name, root, batch_size, num_workers, canary_type=None, 
     return train_loader, val_loader, test_loader, out_dim
 
 # Model Creation
-def create_model(model_name, num_classes):
-    if model_name == 'densenet':
-        model = models.densenet121(pretrained=False)
-        num_ftrs = model.classifier.in_features
-        model.classifier = nn.Linear(num_ftrs, num_classes)
-    elif model_name == 'resnet':
-        model = models.resnet18(pretrained=False)
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, num_classes)
-    elif model_name == 'cnn':
-        model = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Flatten(),
-            nn.Linear(64 * 8 * 8, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_classes)
-        )
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
+def xavier_init_model(model):
+    """Initialize model using Xavier initialization"""
+    def init_weights(m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            torch.nn.init.xavier_normal_(m.weight)
+            if m.bias is not None:
+                m.bias.data.fill_(0.01)
+    model.apply(init_weights)
+
+def create_model(model_name, num_classes, input_shape):
+    if model_name not in Models:
+        raise ValueError(f"Unknown model: {model_name}. Available: {list(Models.keys())}")
+    
+    # Models in this repo take (input_shape, out_dim)
+    # input_shape should be (C, H, W)
+    model = Models[model_name](input_shape, out_dim=num_classes)
+    
+    if model_name == 'cnn':
+        xavier_init_model(model)
+        
     return model
 
 # Main Execution
@@ -429,7 +426,7 @@ def train_single_config(args, gamma, alpha, logger):
         args.data_name, args.data_path, args.batch_size, args.num_workers, args.canary, logger
     )
     
-    model = create_model(args.model_name, num_classes)
+    model = create_model(args.model_name, num_classes, input_shape)
     
     trained_model, history = train_hamp(
         model, train_loader, val_loader, num_classes, gamma, alpha,
