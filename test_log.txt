@@ -1,0 +1,11 @@
+============================================================
+Training HAMP for cifar10 with γ=0.5, α=0.001
+============================================================
+Loading cifar10 data...
+Generating high-entropy soft labels (γ=0.5)...
+Epoch: 0 
+Epoch: 0 | Loss: 1.1504 | Acc: 10.73% | Val Loss: 1.1489 | Val Acc: 11.38% | Time: 7.61s
+Test Accuracy: 12.16%
+
+Model saved to ./checkpoints/cifar10_cnn_gamma0.5_alpha0.001.pt
+Final Test Accuracy: 12.16%
