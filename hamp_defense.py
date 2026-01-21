@@ -197,6 +197,14 @@ def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_e
                 kl_loss = F.kl_div(log_probs, soft_labels, reduction='batchmean')
                 entropy = compute_entropy(outputs)
                 loss = kl_loss - alpha * entropy
+
+                if epoch == 0 and batch_idx == 0:
+                    print(f"DEBUG - Soft labels sample: {soft_labels[0]}")
+                    print(f"DEBUG - Model output sample: {F.softmax(outputs[0], dim=0)}")
+                    print(f"DEBUG - KL loss: {kl_loss.item():.6f}")
+                    print(f"DEBUG - Entropy: {entropy.item():.6f}")
+                    print(f"DEBUG - Alpha * Entropy: {(alpha * entropy).item():.6f}")
+                    print(f"DEBUG - Total loss: {loss.item():.6f}")
             else:
                 # Standard training with hard labels
                 loss = F.cross_entropy(outputs, hard_labels)
