@@ -399,6 +399,7 @@ def train_model_multi_canary(
     alignment_proj_k: int = 10,
     alignment_proj_seed: int = 0,
     grad_scatter_k: int = 5,
+    rank: int = 0,
 ):
     """Train a model with the same core logic as parallel_audit_model.train_model,
     but extended to track multiple canaries.
@@ -758,12 +759,14 @@ def train_model_multi_canary(
                     total_canaries_filtered = np.sum(np.isin(canary_indices_np, np.where(drop_mask >= 1)[0]))
                     canary_fraction = total_canaries_filtered / len(canary_indices_np) if len(canary_indices_np) > 0 else 0
                     
-                    if n_canaries_marked_this_epoch > 0:
-                        print(f"  [Defense] Marked {n_newly_marked} samples for filtering (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
-                    else:
-                        print(f"  [Defense] Marked {n_newly_marked} samples for filtering ({canary_fraction:.1%} of canaries filtered so far)")
+                    if rank == 0:
+                        if n_canaries_marked_this_epoch > 0:
+                            print(f"  [Defense] Marked {n_newly_marked} samples for filtering (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
+                        else:
+                            print(f"  [Defense] Marked {n_newly_marked} samples for filtering ({canary_fraction:.1%} of canaries filtered so far)")
                 else:
-                    print(f"  [Defense] Marked {n_newly_marked} samples for filtering")
+                    if rank == 0:
+                        print(f"  [Defense] Marked {n_newly_marked} samples for filtering")
 
             scores.fill(0)
 
@@ -1037,6 +1040,7 @@ def main():
                 num_workers=0,
                 persistent_workers=False,
                 canary_indices=None,
+                rank=rank,
             )
 
             original_X = X_out[-1].unsqueeze(0).to(device)
@@ -1149,6 +1153,7 @@ def main():
                 canary_indices=canary_indices if (world == 'in') else None,
                 is_gradient_space_canary=(args.target_type == 'gradient_space_canary' and world == 'in'),
                 crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
+                rank=rank,
             )
 
             if args.target_type == 'gradient_space_canary':
