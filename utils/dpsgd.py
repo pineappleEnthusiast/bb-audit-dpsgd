@@ -905,12 +905,13 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
         canary_gradient_map = None
         if block_contains_canary and global_idx_to_grad is not None:
             canary_gradient_map = {}
-            for local_idx, global_idx in enumerate(curr_global_indices):
-                if curr_canary_mask[local_idx]:
-                    # O(1) lookup to get the crafted gradient for this global index
-                    grad = global_idx_to_grad.get(global_idx.item())
-                    if grad is not None:
-                        canary_gradient_map[local_idx] = grad
+            # Only iterate over canaries in this block (where mask is True)
+            canary_local_indices = torch.where(curr_canary_mask)[0]
+            for local_idx in canary_local_indices:
+                global_idx = curr_global_indices[local_idx].item()
+                grad = global_idx_to_grad.get(global_idx)
+                if grad is not None:
+                    canary_gradient_map[int(local_idx.item())] = grad
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, score_aux_block, dir_embeds_block = clip_and_accum_grads_block(
