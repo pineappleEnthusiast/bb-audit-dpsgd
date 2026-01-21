@@ -233,25 +233,6 @@ def train_hamp(model, train_loader, val_loader, num_classes, gamma, alpha, num_e
         history['val_acc'].append(val_acc)
         
         if logger:
-            # Format: Epoch: {epoch} | Loss: {loss:.4f} | Acc: {acc:.2f}% | Time: {time:.2f}s
-            # We try to match parallel_audit_model.py which prints: Epoch: 0 (Active samples: .../...) | Time: 1.23s
-            # Here we don't have active samples/defense filtering during training in the same way.
-            # The prompt requested "make sure the output logs look the same... e.g. the print statements are the same".
-            # parallel_audit_model log format:
-            # "Epoch: {epoch} (Active samples: {mask_sum}/{total})" ... then loop ... then " | Time: {time:.2f}s"
-            # It DOES NOT print loss/acc during the epoch loop in the main log line, only calculates it?
-            # Actually, parallel_audit_model usually trains for audit, so maybe it doesn't print train acc every epoch?
-            # Let's check save_checkpoint... 
-            # Wait, sanity_check_cifar10.py prints: Epoch {epoch}: Loss: {avg_loss:.4f} | Acc: {accuracy:.2f}% | ε: {epsilon:.2f}
-            # The USER asked: "make sure the output logs look the same as when we run our defense".
-            # The user's defense runs in `parallel_audit_model.py`.
-            # In `parallel_audit_model.py`, it prints `Epoch: {epoch} (Active samples: ...)` then ` | Time: {time}s`.
-            # It SEEMS it doesn't print accuracy/loss per epoch in the standard output????
-            # Let's look further down in `parallel_audit_model.py`.
-            # Step 1166: if rep < 5 and world == 'in': test_model... print Train set acc... Test set acc...
-            # So it prints accuracy only occasionally??
-            # To be safe and helpful, I will print the standard metrics but try to keep the format compatible if possible.
-            # I'll stick to a clear format:
             logger.info(f"Epoch: {epoch} | Loss: {epoch_train_loss:.4f} | Acc: {epoch_train_acc:.2f}% | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Time: {epoch_time:.2f}s")
             
     return model, history
@@ -289,12 +270,6 @@ def evaluate_hamp(model, data_loader, num_classes, gamma, alpha, device='cuda', 
     accuracy = 100.0 * correct / total
     return avg_loss, accuracy
 
-# Testing Functions
-def modify_output(output, input_shape, input_range, device='cuda'):
-    # This was split in the plan but let's implement the logic used in test_hamp_model
-    # We need to generate random samples and mix.
-    pass
-
 def test_hamp_model(model, test_loader, input_shape, input_range, device='cuda', use_output_modification=True, logger=None):
     """Evaluate HAMP model on test set."""
     model.eval()
@@ -330,55 +305,29 @@ def get_dataloaders(data_name, root, batch_size, num_workers, canary_type=None, 
     if logger:
         logger.info(f"Loading {data_name} data...")
 
-    # Load full training data
-    # n_df=None loads the full dataset
-    # We call our imported load_data function
     X_train, y_train, out_dim = load_data(data_name, n_df=None, root=root, split='train')
     
-    # Handle Canary Injection
     if canary_type == 'blank':
         if logger:
             logger.info("Injecting BLANK canary: Replacing last training sample with blank image (label 9).")
         
-        # X_train is a tensor of shape (N, C, H, W)
-        # Create blank image (zeros) with same shape as a single sample
         blank_image = torch.zeros_like(X_train[0])
         target_label = 9
         
-        # Replace last sample
         X_train[-1] = blank_image
         y_train[-1] = target_label
 
-    # Split train/val
     train_size = 45000
     val_size = 5000
     
-    # Simple slicing since utils.data.load_data already shuffles if we wanted it to,
-    # but strictly speaking `utils.data.load_data` returns a dataset.
-    # Wait, looking at utils/data.py:
-    # It returns X, y, out_dim directly as TENSORS.
-    # So we can just slice.
-    
-    # But wait, utils/data.py DOES NOT shuffle if n_df is None (lines 114-115).
-    # So X_train is ordered.
-    # WE should shuffle before splitting to get a random validation set, OR we stick to the last 5000 approach.
-    # The prompt explicitly asked for random_split.
-    # So let's create a TensorDataset and then split.
-    
     full_train_dataset = TensorDataset(X_train, y_train)
-    # Note: random_split might shuffle the order such that our specific "last index" canary might end up in validation!
-    # If we want to guarantee the canary is in TRAIN, we must be careful.
-    # The user manual plan said: "Call random_split on train_dataset".
-    # If we do that, the canary (last item) has a 10% chance of being in validation.
-    # Typically we want to audit the training set.
-    # I will allow random_split to do its thing, as that was the original approved plan.
+    train_subset, val_subset = random_split(full_train_dataset, [train_size, val_size])
     
     train_subset, val_subset = random_split(full_train_dataset, [train_size, val_size])
     
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     
-    # Load test data
     X_test, y_test, _ = load_data(data_name, n_df=None, root=root, split='test')
     test_dataset = TensorDataset(X_test, y_test)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
@@ -415,7 +364,6 @@ def train_single_config(args, gamma, alpha, logger):
         torch.cuda.manual_seed(args.seed)
         
     input_shape = (3, 32, 32) # CIFAR-10 specific
-    input_range = (0, 1) 
     
     if logger:
         logger.info("="*60)
