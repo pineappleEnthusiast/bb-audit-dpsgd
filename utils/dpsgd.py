@@ -732,9 +732,8 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                     # Replace the gradient for this canary
                     for name in ps_grads.keys():
                         if name in grad_dict:
-                            # Squeeze batch dimension and ensure device compatibility
-                            crafted_grad_tensor = grad_dict[name].squeeze(0).to(device=ps_grads[name].device, dtype=ps_grads[name].dtype)
-                            ps_grads[name][local_idx] = crafted_grad_tensor
+                            # Gradients are already squeezed and on correct device from loading
+                            ps_grads[name][local_idx] = grad_dict[name]
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
