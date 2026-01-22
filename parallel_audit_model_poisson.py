@@ -320,195 +320,190 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             print(" | No samples selected (Poisson sampling), skipping update")
             continue
         
-        # Create batch from sampled indices
-        curr_X = X[sampled_indices]
-        curr_y = y[sampled_indices]
-        global_indices = sampled_indices
+        # Split Poisson-sampled indices into minibatches to match parallel_audit_model.py structure
+        # This ensures the defense filtering sees the same number of minibatches per epoch
+        num_minibatches = max(1, (len(sampled_indices) + batch_size - 1) // batch_size)
+        minibatch_indices = torch.split(sampled_indices, batch_size)
         
-        # Move to device
-        curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
-        global_indices = global_indices.to(device, non_blocking=True)
-        
-        # Process the Poisson-sampled batch
-        batch_idx = 0
-        if defense_score_fn == 'loss_momentum' and prev_losses is None:
-            prev_losses = np.full((len(dataset),), np.nan, dtype=np.float32)
+        for batch_idx, global_indices in enumerate(minibatch_indices):
+            # Create batch from sampled indices
+            curr_X = X[global_indices]
+            curr_y = y[global_indices]
+            
+            # Move to device
+            curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
+            global_indices = global_indices.to(device, non_blocking=True)
+            
+            if defense_score_fn == 'loss_momentum' and prev_losses is None:
+                prev_losses = np.full((len(dataset),), np.nan, dtype=np.float32)
 
-        if defense_score_fn == 'loss_volatility' and loss_hist is None:
-            k = int(loss_volatility_k)
-            if k <= 0:
-                raise ValueError(f"loss_volatility_k must be > 0, got {k}")
-            loss_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
-            loss_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+            if defense_score_fn == 'loss_volatility' and loss_hist is None:
+                k = int(loss_volatility_k)
+                if k <= 0:
+                    raise ValueError(f"loss_volatility_k must be > 0, got {k}")
+                loss_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
+                loss_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-        if defense_score_fn == 'grad_norm_percentile' and grad_norm_hist is None:
-            k = int(grad_norm_percentile_k)
-            if k <= 0:
-                raise ValueError(f"grad_norm_percentile_k must be > 0, got {k}")
-            grad_norm_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
-            grad_norm_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+            if defense_score_fn == 'grad_norm_percentile' and grad_norm_hist is None:
+                k = int(grad_norm_percentile_k)
+                if k <= 0:
+                    raise ValueError(f"grad_norm_percentile_k must be > 0, got {k}")
+                grad_norm_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
+                grad_norm_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-        if defense_score_fn == 'grad_dir_volatility' and grad_dir_hist is None:
-            k = int(grad_dir_volatility_k)
-            if k <= 0:
-                raise ValueError(f"grad_dir_volatility_k must be > 0, got {k}")
+            if defense_score_fn == 'grad_dir_volatility' and grad_dir_hist is None:
+                k = int(grad_dir_volatility_k)
+                if k <= 0:
+                    raise ValueError(f"grad_dir_volatility_k must be > 0, got {k}")
+                grad_dir_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
+                grad_dir_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            # Note: grad_dir_proj will be created lazily on first batch when we know the actual gradient dimensions
-            grad_dir_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
-            grad_dir_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+            if defense_score_fn == 'norm_x_dir_uniqueness' and dir_unique_hist is None:
+                k = int(dir_unique_k)
+                if k <= 0:
+                    raise ValueError(f"dir_unique_k must be > 0, got {k}")
+                dir_unique_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
+                dir_unique_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-        if defense_score_fn == 'norm_x_dir_uniqueness' and dir_unique_hist is None:
-            k = int(dir_unique_k)
-            if k <= 0:
-                raise ValueError(f"dir_unique_k must be > 0, got {k}")
+            if defense_score_fn == 'rand_proj_var' and rand_proj_mat is None:
+                pass  # Will be created in dpsgd.py
 
-            # Note: grad_dir_proj will be created lazily on first batch
-            dir_unique_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
-            dir_unique_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+            if defense_score_fn == 'maxmin_proj_ratio' and maxmin_proj_mat is None:
+                pass  # Will be created in dpsgd.py
 
-        if defense_score_fn == 'rand_proj_var' and rand_proj_mat is None:
-            pass  # Will be created in dpsgd.py
+            if defense_score_fn == 'alignment_with_rand_proj' and alignment_proj_mat is None:
+                pass  # Will be created in dpsgd.py
 
-        if defense_score_fn == 'maxmin_proj_ratio' and maxmin_proj_mat is None:
-            pass  # Will be created in dpsgd.py
+            if defense_score_fn == 'grad_accel' and grad_accel_hist is None:
+                grad_accel_hist = np.full((len(dataset), 3, int(grad_accel_proj_dim)), np.nan, dtype=np.float32)
+                grad_accel_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-        if defense_score_fn == 'alignment_with_rand_proj' and alignment_proj_mat is None:
-            pass  # Will be created in dpsgd.py
+            if defense_score_fn == 'grad_jerk' and grad_jerk_hist is None:
+                grad_jerk_hist = np.full((len(dataset), 4, int(grad_jerk_proj_dim)), np.nan, dtype=np.float32)
+                grad_jerk_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-        if defense_score_fn == 'grad_accel' and grad_accel_hist is None:
-            # Keep a 3-step history for discrete second difference.
-            # Note: grad_accel_proj will be created lazily on first batch
-            grad_accel_hist = np.full((len(dataset), 3, int(grad_accel_proj_dim)), np.nan, dtype=np.float32)
-            grad_accel_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+            if defense_score_fn == 'cos_update' and prev_params is None:
+                prev_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-        if defense_score_fn == 'grad_jerk' and grad_jerk_hist is None:
-            # Keep a 4-step history for discrete third difference.
-            # Note: grad_jerk_proj will be created lazily on first batch
-            grad_jerk_hist = np.full((len(dataset), 4, int(grad_jerk_proj_dim)), np.nan, dtype=np.float32)
-            grad_jerk_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+            if defense_score_fn == 'cos_theta0' and theta0_params is None:
+                theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-        if defense_score_fn == 'cos_update' and prev_params is None:
-            prev_params = {n: p.detach().clone() for n, p in model.named_parameters()}
+            if defense_score_fn == 'norm_x_trajectory_orth' and theta0_params is None:
+                theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-        if defense_score_fn == 'cos_theta0' and theta0_params is None:
-            theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
-
-        if defense_score_fn == 'norm_x_trajectory_orth' and theta0_params is None:
-            theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
-
-        curr_params = {n: p.detach() for n, p in model.named_parameters()}
-        if prev_params is not None:
-            prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
-        else:
-            prev_delta_theta = None
-
-        if theta0_params is not None:
-            theta_t_minus_theta0 = {n: curr_params[n] - theta0_params[n] for n in theta0_params.keys()}
-        else:
-            theta_t_minus_theta0 = None
-
-        defense_cfg = DefenseConfig(
-                score_fn=defense_score_fn,
-                score_norm=defense_score_norm,
-                delta_theta=prev_delta_theta,
-                theta_t_minus_theta0=theta_t_minus_theta0,
-                grad_norm_hist=grad_norm_hist,
-                grad_norm_hist_pos=grad_norm_hist_pos,
-                grad_norm_percentile_k=int(grad_norm_percentile_k),
-                grad_dir_hist=grad_dir_hist,
-                grad_dir_hist_pos=grad_dir_hist_pos,
-                grad_dir_volatility_k=int(grad_dir_volatility_k),
-                grad_dir_proj=grad_dir_proj,
-                rand_proj_mat=rand_proj_mat,
-                rand_proj_var_m=int(rand_proj_var_m),
-                maxmin_proj_mat=maxmin_proj_mat,
-                maxmin_proj_k=int(maxmin_proj_k),
-                grad_rank_mode=str(grad_rank_mode),
-                grad_rank_eps=float(grad_rank_eps),
-                grad_accel_hist=grad_accel_hist,
-                grad_accel_hist_pos=grad_accel_hist_pos,
-                grad_accel_proj=grad_accel_proj,
-                grad_jerk_hist=grad_jerk_hist,
-                grad_jerk_hist_pos=grad_jerk_hist_pos,
-                alignment_proj_mat=alignment_proj_mat,
-                alignment_proj_k=int(alignment_proj_k),
-                grad_jerk_proj=grad_jerk_proj,
-            dir_unique_hist=dir_unique_hist,
-            dir_unique_hist_pos=dir_unique_hist_pos,
-            dir_unique_k=int(dir_unique_k),
-            grad_scatter_k=int(grad_scatter_k)
-        )
-        
-        # Clip & accumulate gradients (no world_size/rank needed)
-        curr_accumulated_gradients, scores = clip_and_accum_grads(
-            model,
-            curr_X, curr_y, optimizer, criterion,
-            max_grad_norm, 
-            drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
-            block_size=block_size,
-            scores=scores,
-            device=device,
-            global_indices=global_indices,
-            aug_mult=aug_mult, 
-            aug_fn=aug_fn,
-            world_size=1,  # Single GPU
-            rank=0,        # Single GPU
-            batch_size=batch_size,
-            is_gradient_space_canary=gradient_space_audit,
-            global_idx_to_grad=global_idx_to_grad,
-            canary_indices=np.array([len(dataset) - 1]) if gradient_space_audit else None,
-            defense_cfg=defense_cfg,
-            defense_apply_ascent=defense_apply_ascent
-        )
-        
-        # Update projection matrices if they were lazily created in dpsgd.py
-        if defense_cfg.grad_dir_proj is not None:
-            grad_dir_proj = defense_cfg.grad_dir_proj
-        if defense_cfg.rand_proj_mat is not None:
-            rand_proj_mat = defense_cfg.rand_proj_mat
-        if defense_cfg.maxmin_proj_mat is not None:
-            maxmin_proj_mat = defense_cfg.maxmin_proj_mat
-        if defense_cfg.alignment_proj_mat is not None:
-            alignment_proj_mat = defense_cfg.alignment_proj_mat
-        if defense_cfg.grad_accel_proj is not None:
-            grad_accel_proj = defense_cfg.grad_accel_proj
-        if defense_cfg.grad_jerk_proj is not None:
-            grad_jerk_proj = defense_cfg.grad_jerk_proj
-        
-        drop_mask[drop_mask == 1] = 2
-
-        # Apply the accumulated gradients
-        with torch.no_grad():
-            for name, param in model.named_parameters():
-                
-                if name not in curr_accumulated_gradients:
-                    print(f"Warning: Parameter {name} not found in accumulated gradients")
-                    continue
-                    
-                grad = curr_accumulated_gradients[name].to(device)
-                
-                # Add DP noise to the sum of clipped gradients (before averaging)
-                if noise_multiplier > 0 and max_grad_norm is not None:
-                    noise_std = noise_multiplier * max_grad_norm
-                    noise = noise_std * torch.randn_like(grad)
-                    grad.add_(noise)
-                
-                # Average the noisy gradient sum
-                batch_size_in = int(curr_X.shape[0])
-                grad.div_(float(batch_size_in))
-                
-                if param.grad is None:
-                    param.grad = grad.clone()
-                else:
-                    param.grad.copy_(grad)
-        
-        optimizer.step()
-        optimizer.zero_grad()
-
-        if defense_score_fn == 'cos_update' and prev_params is not None:
             curr_params = {n: p.detach() for n, p in model.named_parameters()}
-            prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
-            prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
+            if prev_params is not None:
+                prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
+            else:
+                prev_delta_theta = None
+
+            if theta0_params is not None:
+                theta_t_minus_theta0 = {n: curr_params[n] - theta0_params[n] for n in theta0_params.keys()}
+            else:
+                theta_t_minus_theta0 = None
+
+            defense_cfg = DefenseConfig(
+                    score_fn=defense_score_fn,
+                    score_norm=defense_score_norm,
+                    delta_theta=prev_delta_theta,
+                    theta_t_minus_theta0=theta_t_minus_theta0,
+                    grad_norm_hist=grad_norm_hist,
+                    grad_norm_hist_pos=grad_norm_hist_pos,
+                    grad_norm_percentile_k=int(grad_norm_percentile_k),
+                    grad_dir_hist=grad_dir_hist,
+                    grad_dir_hist_pos=grad_dir_hist_pos,
+                    grad_dir_volatility_k=int(grad_dir_volatility_k),
+                    grad_dir_proj=grad_dir_proj,
+                    rand_proj_mat=rand_proj_mat,
+                    rand_proj_var_m=int(rand_proj_var_m),
+                    maxmin_proj_mat=maxmin_proj_mat,
+                    maxmin_proj_k=int(maxmin_proj_k),
+                    grad_rank_mode=str(grad_rank_mode),
+                    grad_rank_eps=float(grad_rank_eps),
+                    grad_accel_hist=grad_accel_hist,
+                    grad_accel_hist_pos=grad_accel_hist_pos,
+                    grad_accel_proj=grad_accel_proj,
+                    grad_jerk_hist=grad_jerk_hist,
+                    grad_jerk_hist_pos=grad_jerk_hist_pos,
+                    alignment_proj_mat=alignment_proj_mat,
+                    alignment_proj_k=int(alignment_proj_k),
+                    grad_jerk_proj=grad_jerk_proj,
+                dir_unique_hist=dir_unique_hist,
+                dir_unique_hist_pos=dir_unique_hist_pos,
+                dir_unique_k=int(dir_unique_k),
+                grad_scatter_k=int(grad_scatter_k)
+            )
+            
+            # Clip & accumulate gradients
+            curr_accumulated_gradients, scores = clip_and_accum_grads(
+                model,
+                curr_X, curr_y, optimizer, criterion,
+                max_grad_norm, 
+                drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
+                block_size=block_size,
+                scores=scores,
+                device=device,
+                global_indices=global_indices,
+                aug_mult=aug_mult, 
+                aug_fn=aug_fn,
+                world_size=1,
+                rank=0,
+                batch_size=batch_size,
+                is_gradient_space_canary=gradient_space_audit,
+                global_idx_to_grad=global_idx_to_grad,
+                canary_indices=np.array([len(dataset) - 1]) if gradient_space_audit else None,
+                defense_cfg=defense_cfg,
+                defense_apply_ascent=defense_apply_ascent
+            )
+            
+            # Update projection matrices if they were lazily created in dpsgd.py
+            if defense_cfg.grad_dir_proj is not None:
+                grad_dir_proj = defense_cfg.grad_dir_proj
+            if defense_cfg.rand_proj_mat is not None:
+                rand_proj_mat = defense_cfg.rand_proj_mat
+            if defense_cfg.maxmin_proj_mat is not None:
+                maxmin_proj_mat = defense_cfg.maxmin_proj_mat
+            if defense_cfg.alignment_proj_mat is not None:
+                alignment_proj_mat = defense_cfg.alignment_proj_mat
+            if defense_cfg.grad_accel_proj is not None:
+                grad_accel_proj = defense_cfg.grad_accel_proj
+            if defense_cfg.grad_jerk_proj is not None:
+                grad_jerk_proj = defense_cfg.grad_jerk_proj
+            
+            drop_mask[drop_mask == 1] = 2
+
+            # Apply the accumulated gradients
+            with torch.no_grad():
+                for name, param in model.named_parameters():
+                    
+                    if name not in curr_accumulated_gradients:
+                        print(f"Warning: Parameter {name} not found in accumulated gradients")
+                        continue
+                        
+                    grad = curr_accumulated_gradients[name].to(device)
+                    
+                    # Add DP noise to the sum of clipped gradients (before averaging)
+                    if noise_multiplier > 0 and max_grad_norm is not None:
+                        noise_std = noise_multiplier * max_grad_norm
+                        noise = noise_std * torch.randn_like(grad)
+                        grad.add_(noise)
+                    
+                    # Average the noisy gradient sum
+                    batch_size_in = int(curr_X.shape[0])
+                    grad.div_(float(batch_size_in))
+                    
+                    if param.grad is None:
+                        param.grad = grad.clone()
+                    else:
+                        param.grad.copy_(grad)
+            
+            optimizer.step()
+            optimizer.zero_grad()
+
+            if defense_score_fn == 'cos_update' and prev_params is not None:
+                curr_params = {n: p.detach() for n, p in model.named_parameters()}
+                prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
+                prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
         
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
