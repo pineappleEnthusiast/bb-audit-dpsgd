@@ -614,6 +614,56 @@ def distribute_reps(n_reps, world_size):
     return reps_per_gpu
 
 
+def _audit_from_scores(
+    scores_in: np.ndarray,
+    scores_out: np.ndarray,
+    alpha: float,
+    delta: float,
+    holdout_audit: bool,
+    seed: int = 0,
+):
+    """Compute empirical epsilon from canary scores"""
+    if scores_in.shape[0] != scores_out.shape[0]:
+        raise ValueError(f"Expected same number of in/out scores, got {scores_in.shape[0]} and {scores_out.shape[0]}")
+
+    n = int(scores_in.shape[0])
+    
+    if holdout_audit:
+        if n < 2:
+            raise ValueError("holdout_audit requires at least 2 scores per world")
+        
+        np.random.seed(seed)
+        indices = np.random.permutation(n)
+        threshold_indices = indices[:n // 2]
+        holdout_indices = indices[n // 2:]
+        
+        t_scores_in = scores_in[threshold_indices]
+        t_scores_out = scores_out[threshold_indices]
+        hold_scores_in = scores_in[holdout_indices]
+        hold_scores_out = scores_out[holdout_indices]
+    else:
+        t_scores_in = scores_in
+        t_scores_out = scores_out
+
+    mia_scores = np.concatenate([t_scores_in, t_scores_out]).astype(np.float32)
+    mia_labels = np.concatenate([
+        np.ones(t_scores_in.shape[0], dtype=np.int64),
+        np.zeros(t_scores_out.shape[0], dtype=np.int64),
+    ])
+
+    t, emp_eps = compute_eps_lower_from_mia(mia_scores, mia_labels, alpha, delta, 'GDP', n_procs=1)
+
+    if holdout_audit:
+        hold_mia_scores = np.concatenate([hold_scores_in, hold_scores_out]).astype(np.float32)
+        hold_mia_labels = np.concatenate([
+            np.ones(hold_scores_in.shape[0], dtype=np.int64),
+            np.zeros(hold_scores_out.shape[0], dtype=np.int64),
+        ])
+        emp_eps = compute_eps_lower_from_mia_given_t(hold_mia_scores, hold_mia_labels, alpha, delta, t, 'GDP')
+
+    return float(emp_eps), float(t), mia_scores, mia_labels
+
+
 def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     
@@ -710,6 +760,9 @@ def main():
     
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(args.out, args.fit_world_only, rank)
     
+    # Canary scoring: store scores for each model under each world
+    scores = {'in': [], 'out': []}
+    
     reps_per_gpu = distribute_reps(args.n_reps, world_size)
     
     for rep_idx in reps_per_gpu[rank]:
@@ -757,6 +810,16 @@ def main():
                 hamp_alpha_entropy=args.hamp_alpha_entropy
             )
             
+            # Score canary on this model
+            model.eval()
+            with torch.no_grad():
+                X_target_device = X_target.to(device)
+                y_target_device = y_target.to(device)
+                output = model(X_target_device)
+                # Score: negative cross-entropy loss (higher score = more membership)
+                canary_score = -nn.CrossEntropyLoss()(output, y_target_device).cpu().item()
+                scores[world].append(canary_score)
+            
             if args.defense:
                 train_acc = test_model_hamp(model, X_world, y_world, batch_size=args.batch_size)
                 
@@ -779,11 +842,63 @@ def main():
             train_set_accs.append(train_acc)
             
             if rank == 0:
-                print(f"  {world.upper()} - Train acc: {train_acc:.4f}")
+                print(f"  {world.upper()} - Train acc: {train_acc:.4f}, Canary score: {canary_score:.6f}")
+    
+    # Save per-rank scores
+    suffix = f'_rank{rank}' if rank > 0 else ''
+    if not args.fit_world_only:
+        np.save(os.path.join(args.out, f'scores_in{suffix}.npy'), np.asarray(scores['in'], dtype=np.float32))
+        np.save(os.path.join(args.out, f'scores_out{suffix}.npy'), np.asarray(scores['out'], dtype=np.float32))
     
     if rank == 0:
         save_checkpoint(args.out, outputs, losses, all_losses, train_set_accs, [], args.fit_world_only, rank)
         print(f"\nResults saved to {args.out}")
+    
+    # Synchronize across ranks
+    if world_size > 1:
+        dist.barrier()
+    
+    # Rank 0 combines results and computes empirical epsilon
+    if rank == 0:
+        print("\n[Rank 0] Combining results from all ranks...")
+        combined_scores_in = []
+        combined_scores_out = []
+        
+        for r in range(world_size):
+            suffix = f'_rank{r}' if r > 0 else ''
+            try:
+                if not args.fit_world_only:
+                    combined_scores_in.extend(np.load(os.path.join(args.out, f'scores_in{suffix}.npy')))
+                    combined_scores_out.extend(np.load(os.path.join(args.out, f'scores_out{suffix}.npy')))
+            except FileNotFoundError:
+                print(f"Warning: Could not find scores for rank {r}")
+        
+        # Save combined scores
+        if not args.fit_world_only:
+            scores_in_combined = np.asarray(combined_scores_in, dtype=np.float32)
+            scores_out_combined = np.asarray(combined_scores_out, dtype=np.float32)
+            
+            np.save(os.path.join(args.out, 'scores_in.npy'), scores_in_combined)
+            np.save(os.path.join(args.out, 'scores_out.npy'), scores_out_combined)
+            
+            # Compute empirical epsilon
+            emp_eps, threshold, mia_scores, mia_labels = _audit_from_scores(
+                scores_in_combined,
+                scores_out_combined,
+                float(args.alpha),
+                float(args.delta),
+                bool(args.holdout_audit),
+                seed=int(args.seed),
+            )
+            
+            np.save(os.path.join(args.out, 'emp_eps.npy'), np.asarray(emp_eps, dtype=np.float32))
+            np.save(os.path.join(args.out, 'mia_threshold.npy'), np.asarray(threshold, dtype=np.float32))
+            np.save(os.path.join(args.out, 'mia_scores.npy'), mia_scores)
+            np.save(os.path.join(args.out, 'mia_labels.npy'), mia_labels)
+            
+            print(f"\nAUDIT RESULTS")
+            print(f"Theoretical epsilon: {args.epsilon}")
+            print(f"Empirical epsilon: {emp_eps}")
     
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         dist.destroy_process_group()
