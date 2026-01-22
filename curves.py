@@ -151,7 +151,7 @@ def compute_epsilon_delta_curve(alpha: np.ndarray, beta: np.ndarray,
     delta_values: Corresponding δ values
     """
     # Ensure we have valid data
-    if len(alpha) < 2 or len(delta) < 2:
+    if len(alpha) < 2 or len(beta) < 2:
         return np.array([]), np.array([])
     
     # Sort by alpha and remove duplicates
