@@ -279,7 +279,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # Poisson sampling: each sample is included independently with probability q = batch_size / n
     # This is the standard approach for DP-SGD with tight privacy analysis
     n_samples = len(dataset)
-    sampling_prob = min(1.0, batch_size / n_samples)
+    sampling_prob = batch_size / n_samples
 
     prev_params = None
     prev_delta_theta = None
