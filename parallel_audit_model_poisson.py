@@ -310,22 +310,20 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        # Poisson sampling: sample each example independently with probability q
-        # Use Bernoulli sampling for each index
-        sampled_mask = torch.rand(n_samples, generator=generator) < sampling_prob
-        sampled_indices = torch.where(sampled_mask)[0]
+        # Poisson sampling: exactly ceil(n_samples / batch_size) minibatches per epoch
+        # Each minibatch independently samples examples with probability q = batch_size / n_samples
+        num_minibatches = (n_samples + batch_size - 1) // batch_size
         
-        # If no samples selected (rare but possible), skip this epoch's update
-        if len(sampled_indices) == 0:
-            print(" | No samples selected (Poisson sampling), skipping update")
-            continue
-        
-        # Split Poisson-sampled indices into minibatches to match parallel_audit_model.py structure
-        # This ensures the defense filtering sees the same number of minibatches per epoch
-        num_minibatches = max(1, (len(sampled_indices) + batch_size - 1) // batch_size)
-        minibatch_indices = torch.split(sampled_indices, batch_size)
-        
-        for batch_idx, global_indices in enumerate(minibatch_indices):
+        for batch_idx in range(num_minibatches):
+            # For this minibatch, independently sample each example with probability q
+            sampled_mask = torch.rand(n_samples, generator=generator) < sampling_prob
+            sampled_indices = torch.where(sampled_mask)[0]
+            
+            # If no samples selected (rare but possible), skip this minibatch
+            if len(sampled_indices) == 0:
+                continue
+            
+            global_indices = sampled_indices
             # Create batch from sampled indices
             curr_X = X[global_indices]
             curr_y = y[global_indices]
