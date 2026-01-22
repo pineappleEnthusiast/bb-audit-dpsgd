@@ -759,8 +759,67 @@ def main():
     if rank == 0:
         print(f"Dataset: {args.data_name}, Train size: {len(X_out)}, Out dim: {out_dim}")
     
-    # Define canary as the last sample from the loaded dataset
-    target_X, target_y = X_out[-1:], y_out[-1:]
+    # Generate canary based on target_type
+    if rank == 0:
+        print(f'Crafting target data point (target_type={args.target_type})')
+    
+    if args.canary_pt is not None:
+        if not os.path.exists(args.canary_pt):
+            raise FileNotFoundError(f"--canary_pt not found: {args.canary_pt}")
+        payload = torch.load(args.canary_pt, map_location='cpu')
+        
+        if isinstance(payload, dict):
+            if 'canary' not in payload:
+                raise KeyError(f"Canary .pt dict must contain key 'canary'. Found keys: {list(payload.keys())}")
+            target_X = payload['canary']
+            if 'target_label' in payload:
+                target_y_val = payload['target_label']
+            elif 'canary_label' in payload:
+                target_y_val = payload['canary_label']
+            elif 'label' in payload:
+                target_y_val = payload['label']
+            else:
+                target_y_val = 9
+        elif torch.is_tensor(payload):
+            target_X = payload
+            target_y_val = 9
+        else:
+            raise TypeError(f"Unsupported canary_pt payload type: {type(payload)}")
+        
+        if torch.is_tensor(target_y_val):
+            target_y = target_y_val.clone().detach().long().view(-1)
+        else:
+            target_y = torch.tensor([int(target_y_val)], dtype=torch.long)
+        
+        if not torch.is_tensor(target_X):
+            target_X = torch.tensor(target_X)
+        
+        target_X = target_X.clone().detach()
+        if target_X.ndim == X_out.ndim - 1:
+            target_X = target_X.unsqueeze(0)
+        if target_X.ndim != X_out.ndim:
+            raise ValueError(f"Loaded canary has shape {tuple(target_X.shape)} but expected {tuple(X_out[[0]].shape)}")
+        
+        if rank == 0:
+            print(f"Loaded canary from {args.canary_pt}: X={tuple(target_X.shape)}, y={target_y.tolist()}")
+    else:
+        # Generate canary based on target_type
+        if args.target_type == 'blank':
+            blank_img = torch.zeros_like(X_out[[0]])
+            if args.blank_alpha > 0:
+                label_9_indices = (y_out == 9).nonzero(as_tuple=True)[0]
+                if len(label_9_indices) == 0:
+                    raise ValueError("No label 9 samples found in dataset")
+                label_9_img = X_out[label_9_indices[0]].unsqueeze(0)
+                target_X = args.blank_alpha * label_9_img + (1 - args.blank_alpha) * blank_img
+            else:
+                target_X = blank_img
+            target_y = torch.from_numpy(np.array([9]))
+        elif args.target_type == 'sanity_check':
+            target_X = X_out[-1].unsqueeze(0)
+            target_y = y_out[-1].unsqueeze(0)
+        else:
+            raise ValueError(f"Unsupported target_type: {args.target_type}")
     
     # Define 'in' world dataset: all samples except last, plus the canary
     X_in = torch.vstack((X_out[:-1], target_X))
