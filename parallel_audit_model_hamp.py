@@ -314,11 +314,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, num_workers: int = 4, persistent_workers: bool = True, hamp_gamma: float = 0.6, hamp_alpha_entropy: float = 0.1):
     """
-    Train a single model on a single GPU (no DDP) with HAMP defense.
-    
-    HAMP (High-entropy Adaptive Membership Privacy) defense:
-    - Training-time: Use soft labels with high entropy and KL divergence loss
-    - Testing-time: Replace output scores with random sample scores while preserving rank
+    Train a single model on a single GPU (no DDP).
+    When defense=True, applies HAMP soft label training instead of standard cross-entropy.
     """
 
     # Move everything to the specified device
@@ -413,15 +410,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             loss.backward()
             
             # Clip gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-            
-            # Add DP noise
-            if noise_multiplier > 0 and max_grad_norm is not None:
-                for param in model.parameters():
-                    if param.grad is not None:
-                        noise_std = noise_multiplier * max_grad_norm
-                        noise = noise_std * torch.randn_like(param.grad)
-                        param.grad.add_(noise)
+            if max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             
             optimizer.step()
             optimizer.zero_grad()
@@ -433,8 +423,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
 
 def test_model(model, X, y, batch_size=128):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    # Get device from model parameters
+    device = next(model.parameters()).device
     X = X.to(device)
     y = y.to(device)
 
@@ -459,8 +449,8 @@ def test_model_hamp(model, X, y, batch_size=128):
     """
     Test model with HAMP testing-time defense: rank-preserving score replacement.
     """
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    # Get device from model parameters
+    device = next(model.parameters()).device
     X = X.to(device)
     y = y.to(device)
 
@@ -699,9 +689,11 @@ def main():
 
     args = parser.parse_args()
     
-    # Map -1 to None for epsilon
+    # Map -1 to None for epsilon and max_grad_norm (non-private training)
     if args.epsilon == -1:
         args.epsilon = None
+    if args.max_grad_norm == -1:
+        args.max_grad_norm = None
     
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
