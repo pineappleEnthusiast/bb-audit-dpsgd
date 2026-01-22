@@ -66,7 +66,8 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --batch_size '"${BATCH_SIZE}"' \
     --block_size '"${BLOCK_SIZE}"' \
     --seed '"${SEED}"' \
-    --defense_type '"${DEFENSE_TYPE}"' \
+    --defense \
+    --defense_score_fn '"${DEFENSE_TYPE}"' \
     --fixed_init \
     --aug_mult 1 \
     --holdout_audit \

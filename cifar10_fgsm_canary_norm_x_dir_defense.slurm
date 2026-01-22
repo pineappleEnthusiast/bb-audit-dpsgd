@@ -29,7 +29,7 @@ BATCH_SIZE=3125
 BLOCK_SIZE=3125
 SEED=0
 TARGET_TYPE="fgsm"
-DEFENSE_TYPE="norm_x_dir"
+DEFENSE_SCORE_FN="norm_x_dir_uniqueness"
 
 # Parent output folder
 PARENT_OUT="cifar10_fgsm_canary_norm_x_dir_defense"
@@ -66,7 +66,8 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --batch_size '"${BATCH_SIZE}"' \
     --block_size '"${BLOCK_SIZE}"' \
     --seed '"${SEED}"' \
-    --defense_type '"${DEFENSE_TYPE}"' \
+    --defense \
+    --defense_score_fn '"${DEFENSE_SCORE_FN}"' \
     --fixed_init \
     --aug_mult 1 \
     --holdout_audit \
