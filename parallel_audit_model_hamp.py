@@ -817,8 +817,13 @@ def main():
                 X_target_device = X_target.to(device)
                 y_target_device = y_target.to(device)
                 output = model(X_target_device)
-                # Score: negative cross-entropy loss (higher score = more membership)
-                canary_score = -nn.CrossEntropyLoss()(output, y_target_device).cpu().item()
+                
+                # Score using the same loss as training
+                if args.defense:
+                    soft_labels = generate_soft_labels(y_target_device, out_dim, gamma=args.hamp_gamma, device=device)
+                    canary_score = -kl_divergence_with_entropy_regularization(output, soft_labels, alpha_entropy=args.hamp_alpha_entropy).cpu().item()
+                else:
+                    canary_score = -nn.CrossEntropyLoss()(output, y_target_device).cpu().item()
                 scores[world].append(canary_score)
             
             if args.defense:
