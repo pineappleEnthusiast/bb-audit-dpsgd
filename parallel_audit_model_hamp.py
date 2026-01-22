@@ -803,7 +803,7 @@ def main():
                 X_world, y_world = X_in, y_in
             
             model = train_model(
-                args.model_name, X_world, y_world, X_target, y_target,
+                args.model_name, X_world, y_world, target_X, target_y,
                 args.epsilon, args.delta, args.max_grad_norm,
                 args.n_epochs, args.lr, args.block_size, args.batch_size,
                 init_model=init_model, out_dim=out_dim,
@@ -819,8 +819,8 @@ def main():
             # Score canary on this model
             model.eval()
             with torch.no_grad():
-                X_target_device = X_target.to(device)
-                y_target_device = y_target.to(device)
+                X_target_device = target_X.to(device)
+                y_target_device = target_y.to(device)
                 output = model(X_target_device)
                 
                 # Score using the same loss as training
