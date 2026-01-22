@@ -270,6 +270,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     # Must be integer (NOT bool) because we rely on the 3-state semantics downstream.
     drop_mask = np.zeros(len(dataset), dtype=np.int8)
     
+    # Create global index to gradient mapping for gradient space canary (single canary at last index)
+    global_idx_to_grad = None
+    if gradient_space_audit and crafted_gradient is not None:
+        canary_idx = len(dataset) - 1
+        global_idx_to_grad = {canary_idx: crafted_gradient}
+    
     sampler = torch.utils.data.RandomSampler(
         dataset,
         replacement=False,
@@ -445,7 +451,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 rank=0,        # Single GPU
                 batch_size=batch_size,
                 is_gradient_space_canary=gradient_space_audit,
-                crafted_gradient=crafted_gradient,
+                global_idx_to_grad=global_idx_to_grad,
+                canary_indices=np.array([len(dataset) - 1]) if gradient_space_audit else None,
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=defense_apply_ascent
             )
