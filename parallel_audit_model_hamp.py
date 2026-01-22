@@ -220,7 +220,6 @@ def generate_soft_labels(y, num_classes, gamma=0.5, device='cuda:0'):
         soft_labels: Soft label distribution (batch_size, num_classes)
     """
     batch_size = y.shape[0]
-    soft_labels = torch.zeros(batch_size, num_classes, device=device)
     
     # For each sample, assign probability p to ground truth and (1-p)/C-1 to others
     # We choose p such that entropy meets target
@@ -230,9 +229,11 @@ def generate_soft_labels(y, num_classes, gamma=0.5, device='cuda:0'):
     p = gamma
     other_prob = (1 - p) / (num_classes - 1)
     
-    for i in range(batch_size):
-        soft_labels[i, :] = other_prob
-        soft_labels[i, y[i]] = p
+    # Vectorized: initialize all to other_prob
+    soft_labels = torch.full((batch_size, num_classes), other_prob, device=device)
+    
+    # Set ground truth labels to p using advanced indexing
+    soft_labels[torch.arange(batch_size, device=device), y] = p
     
     return soft_labels
 
