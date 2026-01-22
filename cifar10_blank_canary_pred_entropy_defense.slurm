@@ -3,9 +3,9 @@
 #SBATCH -o status/cifar10_blank_canary_pred_entropy_defense_%A.o
 #SBATCH -e status/cifar10_blank_canary_pred_entropy_defense_%A.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 10
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 4:00:00
+#SBATCH -t 8:00:00
 #SBATCH -A ASC25081
 
 module load cuda/12.4
