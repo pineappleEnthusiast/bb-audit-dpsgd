@@ -35,24 +35,24 @@ mkdir -p ${PARENT_OUT}
 # Array format: "dataset|model|lr|batch_size|block_size|aug_mult|defense|time|output_name"
 experiments=(
     # MNIST experiments (non-private × defense/no_defense)
-    "mnist|cnn|3|4000|4000|1|false|4:00:00|mnist_no_defense_non_private"
-    "mnist|cnn|3|4000|4000|1|true|4:00:00|mnist_defense_non_private"
+    "mnist|cnn|0.1|4000|4000|1|false|4:00:00|mnist_no_defense_non_private"
+    "mnist|cnn|0.1|4000|4000|1|true|4:00:00|mnist_defense_non_private"
     
     # Purchase experiments (non-private × defense/no_defense)
-    "purchase|mlp|10|12143|12143|1|false|4:00:00|purchase_no_defense_non_private"
-    "purchase|mlp|10|12143|12143|1|true|4:00:00|purchase_defense_non_private"
+    "purchase|mlp|0.5|12143|12143|1|false|4:00:00|purchase_no_defense_non_private"
+    "purchase|mlp|0.5|12143|12143|1|true|4:00:00|purchase_defense_non_private"
     
     # CIFAR-10 CNN experiments (non-private × defense/no_defense)
-    "cifar10|cnn|3|3125|3125|1|false|4:00:00|cifar10_no_defense_non_private"
-    "cifar10|cnn|3|3125|3125|1|true|4:00:00|cifar10_defense_non_private"
+    "cifar10|cnn|0.1|3125|3125|1|false|4:00:00|cifar10_no_defense_non_private"
+    "cifar10|cnn|0.1|3125|3125|1|true|4:00:00|cifar10_defense_non_private"
     
     # CIFAR-10 CNN + augmult4 experiments (non-private × defense/no_defense)
-    "cifar10|cnn|3|3125|2000|4|false|15:00:00|cifar10_augmult4_no_defense_non_private"
-    "cifar10|cnn|3|3125|2000|4|true|15:00:00|cifar10_augmult4_defense_non_private"
+    "cifar10|cnn|0.1|3125|2000|4|false|15:00:00|cifar10_augmult4_no_defense_non_private"
+    "cifar10|cnn|0.1|3125|2000|4|true|15:00:00|cifar10_augmult4_defense_non_private"
     
     # CIFAR-10 WideResNet experiments (non-private × defense/no_defense)
-    "cifar10|wideresnet|3|3125|1000|1|false|15:00:00|cifar10_wrn_no_defense_non_private"
-    "cifar10|wideresnet|3|3125|1000|1|true|15:00:00|cifar10_wrn_defense_non_private"
+    "cifar10|wideresnet|0.1|3125|1000|1|false|15:00:00|cifar10_wrn_no_defense_non_private"
+    "cifar10|wideresnet|0.1|3125|1000|1|true|15:00:00|cifar10_wrn_defense_non_private"
 )
 
 # Get current experiment configuration
