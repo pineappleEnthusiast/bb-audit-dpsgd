@@ -746,15 +746,48 @@ def main():
     if args.max_grad_norm == -1:
         args.max_grad_norm = None
     
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    
+    # Initialize model with SAME seed across all GPUs for fixed_init
     if rank == 0:
-        print('Loading data')
-    if args.n_df == 1:
-        X_out, y_out, out_dim = load_data(args.data_name, 1)
+        print('Initializing model')
+    init_model = None
+    if args.fixed_init is not None:
+        # Use same seed for all GPUs to ensure identical initialization
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        
+        if rank == 0:
+            print('Loading data')
+        if args.n_df == 1:
+            X_out, y_out, out_dim = load_data(args.data_name, 1)
+        else:
+            X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
+        
+        init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
+        if args.model_name == 'cnn':
+            xavier_init_model(init_model)
+        else:
+            init_wideresnet(init_model)
+        if args.fixed_init == '':
+            if args.model_name == 'cnn':
+                xavier_init_model(init_model)
+            else:
+                init_wideresnet(init_model)
+        else:
+            init_model.load_state_dict(torch.load(args.fixed_init))
+            X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
     else:
-        X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
+        if rank == 0:
+            print('Loading data')
+        if args.n_df == 1:
+            X_out, y_out, out_dim = load_data(args.data_name, 1)
+        else:
+            X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
+    
+    # NOW set per-rank seeds for everything else (after init_model is created)
+    # This ensures data loading and other operations are still independent per GPU
+    np.random.seed(args.seed + rank)
+    torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)
     
     if rank == 0:
         print(f"Dataset: {args.data_name}, Train size: {len(X_out)}, Out dim: {out_dim}")
@@ -840,17 +873,6 @@ def main():
         generator.manual_seed(args.seed + rep_idx)
         dl_generator = torch.Generator()
         dl_generator.manual_seed(args.seed + rep_idx)
-        
-        init_model = None
-        if args.fixed_init is not None:
-            if args.fixed_init == '':
-                init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
-                if args.model_name == 'cnn':
-                    xavier_init_model(init_model)
-                else:
-                    init_wideresnet(init_model)
-            else:
-                init_model = torch.load(args.fixed_init)
         
         for world in ['out', 'in']:
             if args.fit_world_only is not None and world != args.fit_world_only:
