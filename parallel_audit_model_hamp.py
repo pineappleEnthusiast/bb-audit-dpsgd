@@ -752,12 +752,19 @@ def main():
     if rank == 0:
         print('Loading data')
     if args.n_df == 1:
-        X, y, out_dim = load_data(args.data_name, 1)
+        X_out, y_out, out_dim = load_data(args.data_name, 1)
     else:
-        X, y, out_dim = load_data(args.data_name, args.n_df - 1)
+        X_out, y_out, out_dim = load_data(args.data_name, args.n_df - 1)
     
     if rank == 0:
-        print(f"Dataset: {args.data_name}, Train size: {len(X)}, Out dim: {out_dim}")
+        print(f"Dataset: {args.data_name}, Train size: {len(X_out)}, Out dim: {out_dim}")
+    
+    # Define canary as the last sample from the loaded dataset
+    target_X, target_y = X_out[-1:], y_out[-1:]
+    
+    # Define 'in' world dataset: all samples except last, plus the canary
+    X_in = torch.vstack((X_out[:-1], target_X))
+    y_in = torch.cat((y_out[:-1], target_y))
     
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(args.out, args.fit_world_only, rank)
     
@@ -778,7 +785,7 @@ def main():
         init_model = None
         if args.fixed_init is not None:
             if args.fixed_init == '':
-                init_model = Models[args.model_name](X.shape, out_dim=out_dim)
+                init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
                 if args.model_name == 'cnn':
                     xavier_init_model(init_model)
                 else:
@@ -791,11 +798,9 @@ def main():
                 continue
             
             if world == 'out':
-                X_world, y_world = X, y
-                X_target, y_target = torch.zeros(1, *X.shape[1:]), torch.tensor([0])
+                X_world, y_world = X_out, y_out
             else:
-                X_world, y_world = X[:-1], y[:-1]
-                X_target, y_target = X[-1:], y[-1:]
+                X_world, y_world = X_in, y_in
             
             model = train_model(
                 args.model_name, X_world, y_world, X_target, y_target,
