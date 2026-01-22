@@ -1,4 +1,4 @@
-"""Auditing DP-SGD in black-box setting - Modified for model parallelism"""
+"""Auditing DP-SGD in black-box setting - Modified for model parallelism with Poisson sampling"""
 import os
 import time
 import copy
@@ -80,12 +80,14 @@ def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
     for i in range(max_iter):
         output = model(X_adv)
         _, predicted = torch.max(output, 1)
-        # Targeted attack: success when model predicts target class y
-        if predicted == y:
-            return X_adv.detach(), i + 1, True
-            
+        
         # Handle both scalar and tensor y
-        y_idx = y.item() if y.dim() > 0 else y
+        y_idx = y.item() if isinstance(y, torch.Tensor) else int(y)
+        predicted_idx = predicted.item() if isinstance(predicted, torch.Tensor) else int(predicted)
+        
+        # Targeted attack: success when model predicts target class y
+        if predicted_idx == y_idx:
+            return X_adv.detach(), i + 1, True
         confidence = F.softmax(output, dim=1)[0, y_idx].item()
         if confidence > best_confidence:
             best_confidence = confidence
@@ -274,23 +276,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         canary_idx = len(dataset) - 1
         global_idx_to_grad = {canary_idx: crafted_gradient}
     
-    sampler = torch.utils.data.RandomSampler(
-        dataset,
-        replacement=False,
-        num_samples=None,
-        generator=generator
-    )
-    
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        pin_memory=True,
-        num_workers=int(num_workers),
-        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
-        drop_last=False,
-        generator=dl_generator
-    )
+    # Poisson sampling: each sample is included independently with probability q = batch_size / n
+    # This is the standard approach for DP-SGD with tight privacy analysis
+    n_samples = len(dataset)
+    sampling_prob = min(1.0, batch_size / n_samples)
 
     prev_params = None
     prev_delta_theta = None
@@ -321,87 +310,104 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
-            curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
-            global_indices = global_indices.to(device, non_blocking=True)
+        # Poisson sampling: sample each example independently with probability q
+        # Use Bernoulli sampling for each index
+        sampled_mask = torch.rand(n_samples, generator=generator) < sampling_prob
+        sampled_indices = torch.where(sampled_mask)[0]
+        
+        # If no samples selected (rare but possible), skip this epoch's update
+        if len(sampled_indices) == 0:
+            print(" | No samples selected (Poisson sampling), skipping update")
+            continue
+        
+        # Create batch from sampled indices
+        curr_X = X[sampled_indices]
+        curr_y = y[sampled_indices]
+        global_indices = sampled_indices
+        
+        # Move to device
+        curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
+        global_indices = global_indices.to(device, non_blocking=True)
+        
+        # Process the Poisson-sampled batch
+        batch_idx = 0
+        if defense_score_fn == 'loss_momentum' and prev_losses is None:
+            prev_losses = np.full((len(dataset),), np.nan, dtype=np.float32)
 
-            if defense_score_fn == 'loss_momentum' and prev_losses is None:
-                prev_losses = np.full((len(dataset),), np.nan, dtype=np.float32)
+        if defense_score_fn == 'loss_volatility' and loss_hist is None:
+            k = int(loss_volatility_k)
+            if k <= 0:
+                raise ValueError(f"loss_volatility_k must be > 0, got {k}")
+            loss_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
+            loss_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'loss_volatility' and loss_hist is None:
-                k = int(loss_volatility_k)
-                if k <= 0:
-                    raise ValueError(f"loss_volatility_k must be > 0, got {k}")
-                loss_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
-                loss_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+        if defense_score_fn == 'grad_norm_percentile' and grad_norm_hist is None:
+            k = int(grad_norm_percentile_k)
+            if k <= 0:
+                raise ValueError(f"grad_norm_percentile_k must be > 0, got {k}")
+            grad_norm_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
+            grad_norm_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'grad_norm_percentile' and grad_norm_hist is None:
-                k = int(grad_norm_percentile_k)
-                if k <= 0:
-                    raise ValueError(f"grad_norm_percentile_k must be > 0, got {k}")
-                grad_norm_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
-                grad_norm_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+        if defense_score_fn == 'grad_dir_volatility' and grad_dir_hist is None:
+            k = int(grad_dir_volatility_k)
+            if k <= 0:
+                raise ValueError(f"grad_dir_volatility_k must be > 0, got {k}")
 
-            if defense_score_fn == 'grad_dir_volatility' and grad_dir_hist is None:
-                k = int(grad_dir_volatility_k)
-                if k <= 0:
-                    raise ValueError(f"grad_dir_volatility_k must be > 0, got {k}")
+            # Note: grad_dir_proj will be created lazily on first batch when we know the actual gradient dimensions
+            grad_dir_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
+            grad_dir_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-                # Note: grad_dir_proj will be created lazily on first batch when we know the actual gradient dimensions
-                grad_dir_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
-                grad_dir_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+        if defense_score_fn == 'norm_x_dir_uniqueness' and dir_unique_hist is None:
+            k = int(dir_unique_k)
+            if k <= 0:
+                raise ValueError(f"dir_unique_k must be > 0, got {k}")
 
-            if defense_score_fn == 'norm_x_dir_uniqueness' and dir_unique_hist is None:
-                k = int(dir_unique_k)
-                if k <= 0:
-                    raise ValueError(f"dir_unique_k must be > 0, got {k}")
+            # Note: grad_dir_proj will be created lazily on first batch
+            dir_unique_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
+            dir_unique_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-                # Note: grad_dir_proj will be created lazily on first batch
-                dir_unique_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
-                dir_unique_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+        if defense_score_fn == 'rand_proj_var' and rand_proj_mat is None:
+            pass  # Will be created in dpsgd.py
 
-            if defense_score_fn == 'rand_proj_var' and rand_proj_mat is None:
-                pass  # Will be created in dpsgd.py
+        if defense_score_fn == 'maxmin_proj_ratio' and maxmin_proj_mat is None:
+            pass  # Will be created in dpsgd.py
 
-            if defense_score_fn == 'maxmin_proj_ratio' and maxmin_proj_mat is None:
-                pass  # Will be created in dpsgd.py
+        if defense_score_fn == 'alignment_with_rand_proj' and alignment_proj_mat is None:
+            pass  # Will be created in dpsgd.py
 
-            if defense_score_fn == 'alignment_with_rand_proj' and alignment_proj_mat is None:
-                pass  # Will be created in dpsgd.py
+        if defense_score_fn == 'grad_accel' and grad_accel_hist is None:
+            # Keep a 3-step history for discrete second difference.
+            # Note: grad_accel_proj will be created lazily on first batch
+            grad_accel_hist = np.full((len(dataset), 3, int(grad_accel_proj_dim)), np.nan, dtype=np.float32)
+            grad_accel_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'grad_accel' and grad_accel_hist is None:
-                # Keep a 3-step history for discrete second difference.
-                # Note: grad_accel_proj will be created lazily on first batch
-                grad_accel_hist = np.full((len(dataset), 3, int(grad_accel_proj_dim)), np.nan, dtype=np.float32)
-                grad_accel_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+        if defense_score_fn == 'grad_jerk' and grad_jerk_hist is None:
+            # Keep a 4-step history for discrete third difference.
+            # Note: grad_jerk_proj will be created lazily on first batch
+            grad_jerk_hist = np.full((len(dataset), 4, int(grad_jerk_proj_dim)), np.nan, dtype=np.float32)
+            grad_jerk_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'grad_jerk' and grad_jerk_hist is None:
-                # Keep a 4-step history for discrete third difference.
-                # Note: grad_jerk_proj will be created lazily on first batch
-                grad_jerk_hist = np.full((len(dataset), 4, int(grad_jerk_proj_dim)), np.nan, dtype=np.float32)
-                grad_jerk_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
+        if defense_score_fn == 'cos_update' and prev_params is None:
+            prev_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-            if defense_score_fn == 'cos_update' and prev_params is None:
-                prev_params = {n: p.detach().clone() for n, p in model.named_parameters()}
+        if defense_score_fn == 'cos_theta0' and theta0_params is None:
+            theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-            if defense_score_fn == 'cos_theta0' and theta0_params is None:
-                theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
+        if defense_score_fn == 'norm_x_trajectory_orth' and theta0_params is None:
+            theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
 
-            if defense_score_fn == 'norm_x_trajectory_orth' and theta0_params is None:
-                theta0_params = {n: p.detach().clone() for n, p in model.named_parameters()}
+        curr_params = {n: p.detach() for n, p in model.named_parameters()}
+        if prev_params is not None:
+            prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
+        else:
+            prev_delta_theta = None
 
-            curr_params = {n: p.detach() for n, p in model.named_parameters()}
-            if prev_params is not None:
-                prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
-            else:
-                prev_delta_theta = None
+        if theta0_params is not None:
+            theta_t_minus_theta0 = {n: curr_params[n] - theta0_params[n] for n in theta0_params.keys()}
+        else:
+            theta_t_minus_theta0 = None
 
-            if theta0_params is not None:
-                theta_t_minus_theta0 = {n: curr_params[n] - theta0_params[n] for n in theta0_params.keys()}
-            else:
-                theta_t_minus_theta0 = None
-
-            defense_cfg = DefenseConfig(
+        defense_cfg = DefenseConfig(
                 score_fn=defense_score_fn,
                 score_norm=defense_score_norm,
                 delta_theta=prev_delta_theta,
@@ -427,104 +433,108 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 alignment_proj_mat=alignment_proj_mat,
                 alignment_proj_k=int(alignment_proj_k),
                 grad_jerk_proj=grad_jerk_proj,
-                dir_unique_hist=dir_unique_hist,
-                dir_unique_hist_pos=dir_unique_hist_pos,
-                dir_unique_k=int(dir_unique_k),
-                grad_scatter_k=int(grad_scatter_k)
-            )
-            
-            # Clip & accumulate gradients (no world_size/rank needed)
-            curr_accumulated_gradients, scores = clip_and_accum_grads(
-                model,
-                curr_X, curr_y, optimizer, criterion,
-                max_grad_norm, 
-                drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
-                block_size=block_size,
-                scores=scores,
-                device=device,
-                global_indices=global_indices,
-                aug_mult=aug_mult, 
-                aug_fn=aug_fn,
-                world_size=1,  # Single GPU
-                rank=0,        # Single GPU
-                batch_size=batch_size,
-                is_gradient_space_canary=gradient_space_audit,
-                global_idx_to_grad=global_idx_to_grad,
-                canary_indices=np.array([len(dataset) - 1]) if gradient_space_audit else None,
-                defense_cfg=defense_cfg,
-                defense_apply_ascent=defense_apply_ascent
-            )
-            
-            # Update projection matrices if they were lazily created in dpsgd.py
-            if defense_cfg.grad_dir_proj is not None:
-                grad_dir_proj = defense_cfg.grad_dir_proj
-            if defense_cfg.rand_proj_mat is not None:
-                rand_proj_mat = defense_cfg.rand_proj_mat
-            if defense_cfg.maxmin_proj_mat is not None:
-                maxmin_proj_mat = defense_cfg.maxmin_proj_mat
-            if defense_cfg.alignment_proj_mat is not None:
-                alignment_proj_mat = defense_cfg.alignment_proj_mat
-            if defense_cfg.grad_accel_proj is not None:
-                grad_accel_proj = defense_cfg.grad_accel_proj
-            if defense_cfg.grad_jerk_proj is not None:
-                grad_jerk_proj = defense_cfg.grad_jerk_proj
-            
-            drop_mask[drop_mask == 1] = 2
+            dir_unique_hist=dir_unique_hist,
+            dir_unique_hist_pos=dir_unique_hist_pos,
+            dir_unique_k=int(dir_unique_k),
+            grad_scatter_k=int(grad_scatter_k)
+        )
+        
+        # Clip & accumulate gradients (no world_size/rank needed)
+        curr_accumulated_gradients, scores = clip_and_accum_grads(
+            model,
+            curr_X, curr_y, optimizer, criterion,
+            max_grad_norm, 
+            drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
+            block_size=block_size,
+            scores=scores,
+            device=device,
+            global_indices=global_indices,
+            aug_mult=aug_mult, 
+            aug_fn=aug_fn,
+            world_size=1,  # Single GPU
+            rank=0,        # Single GPU
+            batch_size=batch_size,
+            is_gradient_space_canary=gradient_space_audit,
+            global_idx_to_grad=global_idx_to_grad,
+            canary_indices=np.array([len(dataset) - 1]) if gradient_space_audit else None,
+            defense_cfg=defense_cfg,
+            defense_apply_ascent=defense_apply_ascent
+        )
+        
+        # Update projection matrices if they were lazily created in dpsgd.py
+        if defense_cfg.grad_dir_proj is not None:
+            grad_dir_proj = defense_cfg.grad_dir_proj
+        if defense_cfg.rand_proj_mat is not None:
+            rand_proj_mat = defense_cfg.rand_proj_mat
+        if defense_cfg.maxmin_proj_mat is not None:
+            maxmin_proj_mat = defense_cfg.maxmin_proj_mat
+        if defense_cfg.alignment_proj_mat is not None:
+            alignment_proj_mat = defense_cfg.alignment_proj_mat
+        if defense_cfg.grad_accel_proj is not None:
+            grad_accel_proj = defense_cfg.grad_accel_proj
+        if defense_cfg.grad_jerk_proj is not None:
+            grad_jerk_proj = defense_cfg.grad_jerk_proj
+        
+        drop_mask[drop_mask == 1] = 2
 
-            # Apply the accumulated gradients
-            with torch.no_grad():
-                for name, param in model.named_parameters():
+        # Apply the accumulated gradients
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                
+                if name not in curr_accumulated_gradients:
+                    print(f"Warning: Parameter {name} not found in accumulated gradients")
+                    continue
                     
-                    if name not in curr_accumulated_gradients:
-                        print(f"Warning: Parameter {name} not found in accumulated gradients")
-                        continue
-                        
-                    grad = curr_accumulated_gradients[name].to(device)
-                    
-                    # Add DP noise to the sum of clipped gradients (before averaging)
-                    if noise_multiplier > 0 and max_grad_norm is not None:
-                        noise_std = noise_multiplier * max_grad_norm
-                        noise = noise_std * torch.randn_like(grad)
-                        grad.add_(noise)
-                    
-                    # Average the noisy gradient sum
-                    batch_size_in = int(curr_X.shape[0])
-                    grad.div_(float(batch_size_in))
-                    
-                    if param.grad is None:
-                        param.grad = grad.clone()
-                    else:
-                        param.grad.copy_(grad)
-            
-            optimizer.step()
-            optimizer.zero_grad()
+                grad = curr_accumulated_gradients[name].to(device)
+                
+                # Add DP noise to the sum of clipped gradients (before averaging)
+                if noise_multiplier > 0 and max_grad_norm is not None:
+                    noise_std = noise_multiplier * max_grad_norm
+                    noise = noise_std * torch.randn_like(grad)
+                    grad.add_(noise)
+                
+                # Average the noisy gradient sum
+                batch_size_in = int(curr_X.shape[0])
+                grad.div_(float(batch_size_in))
+                
+                if param.grad is None:
+                    param.grad = grad.clone()
+                else:
+                    param.grad.copy_(grad)
+        
+        optimizer.step()
+        optimizer.zero_grad()
 
-            if defense_score_fn == 'cos_update' and prev_params is not None:
-                curr_params = {n: p.detach() for n, p in model.named_parameters()}
-                prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
-                prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
+        if defense_score_fn == 'cos_update' and prev_params is not None:
+            curr_params = {n: p.detach() for n, p in model.named_parameters()}
+            prev_delta_theta = {n: curr_params[n] - prev_params[n] for n in prev_params.keys()}
+            prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
         
         epoch_time = time.time() - epoch_start
         print(f" | Time: {epoch_time:.2f}s")
         
         # Defense operations - only apply filtering every defense_filter_every epochs
-        # GLOBAL FILTERING: Filter top k scores across entire dataset (not per-class)
         if defense and (epoch % defense_filter_every == 0):
             k = int(defense_k)
+            unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
-            active_indices = active_mask.nonzero(as_tuple=True)[0]
             
-            if len(active_indices) > 0:
-                active_scores = torch.tensor(scores[active_indices.cpu().numpy()], device=y.device)
-                _, topk_indices = torch.topk(active_scores, min(k, len(active_scores)))
+            for cls in unique_classes:
+                cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
+                if len(cls_indices) == 0:
+                    continue
+                    
+                cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
+                _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
                 
-                topk_global_indices = active_indices[topk_indices]
+                topk_global_indices = cls_indices[topk_indices]
                 
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
                 
                 if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
-                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set!", drop_mask[-1])
+                    canary_score = float(scores[X.shape[0] - 1])
+                    print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set! Score: {canary_score:.6f}")
                     canary_dropped_epoch = int(epoch)
         
             scores.fill(0)
@@ -695,9 +705,13 @@ def main():
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, clipbkd, badnets, or path to target sample)')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, clipbkd, badnets, or path to target sample)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
+    parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
+                        help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
+    parser.add_argument('--mislabeled_target_class', type=int, default=1,
+                        help='Target class for mislabeled canary (default: 1). The canary will be a true class 0 sample relabeled as this class.')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
@@ -725,7 +739,7 @@ def main():
     parser.add_argument('--defense_filter_every', type=int, default=1, help='apply defense filtering every N epochs (default: 1, i.e., every epoch)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
-    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0'], help='score function used for defense (grad_norm, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, inv_confidence, prediction_margin, pred_entropy, cos_update, or cos_theta0)')
+    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0', 'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'], help='score function used for defense (grad_norm, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, inv_confidence, prediction_margin, pred_entropy, cos_update, cos_theta0, loss, loss_momentum, loss_volatility, or grad_norm_x_loss)')
     parser.add_argument('--grad_norm_percentile_k', type=int, default=20, help='lookback window for grad_norm_percentile score (percentile of current grad norm within last k observed grad norms per sample)')
     parser.add_argument('--grad_dir_volatility_k', type=int, default=5, help='lookback window for grad_dir_volatility score (mean(1 - cos_sim(curr_dir, past_dir)) over last k directions)')
     parser.add_argument('--grad_dir_proj_dim', type=int, default=64, help='projection dimension for grad_dir_volatility direction embedding')
@@ -747,14 +761,14 @@ def main():
     parser.add_argument('--grad_scatter_k', type=int, default=5, help='lookback window for gradient_scatter score (number of recent gradients to track)')
 
     args = parser.parse_args()
+    if args.epsilon == -1:
+        args.epsilon = None
     if args.max_grad_norm == -1:
         args.max_grad_norm = None
 
     out_folder = f'{args.out}/{args.data_name}_{args.model_name}_eps{args.epsilon}'
     os.makedirs(out_folder, exist_ok=True)
-    os.makedirs(f'{out_folder}/models', exist_ok=True)
 
-    # Load data
     if rank == 0:
         print('Loading data')
     if args.n_df == 1:
@@ -776,14 +790,12 @@ def main():
             xavier_init_model(init_model)
         else:
             init_wideresnet(init_model)
-        # Check if fixed_init is empty or just whitespace (use random init)
-        if args.fixed_init.strip() == '':
+        if args.fixed_init == '':
             if args.model_name == 'cnn':
                 xavier_init_model(init_model)
             else:
                 init_wideresnet(init_model)
         else:
-            # Load from file path
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]
     
@@ -792,6 +804,9 @@ def main():
     np.random.seed(args.seed + rank)
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed_all(args.seed + rank)
+
+    # Initialize gradient_space_canary_target_class early (will be set later if gradient space canary is loaded)
+    gradient_space_canary_target_class = None
 
     # Craft target
     if rank == 0:
@@ -863,9 +878,25 @@ def main():
         # Craft target
         if args.target_type == 'gradient_space_canary':
             target_X = X_out[-1].unsqueeze(0)
-            target_y = y_out[-1].unsqueeze(0)
+            # Use the target class from the canary file if available, otherwise use the last sample's label
+            if gradient_space_canary_target_class is not None:
+                target_y = torch.tensor([gradient_space_canary_target_class], dtype=torch.long)
+            else:
+                target_y = y_out[-1].unsqueeze(0)
             if rank == 0:
                 print("Using gradient-space canary")
+        elif args.target_type == 'mislabeled':
+            # Find first sample with true label 0
+            class_0_indices = (y_out == 0).nonzero(as_tuple=True)[0]
+            if len(class_0_indices) == 0:
+                raise ValueError("No class 0 samples found in dataset for mislabeled canary")
+            # Use first class 0 sample deterministically
+            target_idx = class_0_indices[0].item()
+            target_X = X_out[target_idx].unsqueeze(0)
+            # Mislabel it as the specified target class
+            target_y = torch.tensor([args.mislabeled_target_class], dtype=torch.long)
+            if rank == 0:
+                print(f"Using mislabeled canary: true class 0 sample (index {target_idx}) relabeled as class {args.mislabeled_target_class}")
         elif args.target_type == 'blank':
             blank_img = torch.zeros_like(X_out[[0]])
             if args.blank_alpha > 0:
@@ -1004,18 +1035,40 @@ def main():
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(
         out_folder, args.fit_world_only, rank)
     
-    # Create crafted gradient if needed
+    # Create or load crafted gradient if needed
     crafted_grad = None
-    if args.target_type == 'gradient_space_canary' and args.canary_pt is None:
-        if rank == 0:
-            print('Creating crafted gradient')
-        temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
-        if args.model_name == 'cnn':
-            xavier_init_model(temp_model)
-        else:
-            init_wideresnet(temp_model)
-        crafted_grad = craft_gradient(model=temp_model, device=device)
-        del temp_model
+    if args.target_type == 'gradient_space_canary':
+        if args.gradient_space_canary_pt is not None:
+            if not os.path.exists(args.gradient_space_canary_pt):
+                raise FileNotFoundError(f"--gradient_space_canary_pt not found: {args.gradient_space_canary_pt}")
+            payload = torch.load(args.gradient_space_canary_pt, map_location='cpu')
+            if isinstance(payload, dict) and 'gradient' in payload:
+                crafted_grad = payload['gradient']
+                # Extract target class if available
+                if 'target_class' in payload:
+                    gradient_space_canary_target_class = payload['target_class']
+            else:
+                # Backward compatibility: direct gradient dictionary
+                crafted_grad = payload
+            
+            # Move crafted_grad to the correct device
+            if crafted_grad is not None:
+                crafted_grad = {name: g.to(device) for name, g in crafted_grad.items()}
+            
+            if rank == 0:
+                print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
+                if gradient_space_canary_target_class is not None:
+                    print(f"  Target class: {gradient_space_canary_target_class}")
+        elif args.canary_pt is None:
+            if rank == 0:
+                print('Creating crafted gradient')
+            temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
+            if args.model_name == 'cnn':
+                xavier_init_model(temp_model)
+            else:
+                init_wideresnet(temp_model)
+            crafted_grad = craft_gradient(model=temp_model, device=device)
+            del temp_model
 
     # Distribute repetitions across GPUs
     # TODO: fix distribute reps to account for reps completed
@@ -1056,8 +1109,8 @@ def main():
                 defense_k=int(args.defense_k),
                 defense_filter_every=int(args.defense_filter_every),
                 aug_mult=args.aug_mult,
-                gradient_space_audit=(args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in'),
-                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in') else None,
+                gradient_space_audit=(args.target_type == 'gradient_space_canary' and world == 'in'),
+                crafted_gradient=crafted_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
                 device=device,
                 generator=generator,
                 dl_generator=dl_generator,
@@ -1093,21 +1146,16 @@ def main():
                 
                 output = model(target_X_device)
                 
-                if args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in' and crafted_grad is not None:
-                    # Calculate parameter update
+                if args.target_type == 'gradient_space_canary' and crafted_grad is not None:
+                    # For gradient space canary, score by L∞ norm of parameter update
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
-                    
-                    # Calculate cosine similarity
-                    update = {n: final_params[n] - init_params[n] for n, p in final_params.items()}
-                    flat_crafted_grad = torch.cat([g.view(-1) for g in crafted_grad.values()])
+
+                    update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
-                    
-                    flat_crafted_grad = flat_crafted_grad / (flat_crafted_grad.norm() + 1e-10)
-                    flat_update = flat_update / (flat_update.norm() + 1e-10)
-                    
-                    cos_sim = (flat_crafted_grad * flat_update).sum().item()
-                    loss = cos_sim
+
+                    # Score by L∞ norm of parameter update
+                    loss = flat_update.abs().max().item()
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
@@ -1116,7 +1164,7 @@ def main():
                 losses[world].append(loss)
 
             if args.store_all_losses:
-                if args.target_type == 'gradient_space_canary' and args.canary_pt is None and world == 'in':
+                if args.target_type == 'gradient_space_canary':
                     # Not a per-sample loss-based audit; keep placeholder for alignment.
                     all_losses[world].append(np.array([], dtype=np.float32))
                 else:
@@ -1142,10 +1190,7 @@ def main():
 
     # Synchronize only in distributed mode
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        if torch.cuda.is_available():
-            dist.barrier(device_ids=[local_rank])
-        else:
-            dist.barrier()
+        dist.barrier()
 
     # Final audit - only rank 0 needs to combine results from all ranks
     if rank == 0:
@@ -1207,7 +1252,7 @@ def main():
                 )
         
         if not args.fit_world_only:
-            def audit_canary(losses, args):        
+            def audit_canary(losses, args):
                 # Convert to numpy arrays for indexing
                 losses_in = np.array(losses['in'])
                 losses_out = np.array(losses['out'])
@@ -1238,17 +1283,15 @@ def main():
                 max_t, emp_eps_loss = compute_eps_lower_from_mia(mia_scores, mia_labels, args.alpha, args.delta, 'GDP', n_procs=1)
 
                 if args.holdout_audit:
-                    emp_eps_loss = compute_eps_lower_from_mia_given_t(
-                        np.concatenate([holdout_losses['in'], holdout_losses['out']]), 
+                    emp_eps_loss = compute_eps_lower_from_mia_given_t(np.concatenate(
+                        [holdout_losses['in'], holdout_losses['out']]), 
                         np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])]), 
                         args.alpha, 
                         args.delta, 
                         max_t, 
                         'GDP')
-                    # Return holdout scores/labels for saving
-                    return emp_eps_loss, np.concatenate([holdout_losses['in'], holdout_losses['out']]), np.concatenate([np.ones_like(holdout_losses['in']), np.zeros_like(holdout_losses['out'])])
                 
-                return emp_eps_loss, np.concatenate([t_losses['in'], t_losses['out']]), np.concatenate([np.ones_like(t_losses['in']), np.zeros_like(t_losses['out'])])
+                return emp_eps_loss, mia_scores, mia_labels
             
             emp_eps_loss, mia_scores, mia_labels = audit_canary(combined_losses, args)
 
