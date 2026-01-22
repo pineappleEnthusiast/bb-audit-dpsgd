@@ -379,5 +379,8 @@ if __name__ == "__main__":
     print("Loading and plotting...")
     # plot_fdp_curves(r"results\test_mnist_fgsm\mnist_cnn_eps10.0\losses_in.npy", 
     #                r"results\test_mnist_fgsm\mnist_cnn_eps10.0\losses_out.npy")
-    plot_fdp_curves(r"local\results\no_defense\test_mnist_fgsm\mnist_cnn_eps10.0\losses_in.npy", 
-                r"local\results\no_defense\test_mnist_fgsm\mnist_cnn_eps10.0\losses_out.npy")
+    # plot_fdp_curves(r"local\results\no_defense\test_mnist_fgsm\mnist_cnn_eps10.0\losses_in.npy", 
+    #             r"local\results\no_defense\test_mnist_fgsm\mnist_cnn_eps10.0\losses_out.npy")
+
+    plot_fdp_curves("cifar10_fgsm_canary_no_defense/cifar10_cnn_eps10.0/losses_in.npy", 
+                "cifar10_fgsm_canary_no_defense/cifar10_cnn_eps10.0/losses_out.npy")
