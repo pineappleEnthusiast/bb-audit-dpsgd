@@ -706,13 +706,15 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     
-    X, y, _ = load_data(args.data_name, args.n_df, split='train')
-    X_test, y_test, _ = load_data(args.data_name, None, split='test')
-    
-    out_dim = len(torch.unique(y))
+    if rank == 0:
+        print('Loading data')
+    if args.n_df == 1:
+        X, y, out_dim = load_data(args.data_name, 1)
+    else:
+        X, y, out_dim = load_data(args.data_name, args.n_df - 1)
     
     if rank == 0:
-        print(f"Dataset: {args.data_name}, Train size: {len(X)}, Test size: {len(X_test)}, Out dim: {out_dim}")
+        print(f"Dataset: {args.data_name}, Train size: {len(X)}, Out dim: {out_dim}")
     
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(args.out, args.fit_world_only, rank)
     
@@ -746,7 +748,7 @@ def main():
                 X_world, y_world = X, y
                 X_target, y_target = torch.zeros(1, *X.shape[1:]), torch.tensor([0])
             else:
-                X_world, y_world = torch.cat([X[:-1], X_test[:1]]), torch.cat([y[:-1], y_test[:1]])
+                X_world, y_world = X[:-1], y[:-1]
                 X_target, y_target = X[-1:], y[-1:]
             
             model = train_model(
@@ -765,7 +767,6 @@ def main():
             
             if args.defense:
                 train_acc = test_model_hamp(model, X_world, y_world, batch_size=args.batch_size)
-                test_acc = test_model_hamp(model, X_test, y_test, batch_size=args.batch_size)
                 
                 losses_world = compute_per_sample_losses_hamp(
                     model, X_world, y_world, device,
@@ -775,7 +776,6 @@ def main():
                 )
             else:
                 train_acc = test_model(model, X_world, y_world, batch_size=args.batch_size)
-                test_acc = test_model(model, X_test, y_test, batch_size=args.batch_size)
                 
                 losses_world = compute_per_sample_losses(
                     model, X_world, y_world, device,
@@ -785,13 +785,12 @@ def main():
             outputs[world].append(train_acc)
             losses[world].append(losses_world)
             train_set_accs.append(train_acc)
-            test_set_accs.append(test_acc)
             
             if rank == 0:
-                print(f"  {world.upper()} - Train acc: {train_acc:.4f}, Test acc: {test_acc:.4f}")
+                print(f"  {world.upper()} - Train acc: {train_acc:.4f}")
     
     if rank == 0:
-        save_checkpoint(args.out, outputs, losses, all_losses, train_set_accs, test_set_accs, args.fit_world_only, rank)
+        save_checkpoint(args.out, outputs, losses, all_losses, train_set_accs, [], args.fit_world_only, rank)
         print(f"\nResults saved to {args.out}")
     
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
