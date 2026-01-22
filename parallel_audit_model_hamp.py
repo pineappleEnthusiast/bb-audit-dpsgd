@@ -858,33 +858,35 @@ def main():
     X_in = torch.vstack((X_out[:-1], target_X))
     y_in = torch.cat((y_out[:-1], target_y))
     
+    # Initialize run state (no resume support)
+    worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
+    
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(args.out, args.fit_world_only, rank)
     
     # Canary scoring: store scores for each model under each world
     scores = {'in': [], 'out': []}
     
-    reps_per_gpu = distribute_reps(args.n_reps, world_size)
+    # Distribute repetitions across GPUs
+    reps_per_gpu = distribute_reps(args.n_reps // 2, world_size)
+    my_reps = reps_per_gpu[rank]
     
-    for rep_idx in reps_per_gpu[rank]:
-        if rank == 0:
-            print(f"\n[Rep {rep_idx}] Training models...")
+    if rank == 0:
+        print(f"Rep distribution: {[len(r) for r in reps_per_gpu]}")
+    
+    for world in worlds:
+        curr_X, curr_y = (X_out, y_out) if world == 'out' else (X_in, y_in)
         
-        generator = torch.Generator()
-        generator.manual_seed(args.seed + rep_idx)
-        dl_generator = torch.Generator()
-        dl_generator.manual_seed(args.seed + rep_idx)
-        
-        for world in ['out', 'in']:
-            if args.fit_world_only is not None and world != args.fit_world_only:
-                continue
+        # Each rank trains its assigned models
+        for rep_idx, rep in enumerate(my_reps):
+            print(f"[Rank {rank}] Training rep {rep_idx+1}/{len(my_reps)} (global rep {rep}, world={world})")
             
-            if world == 'out':
-                X_world, y_world = X_out, y_out
-            else:
-                X_world, y_world = X_in, y_in
+            # Create unique generators for each repetition
+            # Use rep (global repetition number) to ensure uniqueness across all GPUs
+            generator = torch.Generator().manual_seed(args.seed + rep * 2)
+            dl_generator = torch.Generator().manual_seed(args.seed + rep * 2 + 1)
             
             model = train_model(
-                args.model_name, X_world, y_world, target_X, target_y,
+                args.model_name, curr_X, curr_y, target_X, target_y,
                 args.epsilon, args.delta, args.max_grad_norm,
                 args.n_epochs, args.lr, args.block_size, args.batch_size,
                 init_model=init_model, out_dim=out_dim,
