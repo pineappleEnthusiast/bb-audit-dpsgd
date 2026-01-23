@@ -732,7 +732,12 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                     # Replace the gradient for this canary
                     # Assume grad_dict has all the same keys as ps_grads for efficiency
                     for name, grad_tensor in grad_dict.items():
+                        # Debug: Check gradient before injection
+                        orig_grad_linf = ps_grads[name][local_idx].abs().max().item()
+                        injected_grad_linf = grad_tensor.abs().max().item()
                         ps_grads[name][local_idx] = grad_tensor
+                        if injected_grad_linf > 100:  # Only log if injecting a large gradient
+                            print(f"[DEBUG] Injected gradient at local_idx={local_idx}, param={name}: orig_Linf={orig_grad_linf:.2f}, injected_Linf={injected_grad_linf:.2f}")
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
