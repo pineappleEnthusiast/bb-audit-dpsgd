@@ -466,7 +466,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
             
-                drop_mask[drop_mask == 1] = 2
+            # Permanently drop samples marked for gradient ascent
+            drop_mask[drop_mask == 1] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
