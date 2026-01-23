@@ -433,11 +433,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             # Apply the accumulated gradients
             with torch.no_grad():
                 for name, param in model.named_parameters():
-                    if name not in curr_accumulated_gradients:
+                    try:
+                        grad = curr_accumulated_gradients[name].to(device)
+                    except KeyError:
                         print(f"Warning: Parameter {name} not found in accumulated gradients")
                         continue
-                        
-                    grad = curr_accumulated_gradients[name].to(device)
                     
                     # Add DP noise to the sum of clipped gradients (before averaging)
                     if noise_multiplier > 0 and max_grad_norm is not None:
