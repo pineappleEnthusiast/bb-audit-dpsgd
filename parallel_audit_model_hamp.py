@@ -905,6 +905,16 @@ def main():
             else:
                 target_X = blank_img
             target_y = torch.from_numpy(np.array([9]))
+        elif args.target_type == 'mislabeled':
+            # Use a real sample from the dataset with an incorrect label
+            # Take a sample from class 0 and label it as class 1
+            class_0_indices = (y_out == 0).nonzero(as_tuple=True)[0]
+            if len(class_0_indices) == 0:
+                raise ValueError("No class 0 samples found in dataset")
+            target_X = X_out[class_0_indices[0]].unsqueeze(0)
+            target_y = torch.from_numpy(np.array([1]))  # Mislabel as class 1
+            if rank == 0:
+                print(f"Mislabeled canary: Using class 0 sample labeled as class 1")
         elif args.target_type == 'sanity_check':
             target_X = X_out[-1].unsqueeze(0)
             target_y = y_out[-1].unsqueeze(0)
