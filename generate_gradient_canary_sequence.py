@@ -551,18 +551,22 @@ def main():
     # Create gradient sequence
     print(f"\nGenerating gradient sequence...")
     
-    # Epoch 0: positive norm
-    print(f"  Epoch 0: norm = {args.norm_value}")
-    grad_epoch_0 = create_1hot_gradient(dummy_model, hot_index, args.norm_value, device)
+    # Insert canary in the last 2 epochs
+    epoch_first = args.n_epochs - 2
+    epoch_second = args.n_epochs - 1
     
-    # Epoch 1: negated norm
-    print(f"  Epoch 1: norm = {-args.norm_value}")
-    grad_epoch_1 = create_1hot_gradient(dummy_model, hot_index, -args.norm_value, device)
+    # First epoch: positive norm
+    print(f"  Epoch {epoch_first}: norm = {args.norm_value}")
+    grad_epoch_first = create_1hot_gradient(dummy_model, hot_index, args.norm_value, device)
+    
+    # Second epoch: negated norm
+    print(f"  Epoch {epoch_second}: norm = {-args.norm_value}")
+    grad_epoch_second = create_1hot_gradient(dummy_model, hot_index, -args.norm_value, device)
     
     # Create the sequence dictionary (mapping epoch -> gradient dict)
     gradient_sequence = {
-        0: grad_epoch_0,
-        1: grad_epoch_1,
+        epoch_first: grad_epoch_first,
+        epoch_second: grad_epoch_second,
     }
     
     # Create payload with both gradients and metadata
@@ -582,8 +586,8 @@ def main():
     print(f"  Model: {args.model_name}")
     print(f"  Total parameters: {total_params}")
     print(f"  1-hot index: {hot_index}")
-    print(f"  Epoch 0 norm: {args.norm_value}")
-    print(f"  Epoch 1 norm: {-args.norm_value}")
+    print(f"  Epoch {epoch_first} norm: {args.norm_value}")
+    print(f"  Epoch {epoch_second} norm: {-args.norm_value}")
     print(f"  Output file: {args.output_file}")
     print(f"\nUsage with parallel_audit_model_seq_canary.py:")
     print(f"  python parallel_audit_model_seq_canary.py \\")
