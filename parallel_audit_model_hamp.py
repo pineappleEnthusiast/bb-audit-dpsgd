@@ -23,6 +23,7 @@ from opacus.grad_sample import GradSampleModule
 
 import torch.nn.functional as F
 import torchvision.transforms.v2 as v2
+from sklearn.linear_model import LogisticRegression
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
@@ -309,6 +310,88 @@ def rank_preserving_score_replacement(original_scores, random_scores):
         modified_scores[i, original_ranking] = sorted_random
     
     return modified_scores
+
+
+def generate_augmentations(x, num_augmentations=18):
+    """
+    Generate augmented versions of input sample for HAMP attack.
+    
+    Uses horizontal flips and pixel shifts (±4 pixels on each axis) to create
+    18 augmented versions as described in the HAMP paper.
+    
+    Args:
+        x: Input sample (C, H, W)
+        num_augmentations: Number of augmentations to generate (default: 18)
+    
+    Returns:
+        augmented_samples: Tensor of shape (num_augmentations, C, H, W)
+    """
+    augmentations = []
+    
+    # Define shift values: -4, -2, 0, 2, 4 for both x and y
+    shifts = [-4, -2, 0, 2, 4]
+    
+    # Generate augmentations: horizontal flip + shifts
+    for flip in [False, True]:
+        for shift_x in shifts[:3]:  # Use subset to get ~18 augmentations
+            for shift_y in shifts[:3]:
+                aug = x.clone()
+                
+                # Apply horizontal flip
+                if flip:
+                    aug = torch.flip(aug, dims=[2])  # Flip width dimension
+                
+                # Apply shift (translation)
+                if shift_x != 0 or shift_y != 0:
+                    aug = torch.roll(aug, shifts=(shift_y, shift_x), dims=(1, 2))
+                
+                augmentations.append(aug)
+                
+                if len(augmentations) >= num_augmentations:
+                    break
+            if len(augmentations) >= num_augmentations:
+                break
+        if len(augmentations) >= num_augmentations:
+            break
+    
+    return torch.stack(augmentations[:num_augmentations])
+
+
+def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device='cuda:0'):
+    """
+    Generate binary correctness vector for augmentation-based MIA.
+    
+    Args:
+        model: Trained model
+        x: Input sample (1, C, H, W)
+        y: True label (scalar or tensor)
+        num_augmentations: Number of augmentations to use
+        device: Device to run on
+    
+    Returns:
+        binary_vector: Binary vector of shape (num_augmentations,) with 1 for correct, 0 for incorrect
+    """
+    model.eval()
+    
+    # Generate augmented versions
+    x_aug = generate_augmentations(x.squeeze(0), num_augmentations)  # (num_aug, C, H, W)
+    x_aug = x_aug.to(device)
+    
+    # Get true label
+    if isinstance(y, torch.Tensor):
+        y_true = y.item()
+    else:
+        y_true = int(y)
+    
+    # Query model on all augmentations
+    binary_vector = []
+    with torch.no_grad():
+        for i in range(num_augmentations):
+            output = model(x_aug[i:i+1])
+            pred = torch.argmax(output, dim=1).item()
+            binary_vector.append(1 if pred == y_true else 0)
+    
+    return np.array(binary_vector, dtype=np.float32)
 
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
@@ -837,8 +920,8 @@ def main():
     
     outputs, losses, all_losses, train_set_accs, test_set_accs = init_run_state(args.out, args.fit_world_only, rank)
     
-    # Canary scoring: store scores for each model under each world
-    scores = {'in': [], 'out': []}
+    # Canary scoring: store binary correctness vectors for augmentation-based MIA
+    binary_vectors = {'in': [], 'out': []}
     
     # Distribute repetitions across GPUs
     reps_per_gpu = distribute_reps(args.n_reps // 2, world_size)
@@ -873,26 +956,12 @@ def main():
                 hamp_alpha_entropy=args.hamp_alpha_entropy
             )
             
-            # Score canary on this model
+            # Generate binary correctness vector using augmentation-based MIA
             model.eval()
-            with torch.no_grad():
-                X_target_device = target_X.to(device)
-                y_target_device = target_y.to(device)
-                output = model(X_target_device)
-                
-                # Apply testing-time defense if enabled
-                if args.defense:
-                    # Generate random samples and apply rank-preserving score replacement
-                    random_X = generate_random_samples(X_target_device.shape[0], X_target_device.shape[1:], device=device)
-                    random_output = model(random_X)
-                    output = rank_preserving_score_replacement(output, random_output)
-                    
-                    # Score using HAMP loss with modified output
-                    soft_labels = generate_soft_labels(y_target_device, out_dim, gamma=args.hamp_gamma, device=device)
-                    canary_score = -kl_divergence_with_entropy_regularization(output, soft_labels, alpha_entropy=args.hamp_alpha_entropy).cpu().item()
-                else:
-                    canary_score = -nn.CrossEntropyLoss()(output, y_target_device).cpu().item()
-                scores[world].append(canary_score)
+            binary_vector = generate_binary_correctness_vector(
+                model, target_X, target_y, num_augmentations=18, device=device
+            )
+            binary_vectors[world].append(binary_vector)
             
             if args.defense:
                 train_acc = test_model_hamp(model, curr_X, curr_y, batch_size=args.batch_size)
@@ -916,13 +985,13 @@ def main():
             train_set_accs.append(train_acc)
             
             if rank == 0:
-                print(f"  {world.upper()} - Train acc: {train_acc:.4f}, Canary score: {canary_score:.6f}")
+                print(f"  {world.upper()} - Train acc: {train_acc:.4f}, Binary vector sum: {binary_vector.sum():.1f}/18")
     
-    # Save per-rank scores
+    # Save per-rank binary vectors
     suffix = f'_rank{rank}' if rank > 0 else ''
     if not args.fit_world_only:
-        np.save(os.path.join(args.out, f'scores_in{suffix}.npy'), np.asarray(scores['in'], dtype=np.float32))
-        np.save(os.path.join(args.out, f'scores_out{suffix}.npy'), np.asarray(scores['out'], dtype=np.float32))
+        np.save(os.path.join(args.out, f'binary_vectors_in{suffix}.npy'), np.asarray(binary_vectors['in'], dtype=np.float32))
+        np.save(os.path.join(args.out, f'binary_vectors_out{suffix}.npy'), np.asarray(binary_vectors['out'], dtype=np.float32))
     
     if rank == 0:
         save_checkpoint(args.out, outputs, losses, all_losses, train_set_accs, [], args.fit_world_only, rank)
@@ -932,36 +1001,91 @@ def main():
     if world_size > 1:
         dist.barrier()
     
-    # Rank 0 combines results and computes empirical epsilon
+    # Rank 0 combines results and trains attack model
     if rank == 0:
         print("\n[Rank 0] Combining results from all ranks...")
-        combined_scores_in = []
-        combined_scores_out = []
+        combined_vectors_in = []
+        combined_vectors_out = []
         
         for r in range(world_size):
             suffix = f'_rank{r}' if r > 0 else ''
             try:
                 if not args.fit_world_only:
-                    combined_scores_in.extend(np.load(os.path.join(args.out, f'scores_in{suffix}.npy')))
-                    combined_scores_out.extend(np.load(os.path.join(args.out, f'scores_out{suffix}.npy')))
+                    combined_vectors_in.extend(np.load(os.path.join(args.out, f'binary_vectors_in{suffix}.npy')))
+                    combined_vectors_out.extend(np.load(os.path.join(args.out, f'binary_vectors_out{suffix}.npy')))
             except FileNotFoundError:
-                print(f"Warning: Could not find scores for rank {r}")
+                print(f"Warning: Could not find binary vectors for rank {r}")
         
-        # Save combined scores
+        # Save combined binary vectors
         if not args.fit_world_only:
-            scores_in_combined = np.asarray(combined_scores_in, dtype=np.float32)
-            scores_out_combined = np.asarray(combined_scores_out, dtype=np.float32)
+            vectors_in_combined = np.asarray(combined_vectors_in, dtype=np.float32)
+            vectors_out_combined = np.asarray(combined_vectors_out, dtype=np.float32)
             
-            np.save(os.path.join(args.out, 'scores_in.npy'), scores_in_combined)
-            np.save(os.path.join(args.out, 'scores_out.npy'), scores_out_combined)
+            np.save(os.path.join(args.out, 'binary_vectors_in.npy'), vectors_in_combined)
+            np.save(os.path.join(args.out, 'binary_vectors_out.npy'), vectors_out_combined)
             
-            # Compute empirical epsilon
-            emp_eps, threshold, mia_scores, mia_labels = _audit_from_scores(
-                scores_in_combined,
-                scores_out_combined,
+            # Train logistic regression attack model
+            print("\n[Rank 0] Training logistic regression attack model...")
+            X_attack = np.vstack([vectors_in_combined, vectors_out_combined])
+            y_attack = np.concatenate([
+                np.ones(len(vectors_in_combined)),
+                np.zeros(len(vectors_out_combined))
+            ])
+            
+            # Use holdout split if requested
+            if args.holdout_audit:
+                n = len(vectors_in_combined)
+                if n < 2:
+                    raise ValueError("holdout_audit requires at least 2 samples per world")
+                
+                np.random.seed(args.seed)
+                indices = np.random.permutation(n)
+                train_idx = indices[:n // 2]
+                test_idx = indices[n // 2:]
+                
+                # Training set: first half of in/out
+                X_train = np.vstack([
+                    vectors_in_combined[train_idx],
+                    vectors_out_combined[train_idx]
+                ])
+                y_train = np.concatenate([
+                    np.ones(len(train_idx)),
+                    np.zeros(len(train_idx))
+                ])
+                
+                # Test set: second half of in/out
+                X_test = np.vstack([
+                    vectors_in_combined[test_idx],
+                    vectors_out_combined[test_idx]
+                ])
+                y_test = np.concatenate([
+                    np.ones(len(test_idx)),
+                    np.zeros(len(test_idx))
+                ])
+                
+                # Train attack model on training set
+                attack_model = LogisticRegression(C=1.0, random_state=args.seed, max_iter=1000)
+                attack_model.fit(X_train, y_train)
+                
+                # Get membership scores on test set
+                mia_scores = attack_model.predict_proba(X_test)[:, 1]  # Probability of being in training set
+                mia_labels = y_test.astype(np.int64)
+            else:
+                # Train on all data (no holdout)
+                attack_model = LogisticRegression(C=1.0, random_state=args.seed, max_iter=1000)
+                attack_model.fit(X_attack, y_attack)
+                
+                # Get membership scores on all data
+                mia_scores = attack_model.predict_proba(X_attack)[:, 1]
+                mia_labels = y_attack.astype(np.int64)
+            
+            # Compute empirical epsilon using attack model scores
+            emp_eps, threshold, _, _ = _audit_from_scores(
+                mia_scores[mia_labels == 1],  # Scores for in-distribution
+                mia_scores[mia_labels == 0],  # Scores for out-of-distribution
                 float(args.alpha),
                 float(args.delta),
-                bool(args.holdout_audit),
+                False,  # Already did holdout split above if needed
                 seed=int(args.seed),
             )
             
