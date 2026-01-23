@@ -837,8 +837,13 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
     #     all_norms[y == k] = centered_k_last_layer_norms
 
     # Apply gradient ascent if enabled
-    if defense_apply_ascent:
+    if defense_apply_ascent and curr_gradient_ascent_indices.any():
+        # Log the norms of samples getting gradient ascent
         for name in ps_grads_clipped:
+            ascent_grads = ps_grads_clipped[name][curr_gradient_ascent_indices]
+            if len(ascent_grads) > 0:
+                grad_norms = ascent_grads.view(len(ascent_grads), -1).norm(p=float('inf'), dim=1)
+                print(f"[DEBUG] Applying gradient ascent to {len(ascent_grads)} samples in param {name}, Linf norms: {grad_norms.cpu().numpy()}")
             ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
 
 
@@ -889,7 +894,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     accum_grad = None
     n_samples = len(X)
     
-    for block_idx, i in enumerate(range(0, n_samples, block_size)):
+    for i in range(0, n_samples, block_size):
         # Get current block
         idx_block = slice(i, min(i + block_size, n_samples))
         curr_X = X[idx_block]
