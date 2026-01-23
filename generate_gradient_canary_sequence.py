@@ -391,7 +391,15 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
     update = {n: final_params[n] - init_params[n] for n in init_params}
     flat_update = torch.cat([p.view(-1) for p in update.values()])
     hot_index = torch.argmin(flat_update.abs()).item()
-    print(f"\nSelected 1-hot index: {hot_index} with update magnitude: {flat_update[hot_index].abs().item():.6f}")
+    
+    # Get the actual parameter value at the hot_index
+    flat_init = torch.cat([p.view(-1) for p in init_params.values()])
+    flat_final = torch.cat([p.view(-1) for p in final_params.values()])
+    
+    print(f"\nSelected 1-hot index: {hot_index}")
+    print(f"  Initial param value: {flat_init[hot_index].item():.6f}")
+    print(f"  Final param value: {flat_final[hot_index].item():.6f}")
+    print(f"  Update magnitude: {flat_update[hot_index].item():.6f} (abs: {flat_update[hot_index].abs().item():.6f})")
     
     return hot_index
 
