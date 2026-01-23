@@ -894,7 +894,7 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
     accum_grad = None
     n_samples = len(X)
     
-    for i in range(0, n_samples, block_size):
+    for block_idx, i in enumerate(range(0, n_samples, block_size)):
         # Get current block
         idx_block = slice(i, min(i + block_size, n_samples))
         curr_X = X[idx_block]
