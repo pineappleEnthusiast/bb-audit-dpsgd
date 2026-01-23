@@ -341,41 +341,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         model = GradSampleModule(model)
 
     model.train()
-    criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
-
-    # Set DP noise
-    if epsilon is not None:
-        sample_rate = batch_size / len(X)
-        noise_multiplier = get_noise_multiplier(
-            target_epsilon=epsilon,
-            target_delta=delta,
-            sample_rate=sample_rate,
-            epochs=n_epochs,
-            accountant='rdp'
-        )
-        if rank == 0:
-            print(f"DP config: eps={epsilon}, delta={delta}, sample_rate={sample_rate:.6f}, epochs={n_epochs}, noise_multiplier={noise_multiplier}")
-    else:
-        noise_multiplier = 0
-
-    block_size = min(block_size, batch_size)
-
-    if len(X.shape) > 2:
-        aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
-    else:
-        aug_fn = None
 
     # Create Dataset + DataLoader
     dataset = IndexedTensorDataset(X, y)
-    scores = np.zeros(len(dataset), dtype=np.float32)
-    drop_mask = np.zeros(len(dataset), dtype=np.int8)
-    
-    # Create global index to gradient mapping for gradient space canary
-    global_idx_to_grad = None
-    if gradient_space_audit and crafted_gradient is not None:
-        canary_idx = len(dataset) - 1
-        global_idx_to_grad = {canary_idx: crafted_gradient}
     
     sampler = torch.utils.data.RandomSampler(
         dataset,
@@ -398,77 +367,26 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     for epoch in range(n_epochs):
         epoch_start = time.time()
         optimizer.zero_grad()
-        print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
+        print(f"Epoch: {epoch}", end='', flush=True)
 
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
-            global_indices = global_indices.to(device, non_blocking=True)
 
-            # Use clip_and_accum_grads for per-sample gradient clipping
-            from utils.dpsgd import clip_and_accum_grads
+            # Forward pass
+            model.train()
+            logits = model(curr_X)
             
-            curr_accumulated_gradients, scores = clip_and_accum_grads(
-                model,
-                curr_X, curr_y, optimizer, criterion,
-                max_grad_norm, 
-                drop_mask=drop_mask[global_indices.cpu().numpy()] if drop_mask is not None else None,
-                block_size=block_size,
-                scores=scores,
-                device=device,
-                global_indices=global_indices,
-                aug_mult=aug_mult, 
-                aug_fn=aug_fn,
-                world_size=1,
-                rank=0,
-                batch_size=batch_size,
-                is_gradient_space_canary=gradient_space_audit,
-                global_idx_to_grad=global_idx_to_grad,
-                canary_indices=np.array([len(dataset) - 1]) if gradient_space_audit else None,
-                defense_cfg=None,
-                defense_apply_ascent=False
-            )
-            
-            drop_mask[drop_mask == 1] = 2
-
-            # Apply the accumulated gradients
-            with torch.no_grad():
-                for name, param in model.named_parameters():
-                    try:
-                        grad = curr_accumulated_gradients[name].to(device)
-                    except KeyError:
-                        print(f"Warning: Parameter {name} not found in accumulated gradients")
-                        continue
-                    
-                    # Add DP noise to the sum of clipped gradients (before averaging)
-                    if noise_multiplier > 0 and max_grad_norm is not None:
-                        noise_std = noise_multiplier * max_grad_norm
-                        noise = noise_std * torch.randn_like(grad)
-                        grad.add_(noise)
-                    
-                    # Average the noisy gradient sum
-                    batch_size_in = int(curr_X.shape[0])
-                    grad.div_(float(batch_size_in))
-                    
-                    if param.grad is None:
-                        param.grad = grad.clone()
-                    else:
-                        param.grad.copy_(grad)
-            
-            # HAMP Defense: Modify loss computation for soft labels
             if defense:
-                # Re-compute forward pass for HAMP loss
-                model.train()
-                logits = model(curr_X)
+                # HAMP Defense: Generate soft labels and use KL divergence loss
                 soft_labels = generate_soft_labels(curr_y, out_dim, gamma=hamp_gamma, device=device)
-                hamp_loss = kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy=hamp_alpha_entropy)
-                
-                # Recompute gradients with HAMP loss
-                optimizer.zero_grad()
-                hamp_loss.backward()
-                
-                # Re-clip and apply
-                if max_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                loss = kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy=hamp_alpha_entropy)
+            else:
+                # Standard cross-entropy loss
+                loss = F.cross_entropy(logits, curr_y)
+            
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
             
             optimizer.step()
             optimizer.zero_grad()
