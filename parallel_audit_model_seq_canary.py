@@ -466,8 +466,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
             
-            # Permanently drop samples marked for gradient ascent
-            drop_mask[drop_mask == 1] = 2
+                drop_mask[drop_mask == 1] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
@@ -500,6 +499,16 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 prev_params = {n: curr_params[n].clone() for n in prev_params.keys()}
         
         epoch_time = time.time() - epoch_start
+        
+        # Debug: Log parameter update at hot_index after each epoch
+        if gradient_space_audit and gradient_canary_hot_index is not None:
+            with torch.no_grad():
+                current_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
+                flat_current = torch.cat([p.view(-1) for p in current_params.values()])
+                flat_init = torch.cat([p.view(-1) for p in init_params.values()])
+                update_at_hot_index = flat_current[gradient_canary_hot_index].item() - flat_init[gradient_canary_hot_index].item()
+                print(f" | Update@{gradient_canary_hot_index}: {update_at_hot_index:.8f}", end='')
+        
         print(f" | Time: {epoch_time:.2f}s")
         
         if defense and (epoch % defense_filter_every == 0):
@@ -933,6 +942,7 @@ def main():
                         print(f"Loaded gradient space canary sequence from {args.gradient_space_canary_sequence_pt}")
                         print(f"  Epochs with canaries: {sorted(crafted_grad_sequence.keys())}")
                         print(f"  1-hot index: {gradient_canary_hot_index}")
+                        print(f"  [DEBUG] Will use hot_index scoring for audit")
                 else:
                     # Old format (backward compatibility)
                     crafted_grad_sequence = {}
@@ -947,6 +957,7 @@ def main():
                         print(f"Loaded gradient space canary sequence from {args.gradient_space_canary_sequence_pt}")
                         print(f"  Epochs with canaries: {sorted(crafted_grad_sequence.keys())}")
                         print(f"  WARNING: Old format without hot_index - will use L∞ norm scoring")
+                        print(f"  [DEBUG] Will use L∞ norm scoring for audit")
             else:
                 raise ValueError(f"Expected dict mapping epochs to gradients, got {type(payload)}")
         else:
