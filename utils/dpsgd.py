@@ -917,6 +917,10 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                 grad = global_idx_to_grad.get(global_idx)
                 if grad is not None:
                     canary_gradient_map[int(local_idx.item())] = grad
+                    # Log when we're about to inject a gradient
+                    first_param_name = list(grad.keys())[0]
+                    grad_linf = grad[first_param_name].abs().max().item()
+                    print(f"[DEBUG] Block {block_idx}: Will inject gradient for global_idx={global_idx}, local_idx={local_idx}, Linf={grad_linf:.2f}")
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, score_aux_block, dir_embeds_block = clip_and_accum_grads_block(
