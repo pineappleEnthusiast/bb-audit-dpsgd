@@ -908,6 +908,7 @@ def main():
         out_folder, args.fit_world_only, rank)
     
     crafted_grad_sequence = None
+    gradient_canary_hot_index = None
     if args.target_type == 'gradient_space_canary_sequence':
         if args.gradient_space_canary_sequence_pt is not None:
             if not os.path.exists(args.gradient_space_canary_sequence_pt):
@@ -915,17 +916,36 @@ def main():
             payload = torch.load(args.gradient_space_canary_sequence_pt, map_location='cpu')
             
             if isinstance(payload, dict):
-                crafted_grad_sequence = {}
-                for epoch_key, grad_dict in payload.items():
-                    epoch_int = int(epoch_key) if isinstance(epoch_key, str) else epoch_key
-                    if isinstance(grad_dict, dict):
-                        crafted_grad_sequence[epoch_int] = {name: g.to(device) for name, g in grad_dict.items()}
-                    else:
-                        raise ValueError(f"Expected gradient dict at epoch {epoch_int}, got {type(grad_dict)}")
-                
-                if rank == 0:
-                    print(f"Loaded gradient space canary sequence from {args.gradient_space_canary_sequence_pt}")
-                    print(f"  Epochs with canaries: {sorted(crafted_grad_sequence.keys())}")
+                # Check if this is the new format with metadata
+                if 'gradient_sequence' in payload and 'hot_index' in payload:
+                    # New format
+                    gradient_canary_hot_index = payload['hot_index']
+                    crafted_grad_sequence = {}
+                    for epoch, grad_dict in payload['gradient_sequence'].items():
+                        epoch_int = int(epoch)
+                        crafted_grad_sequence[epoch_int] = grad_dict
+                        
+                        if not isinstance(grad_dict, dict):
+                            raise ValueError(f"Expected gradient dict at epoch {epoch_int}, got {type(grad_dict)}")
+                    
+                    if rank == 0:
+                        print(f"Loaded gradient space canary sequence from {args.gradient_space_canary_sequence_pt}")
+                        print(f"  Epochs with canaries: {sorted(crafted_grad_sequence.keys())}")
+                        print(f"  1-hot index: {gradient_canary_hot_index}")
+                else:
+                    # Old format (backward compatibility)
+                    crafted_grad_sequence = {}
+                    for epoch, grad_dict in payload.items():
+                        epoch_int = int(epoch)
+                        crafted_grad_sequence[epoch_int] = grad_dict
+                        
+                        if not isinstance(grad_dict, dict):
+                            raise ValueError(f"Expected gradient dict at epoch {epoch_int}, got {type(grad_dict)}")
+                    
+                    if rank == 0:
+                        print(f"Loaded gradient space canary sequence from {args.gradient_space_canary_sequence_pt}")
+                        print(f"  Epochs with canaries: {sorted(crafted_grad_sequence.keys())}")
+                        print(f"  WARNING: Old format without hot_index - will use L∞ norm scoring")
             else:
                 raise ValueError(f"Expected dict mapping epochs to gradients, got {type(payload)}")
         else:
@@ -1015,9 +1035,16 @@ def main():
 
                     update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
-
-                    loss = flat_update.abs().max().item()
-                    print(f'[Rank {rank}] Rep {rep} ({world}): Gradient space canary audit score (L∞ norm of param update): {loss:.6f}')
+                    
+                    # Use hot_index scoring if available, otherwise fall back to L∞ norm
+                    if gradient_canary_hot_index is not None:
+                        flat_init = torch.cat([p.view(-1) for p in init_params.values()])
+                        flat_final = torch.cat([p.view(-1) for p in final_params.values()])
+                        loss = abs(flat_final[gradient_canary_hot_index].item() - flat_init[gradient_canary_hot_index].item())
+                        print(f'[Rank {rank}] Rep {rep} ({world}): Gradient space canary audit score (abs update at index {gradient_canary_hot_index}): {loss:.6f}')
+                    else:
+                        loss = flat_update.abs().max().item()
+                        print(f'[Rank {rank}] Rep {rep} ({world}): Gradient space canary audit score (L∞ norm of param update): {loss:.6f}')
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
