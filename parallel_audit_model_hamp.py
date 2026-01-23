@@ -709,8 +709,8 @@ def main():
                         help='Target class for gradient-space audit')
 
     parser.add_argument('--defense', action='store_true', help='use HAMP defense during training')
-    parser.add_argument('--hamp_gamma', type=float, default=0.6, help='HAMP soft label confidence (gamma parameter)')
-    parser.add_argument('--hamp_alpha_entropy', type=float, default=0.1, help='HAMP entropy regularization weight')
+    parser.add_argument('--hamp_gamma', type=float, default=0.95, help='HAMP soft label confidence (gamma parameter)')
+    parser.add_argument('--hamp_alpha_entropy', type=float, default=0.001, help='HAMP entropy regularization weight')
 
     args = parser.parse_args()
     
