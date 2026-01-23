@@ -386,11 +386,20 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
             scores.fill(0)
 
     # Compute parameter updates and find the direction of least update
+    # We want a direction where no natural samples update, so the canary is isolated
     final_params = model.state_dict()
     update = {n: final_params[n] - init_params[n] for n in init_params}
     flat_update = torch.cat([p.view(-1) for p in update.values()])
     hot_index = torch.argmin(flat_update.abs()).item()
-    print(f"\nSelected 1-hot index: {hot_index} with update magnitude: {flat_update[hot_index].abs().item():.6f}")
+    
+    # Get the actual parameter value at the hot_index
+    flat_init = torch.cat([p.view(-1) for p in init_params.values()])
+    flat_final = torch.cat([p.view(-1) for p in final_params.values()])
+    
+    print(f"\nSelected 1-hot index: {hot_index}")
+    print(f"  Initial param value: {flat_init[hot_index].item():.6f}")
+    print(f"  Final param value: {flat_final[hot_index].item():.6f}")
+    print(f"  Update magnitude: {flat_update[hot_index].item():.6f} (abs: {flat_update[hot_index].abs().item():.6f})")
     
     return hot_index
 
@@ -435,9 +444,9 @@ def create_1hot_gradient(model, hot_index, norm_value, device='cuda'):
                 flat_grad = grad.view(-1)
                 flat_grad[local_idx] = norm_value
                 grad = flat_grad.view(info['shape'])
-            crafted_grad[name] = grad.unsqueeze(0)
+            crafted_grad[name] = grad
         else:
-            crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
+            crafted_grad[name] = torch.zeros_like(param)
 
     return crafted_grad
 
