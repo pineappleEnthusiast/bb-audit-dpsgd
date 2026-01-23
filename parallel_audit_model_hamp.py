@@ -407,7 +407,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             # Use clip_and_accum_grads for per-sample gradient clipping
             from utils.dpsgd import clip_and_accum_grads
             
-            curr_accumulated_gradients = clip_and_accum_grads(
+            curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model,
                 curr_X, curr_y, optimizer, criterion,
                 max_grad_norm, 
