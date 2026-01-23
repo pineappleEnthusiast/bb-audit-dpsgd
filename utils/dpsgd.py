@@ -903,6 +903,14 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
         curr_gradient_ascent_indices = gradient_ascent_indices[idx_block]
         
+        # Debug: Log which samples are marked for gradient ascent
+        if curr_gradient_ascent_indices.any():
+            ascent_local_indices = torch.where(curr_gradient_ascent_indices)[0]
+            ascent_global_indices = curr_global_indices[ascent_local_indices]
+            print(f"[DEBUG] Block {block_idx}: {len(ascent_local_indices)} samples marked for gradient ascent")
+            print(f"  Local indices: {ascent_local_indices.cpu().numpy()}")
+            print(f"  Global indices: {ascent_global_indices.cpu().numpy()}")
+        
         # Skip if no samples in this block
         if len(curr_X) == 0:
             continue
