@@ -260,11 +260,11 @@ def kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy
     log_probs = F.log_softmax(logits, dim=1)
     kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1).mean()
     
-    # Entropy regularization: -sum(probs * log(probs))
-    entropy = -torch.sum(probs * log_probs, dim=1).mean()
+    # Entropy regularization: sum(probs * log(probs)) - we want to minimize this to maximize entropy
+    entropy = torch.sum(probs * log_probs, dim=1).mean()
     
-    # Combined loss: penalize low entropy (high confidence)
-    loss = kl_loss - alpha_entropy * entropy
+    # Combined loss: penalize low entropy (high confidence) by adding entropy term
+    loss = kl_loss + alpha_entropy * entropy
     
     return loss
 
@@ -522,10 +522,10 @@ def compute_per_sample_losses_hamp(model, X, y, device, batch_size=256, hamp_gam
             kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1)
             
             # Entropy per sample
-            entropy = -torch.sum(probs * log_probs, dim=1)
+            entropy = torch.sum(probs * log_probs, dim=1)
             
             # HAMP loss per sample
-            batch_losses = kl_loss - hamp_alpha_entropy * entropy
+            batch_losses = kl_loss + hamp_alpha_entropy * entropy
 
             per_sample_losses.append(batch_losses.detach().cpu())
 
