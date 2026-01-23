@@ -880,8 +880,14 @@ def main():
                 y_target_device = target_y.to(device)
                 output = model(X_target_device)
                 
-                # Score using the same loss as training
+                # Apply testing-time defense if enabled
                 if args.defense:
+                    # Generate random samples and apply rank-preserving score replacement
+                    random_X = generate_random_samples(X_target_device.shape[0], X_target_device.shape[1:], device=device)
+                    random_output = model(random_X)
+                    output = rank_preserving_score_replacement(output, random_output)
+                    
+                    # Score using HAMP loss with modified output
                     soft_labels = generate_soft_labels(y_target_device, out_dim, gamma=args.hamp_gamma, device=device)
                     canary_score = -kl_divergence_with_entropy_regularization(output, soft_labels, alpha_entropy=args.hamp_alpha_entropy).cpu().item()
                 else:
