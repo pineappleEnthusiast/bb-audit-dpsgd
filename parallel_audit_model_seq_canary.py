@@ -309,6 +309,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         epoch_start = time.time()
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
+        
+        # Debug: Check canary's drop_mask status
+        if gradient_space_audit and epoch > 0:
+            canary_idx = len(dataset) - 1
+            print(f" [DEBUG] drop_mask[{canary_idx}] = {drop_mask[canary_idx]}", end='', flush=True)
 
         if gradient_space_audit and crafted_gradient_sequence is not None:
             if epoch in crafted_gradient_sequence:
@@ -461,7 +466,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
             
-            drop_mask[drop_mask == 1] = 2
+                drop_mask[drop_mask == 1] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
@@ -517,6 +522,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
                     canary_score = float(scores[X.shape[0] - 1])
                     print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set! Score: {canary_score:.6f}")
+                    print(f"[DEBUG] All dropped indices this epoch: {dropped_indices}")
+                    print(f"[DEBUG] drop_mask[59999] = {drop_mask[59999]}")
                     canary_dropped_epoch = int(epoch)
         
             scores.fill(0)
