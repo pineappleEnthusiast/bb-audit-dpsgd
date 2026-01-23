@@ -880,10 +880,13 @@ def main():
                 y_target_device = target_y.to(device)
                 output = model(X_target_device)
                 
-                # Score using the same loss as training
+                # Score using KL divergence (for HAMP) or cross-entropy (standard)
                 if args.defense:
                     soft_labels = generate_soft_labels(y_target_device, out_dim, gamma=args.hamp_gamma, device=device)
-                    canary_score = -kl_divergence_with_entropy_regularization(output, soft_labels, alpha_entropy=args.hamp_alpha_entropy).cpu().item()
+                    # Use only KL divergence for scoring (not entropy regularization)
+                    log_probs = F.log_softmax(output, dim=1)
+                    kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1).mean()
+                    canary_score = -kl_loss.cpu().item()
                 else:
                     canary_score = -nn.CrossEntropyLoss()(output, y_target_device).cpu().item()
                 scores[world].append(canary_score)
