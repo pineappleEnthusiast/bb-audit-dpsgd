@@ -915,19 +915,19 @@ def main():
                 scores[world].append(canary_score)
             
             if args.defense:
-                train_acc = test_model_hamp(model, X_world, y_world, batch_size=args.batch_size)
+                train_acc = test_model_hamp(model, curr_X, curr_y, batch_size=args.batch_size)
                 
                 losses_world = compute_per_sample_losses_hamp(
-                    model, X_world, y_world, device,
+                    model, curr_X, curr_y, device,
                     batch_size=args.batch_size,
                     hamp_gamma=args.hamp_gamma,
                     hamp_alpha_entropy=args.hamp_alpha_entropy
                 )
             else:
-                train_acc = test_model(model, X_world, y_world, batch_size=args.batch_size)
+                train_acc = test_model(model, curr_X, curr_y, batch_size=args.batch_size)
                 
                 losses_world = compute_per_sample_losses(
-                    model, X_world, y_world, device,
+                    model, curr_X, curr_y, device,
                     batch_size=args.batch_size
                 )
             
