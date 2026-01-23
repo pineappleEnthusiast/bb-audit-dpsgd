@@ -732,12 +732,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                     # Replace the gradient for this canary
                     # Assume grad_dict has all the same keys as ps_grads for efficiency
                     for name, grad_tensor in grad_dict.items():
-                        # Debug: Check gradient before injection
-                        orig_grad_linf = ps_grads[name][local_idx].abs().max().item()
-                        injected_grad_linf = grad_tensor.abs().max().item()
                         ps_grads[name][local_idx] = grad_tensor
-                        if injected_grad_linf > 100:  # Only log if injecting a large gradient
-                            print(f"[DEBUG] Injected gradient at local_idx={local_idx}, param={name}: orig_Linf={orig_grad_linf:.2f}, injected_Linf={injected_grad_linf:.2f}")
             
     if max_grad_norm is not None:
         ps_grads_clipped, _ = clip_per_sample_grads(ps_grads, max_grad_norm)
@@ -838,12 +833,7 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
 
     # Apply gradient ascent if enabled
     if defense_apply_ascent and curr_gradient_ascent_indices.any():
-        # Log the norms of samples getting gradient ascent
         for name in ps_grads_clipped:
-            ascent_grads = ps_grads_clipped[name][curr_gradient_ascent_indices]
-            if len(ascent_grads) > 0:
-                grad_norms = ascent_grads.view(len(ascent_grads), -1).norm(p=float('inf'), dim=1)
-                print(f"[DEBUG] Applying gradient ascent to {len(ascent_grads)} samples in param {name}, Linf norms: {grad_norms.cpu().numpy()}")
             ps_grads_clipped[name][curr_gradient_ascent_indices] *= -1
 
 
@@ -903,14 +893,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
         curr_gradient_ascent_indices = gradient_ascent_indices[idx_block]
         
-        # Debug: Log which samples are marked for gradient ascent
-        if curr_gradient_ascent_indices.any():
-            ascent_local_indices = torch.where(curr_gradient_ascent_indices)[0]
-            ascent_global_indices = curr_global_indices[ascent_local_indices]
-            print(f"[DEBUG] Block {block_idx}: {len(ascent_local_indices)} samples marked for gradient ascent")
-            print(f"  Local indices: {ascent_local_indices.cpu().numpy()}")
-            print(f"  Global indices: {ascent_global_indices.cpu().numpy()}")
-        
         # Skip if no samples in this block
         if len(curr_X) == 0:
             continue
@@ -930,10 +912,6 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
                 grad = global_idx_to_grad.get(global_idx)
                 if grad is not None:
                     canary_gradient_map[int(local_idx.item())] = grad
-                    # Log when we're about to inject a gradient
-                    first_param_name = list(grad.keys())[0]
-                    grad_linf = grad[first_param_name].abs().max().item()
-                    print(f"[DEBUG] Block {block_idx}: Will inject gradient for global_idx={global_idx}, local_idx={local_idx}, Linf={grad_linf:.2f}")
         
         # Compute per-block gradients with clipping
         accum_grad_block, _, score_aux_block, dir_embeds_block = clip_and_accum_grads_block(
