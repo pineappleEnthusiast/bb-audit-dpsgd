@@ -385,12 +385,12 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
             
             scores.fill(0)
 
-    # Compute parameter updates and find the direction of least update
-    # We want a direction where no natural samples update, so the canary is isolated
+    # Compute parameter updates and find the direction of most update
+    # We want a direction where the model is learning the most, so the canary impact is measurable
     final_params = model.state_dict()
     update = {n: final_params[n] - init_params[n] for n in init_params}
     flat_update = torch.cat([p.view(-1) for p in update.values()])
-    hot_index = torch.argmin(flat_update.abs()).item()
+    hot_index = torch.argmax(flat_update.abs()).item()
     
     # Get the actual parameter value at the hot_index
     flat_init = torch.cat([p.view(-1) for p in init_params.values()])
