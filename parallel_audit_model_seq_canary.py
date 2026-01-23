@@ -1010,6 +1010,7 @@ def main():
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
 
                     loss = flat_update.abs().max().item()
+                    print(f'[Rank {rank}] Rep {rep} ({world}): Gradient space canary audit score (L∞ norm of param update): {loss:.6f}')
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
