@@ -256,6 +256,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         aug_fn = AugmentationFunction(X.shape[2], X.shape[1])
     else:
         aug_fn = None
+    
+    # Save initial parameters for tracking updates at hot_index
+    if gradient_space_audit and gradient_canary_hot_index is not None:
+        init_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
 
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset), dtype=np.float32)
