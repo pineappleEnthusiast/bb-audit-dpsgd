@@ -260,10 +260,10 @@ def kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy
     log_probs = F.log_softmax(logits, dim=1)
     kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1).mean()
     
-    # Entropy regularization: sum(probs * log(probs)) - we want to minimize this to maximize entropy
-    entropy = torch.sum(probs * log_probs, dim=1).mean()
+    # Entropy regularization: -sum(probs * log(probs)) - subtract to maximize entropy
+    entropy = -torch.sum(probs * log_probs, dim=1).mean()
     
-    # Combined loss: penalize low entropy (high confidence) by adding entropy term
+    # Combined loss: KL divergence + entropy regularization to encourage uncertainty
     loss = kl_loss + alpha_entropy * entropy
     
     return loss
@@ -522,7 +522,7 @@ def compute_per_sample_losses_hamp(model, X, y, device, batch_size=256, hamp_gam
             kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1)
             
             # Entropy per sample
-            entropy = torch.sum(probs * log_probs, dim=1)
+            entropy = -torch.sum(probs * log_probs, dim=1)
             
             # HAMP loss per sample
             batch_losses = kl_loss + hamp_alpha_entropy * entropy
@@ -880,13 +880,10 @@ def main():
                 y_target_device = target_y.to(device)
                 output = model(X_target_device)
                 
-                # Score using KL divergence (for HAMP) or cross-entropy (standard)
+                # Score using the same loss as training
                 if args.defense:
                     soft_labels = generate_soft_labels(y_target_device, out_dim, gamma=args.hamp_gamma, device=device)
-                    # Use only KL divergence for scoring (not entropy regularization)
-                    log_probs = F.log_softmax(output, dim=1)
-                    kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1).mean()
-                    canary_score = -kl_loss.cpu().item()
+                    canary_score = -kl_divergence_with_entropy_regularization(output, soft_labels, alpha_entropy=args.hamp_alpha_entropy).cpu().item()
                 else:
                     canary_score = -nn.CrossEntropyLoss()(output, y_target_device).cpu().item()
                 scores[world].append(canary_score)
