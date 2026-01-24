@@ -812,7 +812,9 @@ def main():
         progress_interval = max(1, total_pairs // 10)  # Every 10% or at least 1
         
         with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            print(f"Submitting {len(k_pairs)} tasks to worker pool (this may take a moment)...")
             futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
+            print(f"Tasks submitted, waiting for results...")
             search_start_time = time.time()
             for future in as_completed(futures):
                 result = future.result()
