@@ -3,8 +3,8 @@
 #SBATCH -o mnist_grad_cancel.o%j
 #SBATCH -e mnist_grad_cancel.e%j
 #SBATCH -p gpu-a100-small
-#SBATCH -N 3
-#SBATCH -n 3
+#SBATCH -N 1
+#SBATCH -n 1
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 20:00:00
 #SBATCH -A CCR23048
