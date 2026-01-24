@@ -3,30 +3,67 @@ import os
 import argparse
 from multiprocessing import Pool, cpu_count
 from utils.audit import compute_eps_lower_from_mia
+from utils.audit import compute_eps_lower_from_mia_given_t
 
 def compute_epsilon_for_sample(args):
-    """Compute empirical epsilon for a single sample."""
+    """Compute empirical epsilon for a single sample using 75% holdout."""
     sample_idx, losses_in_col, losses_out_col, alpha, delta = args
     
     # Negate losses (higher loss = more likely to be member)
     scores_in = -losses_in_col
     scores_out = -losses_out_col
     
-    # Combine scores and labels
-    mia_scores = np.concatenate([scores_in, scores_out])
-    mia_labels = np.concatenate([
-        np.ones(len(scores_in)),
-        np.zeros(len(scores_out))
+    # Implement 75% holdout split
+    n = len(scores_in)
+    holdout_fraction = 0.75
+    
+    # Use fixed seed for reproducibility across samples
+    np.random.seed(sample_idx)
+    indices = np.random.permutation(n)
+    
+    threshold_size = int(n * (1 - holdout_fraction))
+    threshold_indices = indices[:threshold_size]
+    holdout_indices = indices[threshold_size:]
+    
+    # Split for threshold finding
+    t_scores_in = scores_in[threshold_indices]
+    t_scores_out = scores_out[threshold_indices]
+    
+    # Combine threshold split
+    t_scores = np.concatenate([t_scores_in, t_scores_out])
+    t_labels = np.concatenate([
+        np.ones(len(t_scores_in)),
+        np.zeros(len(t_scores_out))
     ])
     
-    # Compute empirical epsilon
-    _, emp_eps = compute_eps_lower_from_mia(
-        mia_scores[mia_labels == 1],  # in-distribution scores
-        mia_scores[mia_labels == 0],  # out-of-distribution scores
+    # Find optimal threshold on threshold split
+    max_t, _ = compute_eps_lower_from_mia(
+        t_scores,
+        t_labels,
         alpha,
         delta,
-        use_holdout=False,
-        seed=0
+        method='GDP',
+        n_procs=1
+    )
+    
+    # Split for holdout evaluation
+    h_scores_in = scores_in[holdout_indices]
+    h_scores_out = scores_out[holdout_indices]
+    
+    # Evaluate on holdout split
+    h_scores = np.concatenate([h_scores_in, h_scores_out])
+    h_labels = np.concatenate([
+        np.ones(len(h_scores_in)),
+        np.zeros(len(h_scores_out))
+    ])
+    
+    emp_eps = compute_eps_lower_from_mia_given_t(
+        h_scores,
+        h_labels,
+        alpha,
+        delta,
+        max_t,
+        method='GDP'
     )
     
     return sample_idx, emp_eps
