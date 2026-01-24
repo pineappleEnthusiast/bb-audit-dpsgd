@@ -7,7 +7,7 @@
 #SBATCH -n 3
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 20:00:00
-#SBATCH -A ASC25081
+#SBATCH -A CCR23048
 
 module load cuda/12.4
 
