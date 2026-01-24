@@ -852,38 +852,33 @@ def main():
         print(f"W = {W}")
         print(f"Empirical epsilon (alpha={args.alpha}, delta={args.delta}) = {emp_eps:.6f}")
         
-        # Print scores for correctly vs incorrectly guessed samples
+        # Print individual scores for each guessed sample
         guessed_mask = (T != 0)
         if n_guessed > 0:
+            print(f"\n=== Individual Scores for Guessed Samples ===")
+            guessed_indices = np.where(guessed_mask)[0]
+            for idx in guessed_indices:
+                guess = "IN" if T[idx] == 1 else "OUT"
+                truth = "IN" if S[idx] == 1 else "OUT"
+                is_correct = (T[idx] * S[idx]) > 0
+                correctness = "CORRECT" if is_correct else "WRONG"
+                print(f"Canary {idx}: score={scores[idx]:.6f}, guessed={guess}, truth={truth}, {correctness}")
+            
+            # Also print summary statistics
             correct_mask = guessed_mask & ((T * S) > 0)
             incorrect_mask = guessed_mask & ((T * S) <= 0)
-            
             scores_correct = scores[correct_mask]
             scores_incorrect = scores[incorrect_mask]
             
-            print(f"\n=== Score Analysis for Guessed Samples ===")
+            print(f"\nSummary:")
             if len(scores_correct) > 0:
-                print(f"Correctly guessed samples (n={len(scores_correct)}):")
-                print(f"  Mean score: {np.mean(scores_correct):.6f}")
-                print(f"  Std score:  {np.std(scores_correct):.6f}")
-                print(f"  Min score:  {np.min(scores_correct):.6f}")
-                print(f"  Max score:  {np.max(scores_correct):.6f}")
-            else:
-                print(f"Correctly guessed samples: n=0")
-            
+                print(f"  Correct guesses (n={len(scores_correct)}): mean={np.mean(scores_correct):.6f}, std={np.std(scores_correct):.6f}")
             if len(scores_incorrect) > 0:
-                print(f"Incorrectly guessed samples (n={len(scores_incorrect)}):")
-                print(f"  Mean score: {np.mean(scores_incorrect):.6f}")
-                print(f"  Std score:  {np.std(scores_incorrect):.6f}")
-                print(f"  Min score:  {np.min(scores_incorrect):.6f}")
-                print(f"  Max score:  {np.max(scores_incorrect):.6f}")
-            else:
-                print(f"Incorrectly guessed samples: n=0")
-            
+                print(f"  Incorrect guesses (n={len(scores_incorrect)}): mean={np.mean(scores_incorrect):.6f}, std={np.std(scores_incorrect):.6f}")
             if len(scores_correct) > 0 and len(scores_incorrect) > 0:
                 score_diff = np.mean(scores_correct) - np.mean(scores_incorrect)
-                print(f"Mean score difference (correct - incorrect): {score_diff:.6f}")
-            print(f"==========================================\n")
+                print(f"  Mean score difference (correct - incorrect): {score_diff:.6f}")
+            print(f"=============================================\n")
     else:
         print("No valid (k_plus, k_minus) pairs found. Using default values.")
         T = compute_T_from_scores(scores, int(args.k_plus), int(args.k_minus))
