@@ -540,11 +540,11 @@ def main():
         print("Failed to compute gradient norm - exiting")
         return
 
-    # Compute the parameter updates to find the index with largest change
+    # Compute the parameter updates to find the index with smallest change
     final_params = final_model.state_dict()
     update = {n: final_params[n] - init_params[n] for n in init_params}
     flat_update = torch.cat([p.view(-1) for p in update.values()])
-    hot_index = torch.argmax(flat_update.abs()).item()
+    hot_index = torch.argmin(flat_update.abs()).item()
     print(f"Selected 1-hot index: {hot_index} with update magnitude: {flat_update[hot_index].abs().item():.6f}")
 
     # Create canary gradient with the computed norm at the selected index
@@ -561,12 +561,14 @@ def main():
     # Save to file in dictionary format to match other canary formats
     canary_dict = {
         'gradient': canary_gradient,
-        'target_class': 0  # Default target class for gradient space canary
+        'target_class': 0,  # Default target class for gradient space canary
+        'hot_index': hot_index  # Save the 1-hot index for scoring during audit
     }
     torch.save(canary_dict, args.output)
     print(f"Saved gradient canary to {args.output}")
     print(f"Dictionary keys: {canary_dict.keys()}")
     print(f"Target class in dict: {canary_dict['target_class']}")
+    print(f"Hot index in dict: {canary_dict['hot_index']}")
     
     # Verify the norm
     flat_grad = torch.cat([g.view(-1) for g in canary_gradient.values()])

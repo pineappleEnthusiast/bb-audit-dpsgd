@@ -801,8 +801,9 @@ def main():
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed_all(args.seed + rank)
 
-    # Initialize gradient_space_canary_target_class early (will be set later if gradient space canary is loaded)
+    # Initialize gradient_space_canary_target_class and hot_index early (will be set later if gradient space canary is loaded)
     gradient_space_canary_target_class = None
+    gradient_space_canary_hot_index = None
 
     # Craft target
     if rank == 0:
@@ -1043,6 +1044,9 @@ def main():
                 # Extract target class if available
                 if 'target_class' in payload:
                     gradient_space_canary_target_class = payload['target_class']
+                # Extract hot_index if available
+                if 'hot_index' in payload:
+                    gradient_space_canary_hot_index = payload['hot_index']
             else:
                 # Backward compatibility: direct gradient dictionary
                 crafted_grad = payload
@@ -1055,6 +1059,8 @@ def main():
                 print(f"Loaded gradient space canary from {args.gradient_space_canary_pt}")
                 if gradient_space_canary_target_class is not None:
                     print(f"  Target class: {gradient_space_canary_target_class}")
+                if gradient_space_canary_hot_index is not None:
+                    print(f"  Hot index: {gradient_space_canary_hot_index}")
         elif args.canary_pt is None:
             if rank == 0:
                 print('Creating crafted gradient')
@@ -1143,15 +1149,18 @@ def main():
                 output = model(target_X_device)
                 
                 if args.target_type == 'gradient_space_canary' and crafted_grad is not None:
-                    # For gradient space canary, score by L∞ norm of parameter update
+                    # For gradient space canary, score by parameter diff at the 1-hot index
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
                     init_params = {n: p.detach().clone().to(device) for n, p in init_model.named_parameters()}
 
                     update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
 
-                    # Score by L∞ norm of parameter update
-                    loss = flat_update.abs().max().item()
+                    # Score by parameter diff at the 1-hot index (if available), otherwise use L∞ norm
+                    if gradient_space_canary_hot_index is not None:
+                        loss = flat_update[gradient_space_canary_hot_index].abs().item()
+                    else:
+                        loss = flat_update.abs().max().item()
                 else:
                     loss = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                 
