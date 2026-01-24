@@ -804,7 +804,7 @@ def main():
 
         print(f"Searching for max empirical epsilon across {len(k_pairs)} (k_plus, k_minus) pairs...")
         
-        # Use ProcessPoolExecutor for parallel computation
+        # Use ProcessPoolExecutor for parallel computation with batched submission
         best_eps = -float('inf')
         best_result = None
         total_pairs = len(k_pairs)
@@ -812,33 +812,39 @@ def main():
         progress_interval = max(1, total_pairs // 10)  # Every 10% or at least 1
         
         with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            print(f"Submitting {len(k_pairs)} tasks to worker pool (this may take a moment)...")
-            futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
-            print(f"Tasks submitted, waiting for results...")
+            # Submit tasks in batches to avoid memory/serialization issues
+            batch_size = 1000
             search_start_time = time.time()
-            for future in as_completed(futures):
-                result = future.result()
-                processed += 1
-                if processed % progress_interval == 0 or processed == total_pairs:
-                    print(f"Progress: {processed}/{total_pairs} pairs processed")
-                if result is not None:
-                    k_plus, k_minus, T_local, W_local, eps, n_guessed, n_correct = result
-                    if eps is not None and eps > best_eps:
-                        best_eps = eps
-                        best_result = result
-                        print(f"[NEW BEST] k_plus={k_plus}, k_minus={k_minus}, "
-                              f"guessed={n_guessed}/{m}, correct={n_correct}/{n_guessed}, "
-                              f"W={W_local}, emp_eps={eps:.6f}")
-                
-                # Check for timeout after processing each result
-                if time.time() - search_start_time > 1200:  # 20 minutes
-                    print("Timeout reached after 20 minutes, using best result found so far")
-                    break
             
-            # Cancel any remaining futures to free up resources
-            for future in futures:
-                if not future.done():
-                    future.cancel()
+            for batch_start in range(0, len(k_pairs), batch_size):
+                batch_end = min(batch_start + batch_size, len(k_pairs))
+                batch = k_pairs[batch_start:batch_end]
+                
+                print(f"Submitting batch {batch_start//batch_size + 1}/{(len(k_pairs) + batch_size - 1)//batch_size} ({len(batch)} tasks)...")
+                futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in batch]
+                
+                # Process results from this batch
+                for future in as_completed(futures):
+                    result = future.result()
+                    processed += 1
+                    if processed % progress_interval == 0 or processed == total_pairs:
+                        print(f"Progress: {processed}/{total_pairs} pairs processed")
+                    if result is not None:
+                        k_plus, k_minus, T_local, W_local, eps, n_guessed, n_correct = result
+                        if eps is not None and eps > best_eps:
+                            best_eps = eps
+                            best_result = result
+                            print(f"[NEW BEST] k_plus={k_plus}, k_minus={k_minus}, "
+                                  f"guessed={n_guessed}/{m}, correct={n_correct}/{n_guessed}, "
+                                  f"W={W_local}, emp_eps={eps:.6f}")
+                    
+                    # Check for timeout after processing each result
+                    if time.time() - search_start_time > 1200:  # 20 minutes
+                        print("Timeout reached after 20 minutes, using best result found so far")
+                        break
+                
+                if time.time() - search_start_time > 1200:
+                    break
 
     if best_result is not None:
         if len(best_result) == 8:
