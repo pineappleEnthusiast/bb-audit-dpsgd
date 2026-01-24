@@ -357,7 +357,7 @@ def generate_augmentations(x, num_augmentations=18):
     return torch.stack(augmentations[:num_augmentations])
 
 
-def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device='cuda:0'):
+def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device='cuda:0', defense=False):
     """
     Generate binary correctness vector for augmentation-based MIA.
     
@@ -367,6 +367,7 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
         y: True label (scalar or tensor)
         num_augmentations: Number of augmentations to use
         device: Device to run on
+        defense: If True, apply HAMP rank-preserving score replacement defense
     
     Returns:
         binary_vector: Binary vector of shape (num_augmentations,) with 1 for correct, 0 for incorrect
@@ -387,8 +388,22 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     binary_vector = []
     with torch.no_grad():
         for i in range(num_augmentations):
-            output = model(x_aug[i:i+1])
-            pred = torch.argmax(output, dim=1).item()
+            if defense:
+                # Apply HAMP testing-time defense: rank-preserving score replacement
+                original_logits = model(x_aug[i:i+1])
+                
+                # Generate random sample and get its logits
+                random_X = generate_random_samples(1, x_aug.shape[1:], device=device)
+                random_logits = model(random_X)
+                
+                # Apply rank-preserving score replacement
+                modified_logits = rank_preserving_score_replacement(original_logits, random_logits)
+                pred = torch.argmax(modified_logits, dim=1).item()
+            else:
+                # No defense: use raw model output
+                output = model(x_aug[i:i+1])
+                pred = torch.argmax(output, dim=1).item()
+            
             binary_vector.append(1 if pred == y_true else 0)
     
     return np.array(binary_vector, dtype=np.float32)
@@ -969,7 +984,7 @@ def main():
             # Generate binary correctness vector using augmentation-based MIA
             model.eval()
             binary_vector = generate_binary_correctness_vector(
-                model, target_X, target_y, num_augmentations=18, device=device
+                model, target_X, target_y, num_augmentations=18, device=device, defense=args.defense
             )
             binary_vectors[world].append(binary_vector)
             
