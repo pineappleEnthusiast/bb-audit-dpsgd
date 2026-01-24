@@ -36,7 +36,7 @@ def compute_epsilon_for_sample(args):
         np.zeros(len(t_scores_out))
     ])
     
-    # Find optimal threshold on threshold split
+    # Find optimal threshold on threshold split (n_procs=1 to avoid nested multiprocessing)
     max_t, _ = compute_eps_lower_from_mia(
         t_scores,
         t_labels,
@@ -94,19 +94,21 @@ def main():
     all_losses_in = all_losses_in.astype(np.float32)
     all_losses_out = all_losses_out.astype(np.float32)
     
-    # Prepare arguments for parallel processing
+    # Prepare arguments for processing
     print(f"\nComputing empirical epsilon for {n_samples} samples...")
     task_args = [
         (i, all_losses_in[:, i], all_losses_out[:, i], args.alpha, args.delta)
         for i in range(n_samples)
     ]
     
-    # Parallel computation
-    n_procs = args.n_procs or cpu_count()
-    print(f"Using {n_procs} processes")
+    # Sequential processing with progress bar (compute_eps_lower_from_mia uses internal parallelization)
+    from tqdm import tqdm
+    print(f"Processing sequentially (compute_eps_lower_from_mia uses {args.n_procs or 32} internal processes)")
     
-    with Pool(n_procs) as pool:
-        results = pool.map(compute_epsilon_for_sample, task_args)
+    results = []
+    for task_arg in tqdm(task_args, desc="Samples"):
+        result = compute_epsilon_for_sample(task_arg)
+        results.append(result)
     
     # Sort by sample index and extract epsilons
     results.sort(key=lambda x: x[0])
