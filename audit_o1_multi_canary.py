@@ -851,6 +851,39 @@ def main():
         print(f"Correct = {n_correct}/{n_guessed}")
         print(f"W = {W}")
         print(f"Empirical epsilon (alpha={args.alpha}, delta={args.delta}) = {emp_eps:.6f}")
+        
+        # Print scores for correctly vs incorrectly guessed samples
+        guessed_mask = (T != 0)
+        if n_guessed > 0:
+            correct_mask = guessed_mask & ((T * S) > 0)
+            incorrect_mask = guessed_mask & ((T * S) <= 0)
+            
+            scores_correct = scores[correct_mask]
+            scores_incorrect = scores[incorrect_mask]
+            
+            print(f"\n=== Score Analysis for Guessed Samples ===")
+            if len(scores_correct) > 0:
+                print(f"Correctly guessed samples (n={len(scores_correct)}):")
+                print(f"  Mean score: {np.mean(scores_correct):.6f}")
+                print(f"  Std score:  {np.std(scores_correct):.6f}")
+                print(f"  Min score:  {np.min(scores_correct):.6f}")
+                print(f"  Max score:  {np.max(scores_correct):.6f}")
+            else:
+                print(f"Correctly guessed samples: n=0")
+            
+            if len(scores_incorrect) > 0:
+                print(f"Incorrectly guessed samples (n={len(scores_incorrect)}):")
+                print(f"  Mean score: {np.mean(scores_incorrect):.6f}")
+                print(f"  Std score:  {np.std(scores_incorrect):.6f}")
+                print(f"  Min score:  {np.min(scores_incorrect):.6f}")
+                print(f"  Max score:  {np.max(scores_incorrect):.6f}")
+            else:
+                print(f"Incorrectly guessed samples: n=0")
+            
+            if len(scores_correct) > 0 and len(scores_incorrect) > 0:
+                score_diff = np.mean(scores_correct) - np.mean(scores_incorrect)
+                print(f"Mean score difference (correct - incorrect): {score_diff:.6f}")
+            print(f"==========================================\n")
     else:
         print("No valid (k_plus, k_minus) pairs found. Using default values.")
         T = compute_T_from_scores(scores, int(args.k_plus), int(args.k_minus))
@@ -900,13 +933,11 @@ def main():
         if correct_in_count > 0:
             dropped_in = int(np.sum(canary_drop_epochs_aligned[correct_in_mask] >= 0))
             not_dropped_in = correct_in_count - dropped_in
-            print(f"\nCorrectly guessed 'in' canaries: {correct_in_count} total, {not_dropped_in} not filtered, {dropped_in} filtered out")
+            print(f"\nCorrectly guessed 'in' canaries: {correct_in_count} total, {not_dropped_in} stayed in training, {dropped_in} filtered out by defense")
         else:
             print("\nNo correctly guessed 'in' canaries")
         if correct_out_count > 0:
-            dropped_out = int(np.sum(canary_drop_epochs_aligned[correct_out_mask] >= 0))
-            not_dropped_out = correct_out_count - dropped_out
-            print(f"Correctly guessed 'out' canaries: {correct_out_count} total, {not_dropped_out} not filtered, {dropped_out} filtered out")
+            print(f"Correctly guessed 'out' canaries: {correct_out_count} total (these were never in training set)")
         else:
             print("No correctly guessed 'out' canaries")
     else:
