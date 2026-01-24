@@ -525,8 +525,9 @@ def main():
     parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
     parser.add_argument('--n_canaries', type=int, default=5, help='number of canaries (auditing examples)')
 
-    parser.add_argument('--k_plus', type=int, default=1, help='number of top-scoring canaries guessed IN')
-    parser.add_argument('--k_minus', type=int, default=1, help='number of bottom-scoring canaries guessed OUT')
+    parser.add_argument('--k_plus', type=int, default=None, help='number of top-scoring canaries guessed IN (if None, search for best)')
+    parser.add_argument('--k_minus', type=int, default=None, help='number of bottom-scoring canaries guessed OUT (if None, search for best)')
+    parser.add_argument('--skip_search', action='store_true', help='if set, use provided k_plus/k_minus without grid search')
 
     parser.add_argument('--target_type', type=str, default='blank', help='canary type (blank, mislabeled, or pt)')
     parser.add_argument('--canary_pt', type=str, default=None,
@@ -778,50 +779,64 @@ def main():
             dtype=np.float64,
         )
 
-    # Generate all valid (k_plus, k_minus) pairs where k_plus + k_minus <= m
-    # Filter out trivial cases and prioritize balanced pairs
-    k_pairs = [(kp, km) for kp in range(0, m + 1) 
-              for km in range(0, m + 1 - kp) 
-              if (kp > 0 or km > 0)]
-    
-    # Shuffle for broader exploration of search space
-    np.random.shuffle(k_pairs)
-
-    print(f"Searching for max empirical epsilon across {len(k_pairs)} (k_plus, k_minus) pairs...")
-    
-    # Use ProcessPoolExecutor for parallel computation
-    best_eps = -float('inf')
-    best_result = None
-    total_pairs = len(k_pairs)
-    processed = 0
-    progress_interval = max(1, total_pairs // 10)  # Every 10% or at least 1
-    
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
-        search_start_time = time.time()
-        for future in as_completed(futures):
-            result = future.result()
-            processed += 1
-            if processed % progress_interval == 0 or processed == total_pairs:
-                print(f"Progress: {processed}/{total_pairs} pairs processed")
-            if result is not None:
-                k_plus, k_minus, T_local, W_local, eps, n_guessed, n_correct = result
-                if eps is not None and eps > best_eps:
-                    best_eps = eps
-                    best_result = result
-                    print(f"[NEW BEST] k_plus={k_plus}, k_minus={k_minus}, "
-                          f"guessed={n_guessed}/{m}, correct={n_correct}/{n_guessed}, "
-                          f"W={W_local}, emp_eps={eps:.6f}")
-            
-            # Check for timeout after processing each result
-            if time.time() - search_start_time > 1200:  # 20 minutes
-                print("Timeout reached after 20 minutes, using best result found so far")
-                break
+    # Check if user provided specific k_plus and k_minus values
+    if args.skip_search and args.k_plus is not None and args.k_minus is not None:
+        # Use provided k_plus and k_minus without grid search
+        print(f"Using provided k_plus={args.k_plus}, k_minus={args.k_minus} (skipping grid search)")
+        result = _compute_empirical_eps((args.k_plus, args.k_minus), scores, S, m, args, precomputed_noises)
+        if result is not None:
+            k_plus, k_minus, T, W, emp_eps, n_guessed, n_correct = result
+            best_result = result
+            print(f"k_plus={k_plus}, k_minus={k_minus}, "
+                  f"guessed={n_guessed}/{m}, correct={n_correct}/{n_guessed}, "
+                  f"W={W}, emp_eps={emp_eps:.6f}")
+        else:
+            best_result = None
+    else:
+        # Generate all valid (k_plus, k_minus) pairs where k_plus + k_minus <= m
+        # Filter out trivial cases and prioritize balanced pairs
+        k_pairs = [(kp, km) for kp in range(0, m + 1) 
+                  for km in range(0, m + 1 - kp) 
+                  if (kp > 0 or km > 0)]
         
-        # Cancel any remaining futures to free up resources
-        for future in futures:
-            if not future.done():
-                future.cancel()
+        # Shuffle for broader exploration of search space
+        np.random.shuffle(k_pairs)
+
+        print(f"Searching for max empirical epsilon across {len(k_pairs)} (k_plus, k_minus) pairs...")
+        
+        # Use ProcessPoolExecutor for parallel computation
+        best_eps = -float('inf')
+        best_result = None
+        total_pairs = len(k_pairs)
+        processed = 0
+        progress_interval = max(1, total_pairs // 10)  # Every 10% or at least 1
+        
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            futures = [executor.submit(_compute_empirical_eps, pair, scores, S, m, args, precomputed_noises) for pair in k_pairs]
+            search_start_time = time.time()
+            for future in as_completed(futures):
+                result = future.result()
+                processed += 1
+                if processed % progress_interval == 0 or processed == total_pairs:
+                    print(f"Progress: {processed}/{total_pairs} pairs processed")
+                if result is not None:
+                    k_plus, k_minus, T_local, W_local, eps, n_guessed, n_correct = result
+                    if eps is not None and eps > best_eps:
+                        best_eps = eps
+                        best_result = result
+                        print(f"[NEW BEST] k_plus={k_plus}, k_minus={k_minus}, "
+                              f"guessed={n_guessed}/{m}, correct={n_correct}/{n_guessed}, "
+                              f"W={W_local}, emp_eps={eps:.6f}")
+                
+                # Check for timeout after processing each result
+                if time.time() - search_start_time > 1200:  # 20 minutes
+                    print("Timeout reached after 20 minutes, using best result found so far")
+                    break
+            
+            # Cancel any remaining futures to free up resources
+            for future in futures:
+                if not future.done():
+                    future.cancel()
 
     if best_result is not None:
         if len(best_result) == 8:
