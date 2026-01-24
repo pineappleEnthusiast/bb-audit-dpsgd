@@ -247,20 +247,14 @@ def _make_canaries_mislabeled(
     rng = np.random.default_rng(seed)
 
     y_mis = []
-    used_labels = set()
 
     for true_label in y_true.tolist():
         # Get available labels (all except true label)
-        available = [i for i in range(out_dim) if i != true_label and i not in used_labels]
-
-        # If no unused labels available, allow reuse
-        if not available:
-            available = [i for i in range(out_dim) if i != true_label]
+        available = [i for i in range(out_dim) if i != true_label]
 
         # Randomly choose from available labels
         chosen = rng.choice(available)
         y_mis.append(chosen)
-        used_labels.add(chosen)
 
     y_mis = torch.tensor(y_mis, dtype=torch.long)
     return Xc, y_mis
@@ -271,6 +265,7 @@ def _score_canaries(model: torch.nn.Module, X_canary: torch.Tensor, y_canary: to
     with torch.no_grad():
         dev = next(model.parameters()).device
         logits = model(X_canary.to(dev))
+        # Use negative cross-entropy: higher score = lower loss = better prediction
         per = -F.cross_entropy(logits, y_canary.to(dev), reduction='none')
         return per.detach().cpu().numpy().astype(np.float32)
 
