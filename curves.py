@@ -58,40 +58,81 @@ def convex_lower_bound(x: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.nda
     else:
         return np.array([]), np.array([])
 
-def compute_empirical_fdp_curve(losses_D: np.ndarray, losses_D_prime: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def compute_empirical_fdp_curve(losses_D: np.ndarray, losses_D_prime: np.ndarray, 
+                                use_holdout: bool = True, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute empirical f-DP curve from loss data.
     
     Parameters:
     losses_D: Losses on canary for models trained on D
     losses_D_prime: Losses on canary for models trained on D'
+    use_holdout: If True, use 25% for threshold selection, 75% for evaluation
+    seed: Random seed for holdout split
     
     Returns:
     alpha_values: False positive rates
     beta_values: 1 - True positive rates
     """
-    all_losses = np.concatenate([losses_D, losses_D_prime])
+    n_D = len(losses_D)
+    n_D_prime = len(losses_D_prime)
     
-    # True labels: 0 for D, 1 for D'
+    if use_holdout:
+        # Use 25% for threshold selection, 75% for evaluation (holdout)
+        np.random.seed(seed)
+        
+        # Split D models
+        indices_D = np.random.permutation(n_D)
+        n_threshold_D = n_D // 4  # 25% for threshold
+        threshold_indices_D = indices_D[:n_threshold_D]
+        holdout_indices_D = indices_D[n_threshold_D:]
+        
+        # Split D' models
+        indices_D_prime = np.random.permutation(n_D_prime)
+        n_threshold_D_prime = n_D_prime // 4  # 25% for threshold
+        threshold_indices_D_prime = indices_D_prime[:n_threshold_D_prime]
+        holdout_indices_D_prime = indices_D_prime[n_threshold_D_prime:]
+        
+        # Get threshold selection data (25%)
+        threshold_losses_D = losses_D[threshold_indices_D]
+        threshold_losses_D_prime = losses_D_prime[threshold_indices_D_prime]
+        
+        # Get holdout evaluation data (75%)
+        holdout_losses_D = losses_D[holdout_indices_D]
+        holdout_losses_D_prime = losses_D_prime[holdout_indices_D_prime]
+        
+        # Use threshold data to select thresholds
+        all_threshold_losses = np.concatenate([threshold_losses_D, threshold_losses_D_prime])
+        thresholds = np.unique(all_threshold_losses)
+        
+        # print(f"Holdout split: {len(threshold_losses_D)} + {len(threshold_losses_D_prime)} = {len(all_threshold_losses)} models for threshold selection")
+        # print(f"               {len(holdout_losses_D)} + {len(holdout_losses_D_prime)} = {len(holdout_losses_D) + len(holdout_losses_D_prime)} models for evaluation")
+    else:
+        # No holdout - use all data
+        holdout_losses_D = losses_D
+        holdout_losses_D_prime = losses_D_prime
+        all_losses = np.concatenate([losses_D, losses_D_prime])
+        thresholds = np.unique(all_losses)
+        # print(f"No holdout: using all {len(losses_D)} + {len(losses_D_prime)} = {len(all_losses)} models")
+    
+    # Evaluate on holdout data (or all data if no holdout)
+    all_holdout_losses = np.concatenate([holdout_losses_D, holdout_losses_D_prime])
     true_labels = np.concatenate([
-        np.zeros(len(losses_D)),      # Models trained on D
-        np.ones(len(losses_D_prime))  # Models trained on D'
+        np.zeros(len(holdout_losses_D)),      # Models trained on D
+        np.ones(len(holdout_losses_D_prime))  # Models trained on D'
     ])
     
-    # Use all unique loss values as thresholds
-    thresholds = np.unique(all_losses)
     alpha_values = []
     beta_values = []
     
     for threshold in thresholds:
         # Predict D' (label 1) if loss <= threshold
-        predictions = (all_losses <= threshold).astype(int)
+        predictions = (all_holdout_losses <= threshold).astype(int)
         
         tp = np.sum((predictions == 1) & (true_labels == 1))  # True positives
         fp = np.sum((predictions == 1) & (true_labels == 0))  # False positives
         
-        total_D = len(losses_D)        # Total models trained on D
-        total_D_prime = len(losses_D_prime)  # Total models trained on D'
+        total_D = len(holdout_losses_D)        # Total models trained on D
+        total_D_prime = len(holdout_losses_D_prime)  # Total models trained on D'
         
         alpha = fp / total_D if total_D > 0 else 0        # False positive rate
         tpr = tp / total_D_prime if total_D_prime > 0 else 0  # True positive rate
@@ -181,9 +222,9 @@ def compute_epsilon_delta_curve(alpha: np.ndarray, beta: np.ndarray,
     epsilon_values = []
     valid_delta_values = []
     
-    print("Computing ε(δ) curve using binary search...")
-    print(f"Target: δ range [{delta_min:.1e}, {delta_max:.1e}]")
-    print(f"Epsilon search range: [0, {epsilon_search_max}]")
+    # print("Computing ε(δ) curve using binary search...")
+    # print(f"Target: δ range [{delta_min:.1e}, {delta_max:.1e}]")
+    # print(f"Epsilon search range: [0, {epsilon_search_max}]")
     
     for i, target_delta in enumerate(delta_targets):
         # Binary search for minimum epsilon such that δ(ε) ≤ target_delta
@@ -217,18 +258,18 @@ def compute_epsilon_delta_curve(alpha: np.ndarray, beta: np.ndarray,
             valid_delta_values.append(target_delta)
         
         # Progress indicator
-        if (i + 1) % 100 == 0:
-            if found_valid:
-                print(f"  Progress: {i+1}/{len(delta_targets)}, δ = {target_delta:.2e}, ε(δ) = {best_eps:.2f}")
-            else:
-                print(f"  Progress: {i+1}/{len(delta_targets)}, δ = {target_delta:.2e}, ε(δ) not found")
+        # if (i + 1) % 100 == 0:
+        #     if found_valid:
+        #         print(f"  Progress: {i+1}/{len(delta_targets)}, δ = {target_delta:.2e}, ε(δ) = {best_eps:.2f}")
+        #     else:
+        #         print(f"  Progress: {i+1}/{len(delta_targets)}, δ = {target_delta:.2e}, ε(δ) not found")
     
     epsilon_array = np.array(epsilon_values)
     delta_array = np.array(valid_delta_values)
     
-    print(f"\nSuccessfully computed {len(epsilon_array)} points")
-    if len(epsilon_array) > 0:
-        print(f"ε(δ) range: [{np.min(epsilon_array):.2f}, {np.max(epsilon_array):.2f}]")
+    # print(f"\nSuccessfully computed {len(epsilon_array)} points")
+    # if len(epsilon_array) > 0:
+    #     print(f"ε(δ) range: [{np.min(epsilon_array):.2f}, {np.max(epsilon_array):.2f}]")
     
     return epsilon_array, delta_array
 
@@ -244,22 +285,73 @@ def plot_fdp_curves(losses_in_file: str = "losses_in.npy",
     plot_epsilon_delta: Whether to plot ε(δ) curve
     """
     try:
-        # Load data
-        print(f"Loading {losses_in_file}...")
-        losses_D = np.load(losses_in_file)
-        print(f"Loaded {len(losses_D)} loss values for models trained on D")
+        # import os
+        # import glob
         
-        print(f"Loading {losses_out_file}...")
+        # Load data - check if this is a multi-rank experiment
+        # base_dir = os.path.dirname(losses_in_file)
+        # base_name_in = os.path.basename(losses_in_file)
+        # base_name_out = os.path.basename(losses_out_file)
+        
+        # Look for rank files
+        # rank_pattern_in = base_name_in.replace('.npy', '_rank*.npy')
+        # rank_pattern_out = base_name_out.replace('.npy', '_rank*.npy')
+        
+        # rank_files_in = sorted(glob.glob(os.path.join(base_dir, rank_pattern_in)))
+        # rank_files_out = sorted(glob.glob(os.path.join(base_dir, rank_pattern_out)))
+        
+        # if rank_files_in and rank_files_out:
+        #     # Multi-rank experiment - aggregate all rank files
+        #     print(f"Loading {losses_in_file}...")
+        #     print(f"Found {len(rank_files_in)} rank files for losses_in")
+        #     print(f"Found {len(rank_files_out)} rank files for losses_out")
+        #     
+        #     all_losses_in = []
+        #     all_losses_out = []
+        #     
+        #     # Load all rank files
+        #     for rank_file in rank_files_in:
+        #         losses = np.load(rank_file)
+        #         all_losses_in.extend(losses)
+        #     
+        #     for rank_file in rank_files_out:
+        #         losses = np.load(rank_file)
+        #         all_losses_out.extend(losses)
+        #     
+        #     # Convert to arrays
+        #     all_losses_in = np.array(all_losses_in)
+        #     all_losses_out = np.array(all_losses_out)
+        #     
+        #     # Use minimum length to balance the dataset
+        #     min_len = min(len(all_losses_in), len(all_losses_out))
+        #     losses_D = all_losses_in[:min_len]
+        #     losses_D_prime = all_losses_out[:min_len]
+        #     
+        #     print(f"Aggregated {len(all_losses_in)} losses_in and {len(all_losses_out)} losses_out")
+        #     print(f"Using min length: {min_len} for both")
+        # else:
+        #     # Single file experiment
+        #     # print(f"Loading {losses_in_file}...")
+        #     losses_D = np.load(losses_in_file)
+        #     # print(f"Loaded {len(losses_D)} loss values for models trained on D")
+        #     
+        #     # print(f"Loading {losses_out_file}...")
+        #     losses_D_prime = np.load(losses_out_file)
+        #     # print(f"Loaded {len(losses_D_prime)} loss values for models trained on D'")
+        
+        # Simple direct loading
+        losses_D = np.load(losses_in_file)
         losses_D_prime = np.load(losses_out_file)
-        print(f"Loaded {len(losses_D_prime)} loss values for models trained on D'")
+            # print(f"Loaded {len(losses_D_prime)} loss values for models trained on D'")
         
         # Basic statistics
-        print(f"\n=== Data Statistics ===")
-        print(f"losses_in (D): mean={np.mean(losses_D):.4f}, std={np.std(losses_D):.4f}")
-        print(f"losses_out (D'): mean={np.mean(losses_D_prime):.4f}, std={np.std(losses_D_prime):.4f}")
+        # print(f"\n=== Data Statistics ===")
+        # print(f"losses_in (D): mean={np.mean(losses_D):.4f}, std={np.std(losses_D):.4f}")
+        # print(f"losses_out (D'): mean={np.mean(losses_D_prime):.4f}, std={np.std(losses_D_prime):.4f}")
         
         # Compute empirical f-DP curve
-        alpha_emp, beta_emp = compute_empirical_fdp_curve(losses_D, losses_D_prime)
+        # alpha_emp, beta_emp = compute_empirical_fdp_curve(losses_D, losses_D_prime, use_holdout=True, seed=0)
+        alpha_emp, beta_emp = compute_empirical_fdp_curve(losses_D, losses_D_prime, use_holdout=False, seed=0)
         
         # Remove trivial points (alpha = 0 or beta = 1)
         valid_mask = (alpha_emp > 0) & (beta_emp < 1)
@@ -274,57 +366,57 @@ def plot_fdp_curves(losses_in_file: str = "losses_in.npy",
         alpha_bound, beta_bound = convex_lower_bound(alpha_valid, beta_valid)
         
         # Create the plot
-        plt.figure(figsize=(12, 8))
-        
-        # Plot all empirical points
-        plt.scatter(alpha_emp, beta_emp, alpha=0.4, s=20, color='lightblue', 
-                   label='All empirical points')
-        
-        # Plot valid empirical points
-        plt.scatter(alpha_valid, beta_valid, alpha=0.7, s=30, color='blue')
-        
-        # Plot convex lower bound
-        if len(alpha_bound) > 1:
-            plt.plot(alpha_bound, beta_bound, 'r-', linewidth=3, 
-                    label='Convex lower bound')
-            plt.fill_between(alpha_bound, beta_bound, 1, alpha=0.2, color='red',
-                           label='Upper bound region on true f-DP')
-        
-        # Add reference lines
-        plt.axline((0, 1), slope=-1, color='gray', linestyle='--', alpha=0.7, 
-                  label='β = 1 - α (perfect privacy)')
-        plt.axhline(y=0, color='gray', linestyle='--', alpha=0.3)
-        plt.axvline(x=0, color='gray', linestyle='--', alpha=0.3)
-        
-        # Formatting
-        plt.xlabel('α (False Positive Rate)', fontsize=14)
-        plt.ylabel('β (False Negative Rate)', fontsize=14)
-        plt.title('Empirical f-DP Curve and Convex Lower Bound', fontsize=16)
-        plt.legend(loc='upper right', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.xlim(0, 1)
-        plt.ylim(0, 1)
-        
-        # Add summary text
-        summary_text = (f'Models on D: {len(losses_D)}\n'
-                       f'Models on D\': {len(losses_D_prime)}\n'
-                       f'Convex bound points: {len(alpha_bound)}')
-        
-        plt.text(0.02, 0.98, summary_text, transform=plt.gca().transAxes, 
-                fontsize=11, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
-        plt.tight_layout()
-        plt.show()
-        
-        # Print some key points from the convex bound
-        print(f"\n=== Convex Lower Bound Key Points ===")
-        for i, (a, d) in enumerate(zip(alpha_bound, beta_bound)):
-            print(f"Point {i+1}: α = {a:.4f}, β = {d:.4f}")
+        # plt.figure(figsize=(12, 8))
+        # 
+        # # Plot all empirical points
+        # plt.scatter(alpha_emp, beta_emp, alpha=0.4, s=20, color='lightblue', 
+        #            label='All empirical points')
+        # 
+        # # Plot valid empirical points
+        # plt.scatter(alpha_valid, beta_valid, alpha=0.7, s=30, color='blue')
+        # 
+        # # Plot convex lower bound
+        # if len(alpha_bound) > 1:
+        #     plt.plot(alpha_bound, beta_bound, 'r-', linewidth=3, 
+        #             label='Convex lower bound')
+        #     plt.fill_between(alpha_bound, beta_bound, 1, alpha=0.2, color='red',
+        #                    label='Upper bound region on true f-DP')
+        # 
+        # # Add reference lines
+        # plt.axline((0, 1), slope=-1, color='gray', linestyle='--', alpha=0.7, 
+        #           label='β = 1 - α (perfect privacy)')
+        # plt.axhline(y=0, color='gray', linestyle='--', alpha=0.3)
+        # plt.axvline(x=0, color='gray', linestyle='--', alpha=0.3)
+        # 
+        # # Formatting
+        # plt.xlabel('α (False Positive Rate)', fontsize=14)
+        # plt.ylabel('β (False Negative Rate)', fontsize=14)
+        # plt.title('Empirical f-DP Curve and Convex Lower Bound', fontsize=16)
+        # plt.legend(loc='upper right', fontsize=12)
+        # plt.grid(True, alpha=0.3)
+        # plt.xlim(0, 1)
+        # plt.ylim(0, 1)
+        # 
+        # # Add summary text
+        # summary_text = (f'Models on D: {len(losses_D)}\n'
+        #                f'Models on D\': {len(losses_D_prime)}\n'
+        #                f'Convex bound points: {len(alpha_bound)}')
+        # 
+        # plt.text(0.02, 0.98, summary_text, transform=plt.gca().transAxes, 
+        #         fontsize=11, verticalalignment='top',
+        #         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        # 
+        # plt.tight_layout()
+        # plt.show()
+        # 
+        # # Print some key points from the convex bound
+        # print(f"\n=== Convex Lower Bound Key Points ===")
+        # for i, (a, d) in enumerate(zip(alpha_bound, beta_bound)):
+        #     print(f"Point {i+1}: α = {a:.4f}, β = {d:.4f}")
             
         # Plot epsilon(delta) curve if requested
         if plot_epsilon_delta and len(alpha_bound) > 1:
-            print("\nComputing ε(δ) curve...")
+            # print("\nComputing ε(δ) curve...")
             epsilon_vals, delta_vals = compute_epsilon_delta_curve(
                 alpha_bound, beta_bound, 
                 delta_min=1e-10, delta_max=0.99,
@@ -332,25 +424,25 @@ def plot_fdp_curves(losses_in_file: str = "losses_in.npy",
                 epsilon_search_max=50.0)
             
             if len(epsilon_vals) > 0:
-                plt.figure(figsize=(12, 6))
-                
-                # Plot epsilon(delta) curve
-                plt.semilogx(delta_vals, epsilon_vals, 'b-', linewidth=2, 
-                          label='ε(δ) - Minimum ε for target δ')
-                
-                # Add reference lines
-                plt.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='ε = 1')
-                plt.axvline(x=1e-5, color='gray', linestyle='--', alpha=0.5, label='δ = 10⁻⁵')
-                
-                plt.xlabel('δ (Privacy Parameter)', fontsize=14)
-                plt.ylabel('ε(δ) (Minimum Privacy Budget)', fontsize=14)
-                plt.title('ε(δ) Curve: Minimum ε Required for Target δ', fontsize=16)
-                plt.legend(fontsize=12)
-                plt.grid(True, alpha=0.3, which='both')
-                plt.tight_layout()
-                
-                # Print key points from the epsilon(delta) curve
-                print("\n=== Epsilon(Delta) Key Points ===")
+                # plt.figure(figsize=(12, 6))
+                # 
+                # # Plot epsilon(delta) curve
+                # plt.semilogx(delta_vals, epsilon_vals, 'b-', linewidth=2, 
+                #           label='ε(δ) - Minimum ε for target δ')
+                # 
+                # # Add reference lines
+                # plt.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='ε = 1')
+                # plt.axvline(x=1e-5, color='gray', linestyle='--', alpha=0.5, label='δ = 10⁻⁵')
+                # 
+                # plt.xlabel('δ (Privacy Parameter)', fontsize=14)
+                # plt.ylabel('ε(δ) (Minimum Privacy Budget)', fontsize=14)
+                # plt.title('ε(δ) Curve: Minimum ε Required for Target δ', fontsize=16)
+                # plt.legend(fontsize=12)
+                # plt.grid(True, alpha=0.3, which='both')
+                # plt.tight_layout()
+                # 
+                # # Print key points from the epsilon(delta) curve
+                # print("\n=== Epsilon(Delta) Key Points ===")
                 
                 # Show epsilon values for specific delta targets
                 delta_targets = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
@@ -360,9 +452,13 @@ def plot_fdp_curves(losses_in_file: str = "losses_in.npy",
                         idx = np.argmin(np.abs(delta_vals - delta_target))
                         actual_delta = delta_vals[idx]
                         eps_val = epsilon_vals[idx]
-                        print(f"δ = {actual_delta:.2e}, ε(δ) = {eps_val:.2f}")
+                        # print(f"δ = {actual_delta:.2e}, ε(δ) = {eps_val:.2f}")
+                        
+                        # Highlight epsilon when delta is 1e-5
+                        if delta_target == 1e-5:
+                            print(f"\n*** EPSILON AT DELTA=1e-5: ε = {eps_val:.4f} ***\n")
                 
-                plt.show()
+                # plt.show()
             else:
                 print("\nCould not compute epsilon(delta) curve - not enough valid points")
         
@@ -376,11 +472,13 @@ def plot_fdp_curves(losses_in_file: str = "losses_in.npy",
 if __name__ == "__main__":
     # Try to load and plot your actual data
     
-    print("Loading and plotting...")
-    # plot_fdp_curves(r"results\test_mnist_fgsm\mnist_cnn_eps10.0\losses_in.npy", 
-    #                r"results\test_mnist_fgsm\mnist_cnn_eps10.0\losses_out.npy")
-    # plot_fdp_curves(r"local\results\no_defense\test_mnist_fgsm\mnist_cnn_eps10.0\losses_in.npy", 
-    #             r"local\results\no_defense\test_mnist_fgsm\mnist_cnn_eps10.0\losses_out.npy")
+    # print("Loading and plotting...")
 
-    plot_fdp_curves("cifar10_fgsm_canary_no_defense/cifar10_cnn_eps10.0/losses_in.npy", 
-                "cifar10_fgsm_canary_no_defense/cifar10_cnn_eps10.0/losses_out.npy")
+    experiments = [
+        "mnist_poisson_no_defense/mnist_cnn_eps10.0",
+        "mnist_poisson_defense/mnist_cnn_eps10.0",
+    ]
+
+    for experiment in experiments:
+        plot_fdp_curves(f"{experiment}/losses_in.npy", 
+                        f"{experiment}/losses_out.npy")
