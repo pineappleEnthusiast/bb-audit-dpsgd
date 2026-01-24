@@ -541,11 +541,11 @@ def main():
         print("Failed to compute gradient norm - exiting")
         return
 
-    # Compute the parameter updates to find the index with smallest change
+    # Compute the parameter updates to find the index with largest change
     final_params = final_model.state_dict()
     update = {n: final_params[n] - init_params[n] for n in init_params}
     flat_update = torch.cat([p.view(-1) for p in update.values()])
-    hot_index = torch.argmin(flat_update.abs()).item()
+    hot_index = torch.argmax(flat_update.abs()).item()
     print(f"Selected 1-hot index: {hot_index} with update magnitude: {flat_update[hot_index].abs().item():.6f}")
 
     # Create canary gradient with the computed norm at the selected index
