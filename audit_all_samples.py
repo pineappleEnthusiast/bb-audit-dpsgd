@@ -101,14 +101,17 @@ def main():
         for i in range(n_samples)
     ]
     
-    # Sequential processing with progress bar (compute_eps_lower_from_mia uses internal parallelization)
+    # Batch-level parallelization: process multiple samples in parallel
+    # Each worker processes one sample at a time, but we have multiple workers
     from tqdm import tqdm
-    print(f"Processing sequentially (compute_eps_lower_from_mia uses {args.n_procs or 32} internal processes)")
+    n_procs = args.n_procs or cpu_count()
+    print(f"Using {n_procs} parallel workers (each uses sequential threshold search)")
     
     results = []
-    for task_arg in tqdm(task_args, desc="Samples"):
-        result = compute_epsilon_for_sample(task_arg)
-        results.append(result)
+    with Pool(n_procs) as pool:
+        for result in tqdm(pool.imap_unordered(compute_epsilon_for_sample, task_args), 
+                          total=n_samples, desc="Samples"):
+            results.append(result)
     
     # Sort by sample index and extract epsilons
     results.sort(key=lambda x: x[0])
