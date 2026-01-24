@@ -320,54 +320,80 @@ def _binom_range_prob(r: int, q: float, lo: int, hi: int) -> float:
 
 
 def p_value_dp_audit(*, m: int, r: int, v: int, eps: float, delta: float) -> float:
+    """Calculate the p-value of achieving >=v correct guesses under the null hypothesis.
+    
+    Args:
+        m: Number of examples, each included independently with probability 0.5.
+        r: Number of guesses (i.e., excluding abstentions).
+        v: Number of correct guesses by the auditor.
+        eps: Epsilon, DP guarantee of null hypothesis.
+        delta: Delta, DP guarantee of null hypothesis.
+    
+    Returns:
+        p-value: Probability of >=v correct guesses under the null hypothesis.
+    """
     m = int(m)
     r = int(r)
     v = int(v)
-    if m <= 0:
-        raise ValueError(f"m must be > 0, got {m}")
-    if r < 0 or r > m:
-        raise ValueError(f"r must be in [0, m], got r={r} m={m}")
-    if v < 0 or v > r:
-        raise ValueError(f"v must be in [0, r], got v={v} r={r}")
-
     eps = float(eps)
     delta = float(delta)
-    if eps < 0:
-        raise ValueError(f"eps must be >= 0, got {eps}")
-    if delta < 0:
-        raise ValueError(f"delta must be >= 0, got {delta}")
+    
+    assert 0 <= v <= r <= m, f"Expected 0 <= v <= r <= m, got v={v}, r={r}, m={m}"
+    assert eps >= 0, f"Expected eps >= 0, got {eps}"
+    assert 0 <= delta <= 1, f"Expected 0 <= delta <= 1, got {delta}"
 
-    q = 1.0 / (1.0 + math.exp(-eps))
-    beta = _binom_tail_geq(r=r, q=q, v=v)
-
+    q = 1.0 / (1.0 + math.exp(-eps))  # Accuracy of eps-DP randomized response
+    beta = _binom_tail_geq(r=r, q=q, v=v)  # P[Binomial(r, q) >= v]
+    
     alpha = 0.0
+    total_sum = 0.0  # P[v > Binomial(r, q) >= v - i]
+    
     for i in range(1, v + 1):
-        prob = _binom_range_prob(r=r, q=q, lo=v - i, hi=v - 1)
-        alpha = max(alpha, prob / float(i))
-
-    # Use 2*r instead of 2*m: penalty scales with number of guesses, not total canaries
-    p = float(beta) + float(alpha) * float(delta) * 2.0 * float(r)
+        # Add P[Binomial(r, q) = v - i]
+        total_sum += _binom_range_prob(r=r, q=q, lo=v - i, hi=v - i)
+        if total_sum > i * alpha:
+            alpha = total_sum / float(i)
+    
+    p = beta + alpha * delta * 2.0 * float(m)
     return float(min(p, 1.0))
 
 
 def get_eps_audit(*, m: int, r: int, v: int, delta: float, alpha: float, n_iter: int = 30) -> float:
+    """Compute the lower bound on epsilon such that the algorithm is not (eps, delta)-DP.
+    
+    Args:
+        m: Number of examples, each included independently with probability 0.5.
+        r: Number of guesses (i.e., excluding abstentions).
+        v: Number of correct guesses by the auditor.
+        delta: Delta, DP guarantee of null hypothesis.
+        alpha: 1 - confidence (e.g., alpha=0.05 corresponds to 95% confidence).
+        n_iter: Number of binary search iterations.
+    
+    Returns:
+        eps_min: Lower bound on epsilon.
+    """
     m = int(m)
     r = int(r)
     v = int(v)
     delta = float(delta)
     alpha = float(alpha)
-    if alpha <= 0.0 or alpha >= 1.0:
-        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+    
+    assert 0 <= v <= r <= m, f"Expected 0 <= v <= r <= m, got v={v}, r={r}, m={m}"
+    assert 0 <= delta <= 1, f"Expected 0 <= delta <= 1, got {delta}"
+    assert 0 < alpha < 1, f"Expected 0 < alpha < 1, got {alpha}"
 
-    eps_min = 0.0
-    eps_max = 1.0
+    eps_min = 0.0  # p_value_dp_audit(eps_min) < alpha
+    eps_max = 1.0  # p_value_dp_audit(eps_max) >= alpha
+    
+    # Expand eps_max until p_value_dp_audit(eps_max) >= alpha
     while p_value_dp_audit(m=m, r=r, v=v, eps=eps_max, delta=delta) < alpha:
-        eps_max *= 2.0
+        eps_max += 1.0
         if eps_max > 1024.0:
             break
 
+    # Binary search to find eps_min
     for _ in range(int(n_iter)):
-        eps = 0.5 * (eps_min + eps_max)
+        eps = (eps_min + eps_max) / 2.0
         if p_value_dp_audit(m=m, r=r, v=v, eps=eps, delta=delta) < alpha:
             eps_min = eps
         else:
