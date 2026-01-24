@@ -330,7 +330,6 @@ def train_and_track_gradients(model_name, X, y, epsilon, delta, max_grad_norm,
                 rank=0,        # Single GPU
                 batch_size=batch_size,
                 is_gradient_space_canary=False,
-                crafted_gradient=None,
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=defense_apply_ascent
             )
