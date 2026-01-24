@@ -345,7 +345,8 @@ def p_value_dp_audit(*, m: int, r: int, v: int, eps: float, delta: float) -> flo
         prob = _binom_range_prob(r=r, q=q, lo=v - i, hi=v - 1)
         alpha = max(alpha, prob / float(i))
 
-    p = float(beta) + float(alpha) * float(delta) * 2.0 * float(m)
+    # Use 2*r instead of 2*m: penalty scales with number of guesses, not total canaries
+    p = float(beta) + float(alpha) * float(delta) * 2.0 * float(r)
     return float(min(p, 1.0))
 
 
