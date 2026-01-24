@@ -1,9 +1,11 @@
 import numpy as np
 import os
 import argparse
-from multiprocessing import Pool, cpu_count
-from utils.audit import compute_eps_lower_from_mia
-from utils.audit import compute_eps_lower_from_mia_given_t
+import time
+from multiprocessing import cpu_count
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
+
 
 def compute_epsilon_for_sample(args):
     """Compute empirical epsilon for a single sample using 75% holdout."""
@@ -36,7 +38,7 @@ def compute_epsilon_for_sample(args):
         np.zeros(len(t_scores_out))
     ])
     
-    # Find optimal threshold on threshold split (n_procs=1 to avoid nested multiprocessing)
+    # Find optimal threshold on threshold split (n_procs=1 since we parallelize at batch level)
     max_t, _ = compute_eps_lower_from_mia(
         t_scores,
         t_labels,
@@ -101,17 +103,35 @@ def main():
         for i in range(n_samples)
     ]
     
-    # Batch-level parallelization: process multiple samples in parallel
-    # Each worker processes one sample at a time, but we have multiple workers
-    from tqdm import tqdm
+    # Use ProcessPoolExecutor with batched submission (like audit_o1_multi_canary.py)
     n_procs = args.n_procs or cpu_count()
-    print(f"Using {n_procs} parallel workers (each uses sequential threshold search)")
+    print(f"Using {n_procs} parallel workers with batched submission")
     
     results = []
-    with Pool(n_procs) as pool:
-        for result in tqdm(pool.imap_unordered(compute_epsilon_for_sample, task_args), 
-                          total=n_samples, desc="Samples"):
-            results.append(result)
+    batch_size = 1000  # Submit in batches to avoid memory issues
+    total_samples = len(task_args)
+    processed = 0
+    
+    start_time = time.time()
+    with ProcessPoolExecutor(max_workers=n_procs) as executor:
+        for batch_start in range(0, total_samples, batch_size):
+            batch_end = min(batch_start + batch_size, total_samples)
+            batch = task_args[batch_start:batch_end]
+            
+            print(f"Submitting batch {batch_start//batch_size + 1}/{(total_samples + batch_size - 1)//batch_size} ({len(batch)} samples)...")
+            futures = [executor.submit(compute_epsilon_for_sample, task_arg) for task_arg in batch]
+            
+            # Process results from this batch
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                processed += 1
+                if processed % 1000 == 0 or processed == total_samples:
+                    elapsed = time.time() - start_time
+                    rate = processed / elapsed if elapsed > 0 else 0
+                    eta = (total_samples - processed) / rate if rate > 0 else 0
+                    print(f"Progress: {processed}/{total_samples} samples ({100*processed/total_samples:.1f}%) | "
+                          f"Rate: {rate:.1f} samples/s | ETA: {eta/60:.1f} min")
     
     # Sort by sample index and extract epsilons
     results.sort(key=lambda x: x[0])
