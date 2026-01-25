@@ -1572,6 +1572,12 @@ def main():
                 seed=int(args.seed),
             )
             
+            # Check separation at threshold
+            tp_hamp = np.sum(hamp_scores_in >= threshold)
+            fp_hamp = np.sum(hamp_scores_out >= threshold)
+            fn_hamp = np.sum(hamp_scores_in < threshold)
+            tn_hamp = np.sum(hamp_scores_out < threshold)
+            
             np.save(os.path.join(args.out, 'emp_eps_hamp.npy'), np.asarray(emp_eps, dtype=np.float32))
             np.save(os.path.join(args.out, 'mia_threshold_hamp.npy'), np.asarray(threshold, dtype=np.float32))
             np.save(os.path.join(args.out, 'mia_scores_hamp.npy'), mia_scores)
@@ -1580,6 +1586,8 @@ def main():
             print(f"\nHAMP AUGMENTATION-BASED AUDIT RESULTS")
             print(f"Theoretical epsilon: {args.epsilon}")
             print(f"Empirical epsilon (HAMP): {emp_eps}")
+            print(f"Threshold: {threshold:.6f}")
+            print(f"Confusion matrix: TP={tp_hamp}, FP={fp_hamp}, FN={fn_hamp}, TN={tn_hamp}")
             
             # If running both audits, also compute loss-based audit
             if args.run_both_audits:
@@ -1615,6 +1623,12 @@ def main():
                     seed=int(args.seed) + 999999,  # Different seed for loss-based audit
                 )
                 
+                # Check separation at threshold
+                tp_loss = np.sum(loss_in_array >= threshold_loss)
+                fp_loss = np.sum(loss_out_array >= threshold_loss)
+                fn_loss = np.sum(loss_in_array < threshold_loss)
+                tn_loss = np.sum(loss_out_array < threshold_loss)
+                
                 np.save(os.path.join(args.out, 'emp_eps_loss.npy'), np.asarray(emp_eps_loss, dtype=np.float32))
                 np.save(os.path.join(args.out, 'mia_threshold_loss.npy'), np.asarray(threshold_loss, dtype=np.float32))
                 np.save(os.path.join(args.out, 'mia_scores_loss.npy'), loss_mia_scores)
@@ -1623,6 +1637,8 @@ def main():
                 print(f"\nLOSS-BASED AUDIT RESULTS")
                 print(f"Theoretical epsilon: {args.epsilon}")
                 print(f"Empirical epsilon (Loss-based): {emp_eps_loss}")
+                print(f"Threshold: {threshold_loss:.6f}")
+                print(f"Confusion matrix: TP={tp_loss}, FP={fp_loss}, FN={fn_loss}, TN={tn_loss}")
                 
                 print(f"\nCOMPARISON")
                 print(f"HAMP augmentation-based: {emp_eps}")
