@@ -410,11 +410,15 @@ def generate_augmentations(x, num_augmentations=18, debug=False):
                 if flip:
                     aug = torch.flip(aug, dims=[2])  # Flip width dimension
                 
-                # Apply shift (translation) with zero-padding instead of wrapping
+                # Apply shift (translation) with proper background padding
                 if shift_x != 0 or shift_y != 0:
                     # Use affine transformation for proper translation
                     C, H, W = aug.shape
-                    shifted = torch.zeros_like(aug)
+                    
+                    # Use the minimum value in the image as background (typically the background value)
+                    # For normalized data, this is better than hardcoded zero
+                    background_value = aug.min()
+                    shifted = torch.full_like(aug, background_value)
                     
                     # Calculate source and destination slices
                     src_y_start = max(0, -shift_y)
