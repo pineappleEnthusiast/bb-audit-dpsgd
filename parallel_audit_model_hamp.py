@@ -20,8 +20,8 @@ from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_g
 from utils.clipbkd import craft_clipbkd
 
 # Import original train_model for original defense comparison
-import parallel_audit_model
-from parallel_audit_model import train_model
+import parallel_audit_multi_canary
+from parallel_audit_multi_canary import train_model_multi_canary
 from opacus.grad_sample import GradSampleModule
 
 
@@ -1351,22 +1351,50 @@ def main():
             
             # Choose training function based on defense type
             if args.defense_type == 'original':
-                # Use original train_model from parallel_audit_model.py
-                model, drop_mask, canary_dropped_epoch = parallel_audit_model.train_model(
-                    args.model_name, curr_X, curr_y, target_X, target_y,
-                    args.epsilon, args.delta, args.max_grad_norm,
-                    args.n_epochs, args.lr, args.block_size, args.batch_size,
-                    init_model=init_model, out_dim=out_dim,
+                # Determine canary indices for tracking
+                # For IN world, canaries are at the end of the dataset
+                if world == 'in' and args.n_canaries > 0:
+                    # Canaries are the last n_canaries samples
+                    canary_indices = np.arange(len(curr_X) - args.n_canaries, len(curr_X), dtype=np.int64)
+                else:
+                    # OUT world or no canaries - no tracking needed
+                    canary_indices = None
+                
+                # Use train_model_multi_canary from parallel_audit_multi_canary.py
+                model, drop_mask, defense_stats = train_model_multi_canary(
+                    model_name=args.model_name,
+                    X=curr_X,
+                    y=curr_y,
+                    epsilon=args.epsilon,
+                    delta=args.delta,
+                    max_grad_norm=args.max_grad_norm,
+                    n_epochs=args.n_epochs,
+                    lr=args.lr,
+                    block_size=args.block_size,
+                    batch_size=args.batch_size,
+                    init_model=init_model,
+                    out_dim=out_dim,
+                    aug_mult=1,
                     defense=True,
                     defense_k=args.defense_k,
+                    defense_apply_ascent=args.defense_apply_ascent,
                     defense_filter_every=args.defense_filter_every,
-                    defense_score_norm=args.defense_score_norm,
                     defense_score_fn=args.defense_score_fn,
+                    defense_score_norm=args.defense_score_norm,
+                    defense_global_filter=False,
+                    device=str(device),
+                    generator=generator,
+                    dl_generator=dl_generator,
+                    num_workers=4,
+                    persistent_workers=True,
+                    canary_indices=canary_indices,
+                    is_gradient_space_canary=False,
+                    global_idx_to_grad=None,
+                    loss_volatility_k=5,
                     grad_norm_percentile_k=args.grad_norm_percentile_k,
                     grad_dir_volatility_k=args.grad_dir_volatility_k,
                     grad_dir_proj_dim=args.grad_dir_proj_dim,
                     grad_dir_proj_seed=args.grad_dir_proj_seed,
-                    dir_unique_k=args.dir_unique_k,
                     rand_proj_var_m=args.rand_proj_var_m,
                     rand_proj_var_seed=args.rand_proj_var_seed,
                     maxmin_proj_k=args.maxmin_proj_k,
@@ -1377,28 +1405,34 @@ def main():
                     grad_accel_proj_seed=args.grad_accel_proj_seed,
                     grad_jerk_proj_dim=args.grad_jerk_proj_dim,
                     grad_jerk_proj_seed=args.grad_jerk_proj_seed,
+                    dir_unique_k=args.dir_unique_k,
                     alignment_proj_k=args.alignment_proj_k,
                     alignment_proj_seed=args.alignment_proj_seed,
                     grad_scatter_k=args.grad_scatter_k,
-                    defense_apply_ascent=args.defense_apply_ascent,
-                    device=str(device),
-                    generator=generator,
-                    dl_generator=dl_generator,
                     rank=rank,
-                    return_defense_state=True
                 )
                 
-                # Log canary drop information
-                if canary_dropped_epoch is not None:
-                    print(f"  [Original Defense] Canary dropped at epoch {canary_dropped_epoch}")
-                else:
-                    print(f"  [Original Defense] Canary was NOT dropped during training")
+                # Log canary drop information from defense_stats
+                if canary_indices is not None and defense_stats is not None:
+                    canary_drop_epochs = defense_stats.get('canary_drop_epochs', None)
+                    canary_drop_ratio_events = defense_stats.get('canary_drop_ratio_events', [])
+                    
+                    if canary_drop_epochs is not None:
+                        n_dropped = int((canary_drop_epochs >= 0).sum())
+                        n_total = len(canary_drop_epochs)
+                        drop_ratio = n_dropped / n_total if n_total > 0 else 0
+                        print(f"  [Original Defense] Canaries dropped: {n_dropped}/{n_total} ({drop_ratio*100:.2f}%)")
+                        
+                        if len(canary_drop_ratio_events) > 0:
+                            print(f"  [Original Defense] Drop events: {canary_drop_ratio_events}")
+                    else:
+                        print(f"  [Original Defense] No canary tracking (OUT world or no canaries)")
                 
                 # Count total samples dropped
-                n_dropped = np.sum(drop_mask >= 1)
-                n_total = len(drop_mask)
-                drop_ratio = n_dropped / n_total if n_total > 0 else 0
-                print(f"  [Original Defense] Total samples filtered: {n_dropped}/{n_total} ({drop_ratio*100:.2f}%)")
+                n_dropped_total = np.sum(drop_mask >= 1)
+                n_total_samples = len(drop_mask)
+                drop_ratio_total = n_dropped_total / n_total_samples if n_total_samples > 0 else 0
+                print(f"  [Original Defense] Total samples filtered: {n_dropped_total}/{n_total_samples} ({drop_ratio_total*100:.2f}%)")
             elif args.defense_type == 'hamp':
                 # Use HAMP train_model (local function)
                 model = train_model_hamp(
