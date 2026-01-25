@@ -1352,7 +1352,7 @@ def main():
             # Choose training function based on defense type
             if args.defense_type == 'original':
                 # Use original train_model from parallel_audit_model.py
-                model = parallel_audit_model.train_model(
+                model, drop_mask, canary_dropped_epoch = parallel_audit_model.train_model(
                     args.model_name, curr_X, curr_y, target_X, target_y,
                     args.epsilon, args.delta, args.max_grad_norm,
                     args.n_epochs, args.lr, args.block_size, args.batch_size,
@@ -1384,8 +1384,21 @@ def main():
                     device=str(device),
                     generator=generator,
                     dl_generator=dl_generator,
-                    rank=rank
+                    rank=rank,
+                    return_defense_state=True
                 )
+                
+                # Log canary drop information
+                if canary_dropped_epoch is not None:
+                    print(f"  [Original Defense] Canary dropped at epoch {canary_dropped_epoch}")
+                else:
+                    print(f"  [Original Defense] Canary was NOT dropped during training")
+                
+                # Count total samples dropped
+                n_dropped = np.sum(drop_mask >= 1)
+                n_total = len(drop_mask)
+                drop_ratio = n_dropped / n_total if n_total > 0 else 0
+                print(f"  [Original Defense] Total samples filtered: {n_dropped}/{n_total} ({drop_ratio*100:.2f}%)")
             elif args.defense_type == 'hamp':
                 # Use HAMP train_model (local function)
                 model = train_model_hamp(
