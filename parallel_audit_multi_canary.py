@@ -657,22 +657,26 @@ def train_model_multi_canary(
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
 
+            # Transition ascent->dropped ONLY for samples in the current batch
+            # This ensures samples marked at end of epoch get gradient ascent applied throughout the next epoch
+            batch_indices = global_indices.cpu().numpy()
+            batch_drop_mask = drop_mask[batch_indices]
+            samples_to_transition = batch_indices[batch_drop_mask == 1]
+            
             # Track canaries transitioning 1 -> 2 (in this implementation the 1->2 happens here)
-            if defense and canary_indices_np is not None and canary_drop_epochs is not None:
-                to_drop = np.where(drop_mask == 1)[0].astype(np.int64, copy=False)
-                if to_drop.size > 0:
-                    newly_dropped = np.intersect1d(to_drop, canary_indices_np, assume_unique=False)
-                    if newly_dropped.size > 0:
-                        pos = np.nonzero(np.isin(canary_indices_np, newly_dropped))[0]
-                        unset = canary_drop_epochs[pos] < 0
-                        if np.any(unset):
-                            canary_drop_epochs[pos[unset]] = int(epoch)
-                            dropped_count = int((canary_drop_epochs >= 0).sum())
-                            dropped_ratio = dropped_count / float(canary_indices_np.size)
-                            canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
-
-            # Transition ascent->dropped
-            drop_mask[drop_mask == 1] = 2
+            if defense and canary_indices_np is not None and canary_drop_epochs is not None and len(samples_to_transition) > 0:
+                newly_dropped = np.intersect1d(samples_to_transition, canary_indices_np, assume_unique=False)
+                if newly_dropped.size > 0:
+                    pos = np.nonzero(np.isin(canary_indices_np, newly_dropped))[0]
+                    unset = canary_drop_epochs[pos] < 0
+                    if np.any(unset):
+                        canary_drop_epochs[pos[unset]] = int(epoch)
+                        dropped_count = int((canary_drop_epochs >= 0).sum())
+                        dropped_ratio = dropped_count / float(canary_indices_np.size)
+                        canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
+            
+            # Only transition samples that were in this batch
+            drop_mask[samples_to_transition] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
@@ -1054,6 +1058,12 @@ def main():
                 out_dim=out_dim,
                 seed=int(args.seed),
             )
+            if rank == 0:
+                y_true = y_out[-n_canaries:]
+                print(f"Mislabeled canaries created:")
+                print(f"  First 10 true labels: {y_true[:10].tolist()}")
+                print(f"  First 10 mislabeled: {y_canary[:10].tolist()}")
+                print(f"  Verification - all different: {(y_true != y_canary).all().item()}")
         elif args.target_type == 'gradient_space_canary':
             # For gradient space canary, determine number of canaries
             if isinstance(crafted_grad, list):
@@ -1202,6 +1212,23 @@ def main():
             else:
                 per_canary = _score_canaries(model, X_canary, y_canary)
                 max_score = float(per_canary.max())
+                if rank == 0 and rep == 0:
+                    # Additional debug: check what the model actually predicts
+                    model.eval()
+                    with torch.no_grad():
+                        dev = next(model.parameters()).device
+                        logits = model(X_canary[:10].to(dev))
+                        preds = logits.argmax(dim=1).cpu()
+                        y_true_first10 = y_out[-n_canaries:][:10] if args.target_type == 'mislabeled' else None
+                    print(f"[Rank {rank}] world={world} Scoring canaries with mislabeled labels")
+                    print(f"  Per-canary scores (first 10): {per_canary[:10]}")
+                    print(f"  Max score: {max_score:.6f}, Min score: {per_canary.min():.6f}")
+                    if y_true_first10 is not None:
+                        print(f"  True labels (first 10): {y_true_first10.tolist()}")
+                        print(f"  Mislabeled (first 10): {y_canary[:10].tolist()}")
+                        print(f"  Model predictions (first 10): {preds.tolist()}")
+                        print(f"  Model predicts mislabel: {(preds == y_canary[:10]).sum().item()}/10")
+                        print(f"  Model predicts true label: {(preds == y_true_first10).sum().item()}/10")
             
             scores[world].append(max_score)
 
