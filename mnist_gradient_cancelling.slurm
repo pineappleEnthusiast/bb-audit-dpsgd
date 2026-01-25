@@ -2,12 +2,12 @@
 #SBATCH -J mnist_grad_cancel
 #SBATCH -o mnist_grad_cancel.o%j
 #SBATCH -e mnist_grad_cancel.e%j
-#SBATCH -p gpu-a100-small
-#SBATCH -N 1
-#SBATCH -n 1
+#SBATCH -p gh
+#SBATCH -N 5
+#SBATCH -n 5
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 20:00:00
-#SBATCH -A CCR23048
+#SBATCH -A ASC25081
 
 module load cuda/12.4
 
