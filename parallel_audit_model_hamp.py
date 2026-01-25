@@ -1439,6 +1439,15 @@ def main():
                     target_X_device = target_X.to(device)
                     target_y_device = target_y.to(device)
                     output = model(target_X_device)
+                    
+                    # Apply HAMP testing-time defense if using HAMP
+                    if args.defense_type == 'hamp':
+                        # Generate random sample and apply rank-preserving score replacement
+                        input_shape = target_X_device.shape[1:]  # (C, H, W)
+                        random_X = generate_random_samples(1, input_shape, device=device)
+                        random_output = model(random_X)
+                        output = rank_preserving_score_replacement(output, random_output)
+                    
                     loss_score = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
                     loss_scores[world].append(loss_score)
                     print(f"  Loss-based score: {loss_score:.4f}")
