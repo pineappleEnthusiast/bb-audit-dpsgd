@@ -20,8 +20,8 @@ from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_g
 from utils.clipbkd import craft_clipbkd
 
 # Import original train_model for original defense comparison
-import parallel_audit_multi_canary
-from parallel_audit_multi_canary import train_model_multi_canary
+import parallel_audit_multi_canary_k_ascent
+from parallel_audit_multi_canary_k_ascent import train_model_multi_canary
 from opacus.grad_sample import GradSampleModule
 
 
