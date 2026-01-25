@@ -482,11 +482,22 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     if verbose:
         # Verify augmentation method on first call
         print("    [DEBUG] Checking augmentation quality...")
-        # Check if augmentations have wrapped edges (torch.roll artifact)
-        # For proper translation, edges should be zero-padded, not wrapped
-        first_aug = x_aug[1]  # Get a shifted augmentation
+        print(f"    [DEBUG] Original image range: [{x.min():.4f}, {x.max():.4f}]")
+        print(f"    [DEBUG] Augmented images range: [{x_aug.min():.4f}, {x_aug.max():.4f}]")
+        
+        # Check a shifted augmentation (index 1 should have shift_x=-4, shift_y=-4)
+        first_aug = x_aug[1]
+        orig = x.squeeze(0) if x.dim() == 4 else x
+        
+        # Check if images are identical (no shift applied)
+        if torch.allclose(first_aug, orig):
+            print("    [DEBUG] WARNING: Augmentation 1 is identical to original (no shift applied!)")
+        else:
+            print("    [DEBUG] Augmentation 1 differs from original (shift applied correctly)")
+        
+        # Check edge pixels - for a shifted image, some edges should be zero
         edge_sum = first_aug[:, :, 0].sum() + first_aug[:, :, -1].sum() + first_aug[:, 0, :].sum() + first_aug[:, -1, :].sum()
-        print(f"    [DEBUG] Edge pixel sum (should be low for zero-padding): {edge_sum:.4f}")
+        print(f"    [DEBUG] Edge pixel sum: {edge_sum:.4f}")
     
     with torch.no_grad():
         for i in range(num_augmentations):
