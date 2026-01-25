@@ -487,9 +487,30 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
         print(f"    [DEBUG] Original image range: [{x.min():.4f}, {x.max():.4f}]")
         print(f"    [DEBUG] Augmented images range: [{x_aug.min():.4f}, {x_aug.max():.4f}]")
         
+        # Check for backdoor patch presence
+        orig = x.squeeze(0) if x.dim() == 4 else x
+        C, H, W = orig.shape
+        
+        # Check bottom-right corner (common backdoor location)
+        patch_region = orig[:, -3:, -3:]
+        patch_max = patch_region.max().item()
+        img_max = orig.max().item()
+        
+        if abs(patch_max - img_max) < 0.01:  # Patch likely present
+            print(f"    [DEBUG] Possible backdoor patch detected in original (bottom-right max: {patch_max:.4f})")
+            
+            # Check if patch survives in augmentations
+            aug_with_patch = 0
+            for i in range(min(5, len(x_aug))):
+                aug_patch = x_aug[i, :, -3:, -3:]
+                if aug_patch.max().item() > img_max * 0.9:
+                    aug_with_patch += 1
+            print(f"    [DEBUG] Augmentations with visible patch in bottom-right: {aug_with_patch}/5")
+        else:
+            print(f"    [DEBUG] No obvious backdoor patch detected in original")
+        
         # Check a shifted augmentation (index 1 should have shift_x=-4, shift_y=-4)
         first_aug = x_aug[1]
-        orig = x.squeeze(0) if x.dim() == 4 else x
         
         # Check if images are identical (no shift applied) - ensure same device
         if torch.allclose(first_aug.cpu(), orig.cpu()):
@@ -1076,12 +1097,9 @@ def main():
             if rank == 0:
                 print(f"Mislabeled canary: Using sample at index {canary_idx} (original label: {original_label}) relabeled as class {args.mislabeled_target_class}")
         elif args.target_type == 'backdoor_mislabeled':
-            # Use a real sample with a backdoor patch and mislabel it
+            # Use the LAST sample in dataset (which gets replaced) with a backdoor patch and mislabel it
             # The backdoor makes it visually distinct, so the model can learn the trigger -> label mapping
-            class_0_indices = (y_out == 0).nonzero(as_tuple=True)[0]
-            if len(class_0_indices) == 0:
-                raise ValueError("No class 0 samples found in dataset")
-            canary_idx = class_0_indices[0].item()
+            canary_idx = len(X_out) - 1
             target_X = X_out[canary_idx].unsqueeze(0).clone()
             original_label = y_out[canary_idx].item()
             
@@ -1093,7 +1111,8 @@ def main():
             if args.backdoor_patch_value is not None:
                 patch_value = args.backdoor_patch_value
             else:
-                patch_value = target_X.max().item()
+                # Use max value in the entire dataset for maximum visibility
+                patch_value = X_out.max().item()
             
             # Determine patch location
             if args.backdoor_patch_location == 'top_left':
@@ -1107,14 +1126,14 @@ def main():
             elif args.backdoor_patch_location == 'center':
                 y_start, x_start = (H - patch_size) // 2, (W - patch_size) // 2
             
-            # Apply patch
+            # Apply patch to ALL channels
             target_X[0, :, y_start:y_start+patch_size, x_start:x_start+patch_size] = patch_value
             
             # Mislabel
             target_y = torch.from_numpy(np.array([args.mislabeled_target_class]))
             
             if rank == 0:
-                print(f"Backdoor mislabeled canary: Sample {canary_idx} (original class {original_label}) + {patch_size}x{patch_size} patch at {args.backdoor_patch_location} -> relabeled as class {args.mislabeled_target_class}")
+                print(f"Backdoor mislabeled canary: Sample {canary_idx} (original class {original_label}) + {patch_size}x{patch_size} patch (value={patch_value:.4f}) at {args.backdoor_patch_location} -> relabeled as class {args.mislabeled_target_class}")
         elif args.target_type == 'correctly_labeled':
             # Use a real sample from the dataset with its CORRECT label
             # This should be more memorable than mislabeled
