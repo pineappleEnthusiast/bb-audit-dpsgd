@@ -1559,6 +1559,8 @@ def main():
             hamp_scores_in = mia_scores[mia_labels == 1]
             hamp_scores_out = mia_scores[mia_labels == 0]
             print(f"  HAMP augmentation scores: mean_in={hamp_scores_in.mean():.4f}, mean_out={hamp_scores_out.mean():.4f}, diff={hamp_scores_in.mean() - hamp_scores_out.mean():.4f}")
+            print(f"  HAMP augmentation scores: std_in={hamp_scores_in.std():.4f}, std_out={hamp_scores_out.std():.4f}")
+            print(f"  HAMP augmentation scores: n_unique_in={len(np.unique(hamp_scores_in))}, n_unique_out={len(np.unique(hamp_scores_out))}")
             
             # Compute empirical epsilon using attack model scores
             emp_eps, threshold, _, _ = _audit_from_scores(
@@ -1599,6 +1601,8 @@ def main():
                 loss_out_array = np.asarray(combined_loss_out, dtype=np.float32)
                 
                 print(f"  Loss-based scores: mean_in={loss_in_array.mean():.4f}, mean_out={loss_out_array.mean():.4f}, diff={loss_in_array.mean() - loss_out_array.mean():.4f}")
+                print(f"  Loss-based scores: std_in={loss_in_array.std():.4f}, std_out={loss_out_array.std():.4f}")
+                print(f"  Loss-based scores: n_unique_in={len(np.unique(loss_in_array))}, n_unique_out={len(np.unique(loss_out_array))}")
                 
                 # Compute empirical epsilon from loss-based scores
                 # Use different seed than HAMP audit to avoid identical random choices
