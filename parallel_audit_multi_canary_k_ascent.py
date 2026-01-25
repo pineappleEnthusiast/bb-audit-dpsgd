@@ -458,6 +458,7 @@ def train_model_multi_canary(
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset), dtype=np.float32)
     drop_mask = np.zeros(len(dataset), dtype=np.int8)
+    ascent_epoch_counter = np.zeros(len(dataset), dtype=np.int32)  # Track how many epochs each sample has been in ascent state
 
     sampler = torch.utils.data.RandomSampler(dataset, replacement=False, generator=generator)
     loader = torch.utils.data.DataLoader(
@@ -504,6 +505,11 @@ def train_model_multi_canary(
     for epoch in range(int(n_epochs)):
         epoch_start = time.time()
         optimizer.zero_grad()
+        
+        # Increment ascent counter for all samples currently in ascent state (drop_mask == 1)
+        ascent_mask = (drop_mask == 1)
+        ascent_epoch_counter[ascent_mask] += 1
+        
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
         for _, (curr_X, curr_y, global_indices) in enumerate(loader):
@@ -657,15 +663,19 @@ def train_model_multi_canary(
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
 
-            # Transition ascent->dropped ONLY for samples in the current batch
-            # This ensures samples marked at end of epoch get gradient ascent applied throughout the next epoch
+            # Transition ascent->dropped ONLY for samples in the current batch that have been in ascent for k epochs
+            # This ensures samples marked at end of epoch get gradient ascent applied for k epochs before dropping
             batch_indices = global_indices.cpu().numpy()
             batch_drop_mask = drop_mask[batch_indices]
-            samples_to_transition = batch_indices[batch_drop_mask == 1]
+            batch_ascent_counter = ascent_epoch_counter[batch_indices]
             
-            # Track canaries transitioning 1 -> 2 (in this implementation the 1->2 happens here)
-            if defense and canary_indices_np is not None and canary_drop_epochs is not None and len(samples_to_transition) > 0:
-                newly_dropped = np.intersect1d(samples_to_transition, canary_indices_np, assume_unique=False)
+            # Only transition samples that are in ascent state (drop_mask == 1) AND have been in ascent for >= k epochs
+            samples_in_ascent = batch_indices[batch_drop_mask == 1]
+            samples_ready_to_drop = samples_in_ascent[batch_ascent_counter[batch_drop_mask == 1] >= int(defense_k)]
+            
+            # Track canaries transitioning 1 -> 2
+            if defense and canary_indices_np is not None and canary_drop_epochs is not None and len(samples_ready_to_drop) > 0:
+                newly_dropped = np.intersect1d(samples_ready_to_drop, canary_indices_np, assume_unique=False)
                 if newly_dropped.size > 0:
                     pos = np.nonzero(np.isin(canary_indices_np, newly_dropped))[0]
                     unset = canary_drop_epochs[pos] < 0
@@ -675,9 +685,8 @@ def train_model_multi_canary(
                         dropped_ratio = dropped_count / float(canary_indices_np.size)
                         canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
             
-            # Only transition samples that were in this batch
-            if epoch % 20 == 0:
-                drop_mask[samples_to_transition] = 2
+            # Transition samples that have been in ascent for k epochs
+            drop_mask[samples_ready_to_drop] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
