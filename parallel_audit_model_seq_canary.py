@@ -329,6 +329,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 crafted_grad_for_epoch = crafted_gradient_sequence[epoch]
                 canary_idx = len(dataset) - 1
                 global_idx_to_grad = {canary_idx: crafted_grad_for_epoch}
+                if rank == 0 and epoch < 2:
+                    print(f"\n  [DEBUG] Epoch {epoch}: Canary gradient set for index {canary_idx}")
             else:
                 global_idx_to_grad = None
         elif gradient_space_audit and crafted_gradient_sequence is None:
@@ -338,6 +340,12 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
+            
+            # Debug: Check if canary is in this batch
+            if gradient_space_audit and global_idx_to_grad is not None and rank == 0 and epoch < 2:
+                canary_idx = len(dataset) - 1
+                if canary_idx in global_indices.cpu().numpy():
+                    print(f"\n  [DEBUG] Epoch {epoch}, Batch {batch_idx}: Canary (idx {canary_idx}) is in this batch!")
 
             if defense_score_fn == 'loss_momentum' and prev_losses is None:
                 prev_losses = np.full((len(dataset),), np.nan, dtype=np.float32)
