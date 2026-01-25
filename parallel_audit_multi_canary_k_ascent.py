@@ -676,7 +676,7 @@ def train_model_multi_canary(
                         canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
             
             # Only transition samples that were in this batch
-            if epoch % 50 == 0:
+            if epoch % 20 == 0:
                 drop_mask[samples_to_transition] = 2
 
             with torch.no_grad():
