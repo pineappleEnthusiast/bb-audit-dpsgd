@@ -860,7 +860,7 @@ def main():
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, clipbkd, badnets, or path to target sample)')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
     parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
@@ -868,6 +868,9 @@ def main():
     parser.add_argument('--mislabeled_target_class', type=int, default=1,
                         help='Target class for mislabeled canary (default: 1). The canary will be a true class 0 sample relabeled as this class.')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
+    parser.add_argument('--noise_scale', type=float, default=0.5, help='scale factor for noise-based canaries (default: 0.5)')
+    parser.add_argument('--adversarial_epsilon', type=float, default=0.3, help='epsilon for adversarial canary generation (default: 0.3)')
+    parser.add_argument('--adversarial_target_class', type=int, default=None, help='target class for adversarial canary (default: None = untargeted attack on random sample)')
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
     parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
@@ -1011,6 +1014,82 @@ def main():
             target_y = torch.from_numpy(np.array([args.mislabeled_target_class]))  # Mislabel
             if rank == 0:
                 print(f"Mislabeled canary: Using sample at index {canary_idx} (original label: {original_label}) relabeled as class {args.mislabeled_target_class}")
+        elif args.target_type == 'random_noise':
+            # Random noise canary: Gaussian noise with pixel values clipped to [0, 1]
+            target_X = torch.randn_like(X_out[[0]]) * args.noise_scale + 0.5
+            target_X = torch.clamp(target_X, 0, 1)
+            target_y = torch.from_numpy(np.array([9]))  # Assign to class 9
+            if rank == 0:
+                print(f"Random noise canary: Gaussian noise with scale {args.noise_scale}, labeled as class 9")
+        elif args.target_type == 'gaussian_noise':
+            # Gaussian noise added to a real sample
+            sample_idx = np.random.randint(0, len(X_out))
+            base_sample = X_out[sample_idx].unsqueeze(0)
+            noise = torch.randn_like(base_sample) * args.noise_scale
+            target_X = torch.clamp(base_sample + noise, 0, 1)
+            target_y = y_out[sample_idx].unsqueeze(0)
+            if rank == 0:
+                print(f"Gaussian noise canary: Real sample (idx {sample_idx}, class {target_y.item()}) + Gaussian noise (scale {args.noise_scale})")
+        elif args.target_type == 'uniform_noise':
+            # Uniform random noise canary
+            target_X = torch.rand_like(X_out[[0]])
+            target_y = torch.from_numpy(np.array([9]))  # Assign to class 9
+            if rank == 0:
+                print(f"Uniform noise canary: Uniform random values in [0, 1], labeled as class 9")
+        elif args.target_type == 'adversarial':
+            # Adversarial example using FGSM
+            # First, we need to train a quick reference model to generate the adversarial example
+            if rank == 0:
+                print(f"Generating adversarial canary with epsilon={args.adversarial_epsilon}...")
+            
+            # Use a random sample as base
+            sample_idx = np.random.randint(0, len(X_out))
+            base_X = X_out[sample_idx].unsqueeze(0)
+            base_y = y_out[sample_idx]
+            
+            # Train a quick reference model to generate adversarial example
+            ref_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
+            if args.model_name == 'cnn':
+                xavier_init_model(ref_model)
+            else:
+                init_wideresnet(ref_model)
+            ref_model = ref_model.to('cuda' if torch.cuda.is_available() else 'cpu')
+            ref_optimizer = optim.SGD(ref_model.parameters(), lr=0.1)
+            
+            # Quick training (10 epochs)
+            ref_model.train()
+            for _ in range(10):
+                for i in range(0, len(X_out), 256):
+                    batch_X = X_out[i:i+256].to(ref_model.parameters().__next__().device)
+                    batch_y = y_out[i:i+256].to(ref_model.parameters().__next__().device)
+                    ref_optimizer.zero_grad()
+                    loss = F.cross_entropy(ref_model(batch_X), batch_y)
+                    loss.backward()
+                    ref_optimizer.step()
+            
+            # Generate adversarial example
+            if args.adversarial_target_class is not None:
+                target_class = args.adversarial_target_class
+            else:
+                # Untargeted: try to misclassify
+                target_class = (base_y.item() + 1) % out_dim
+            
+            target_X, _, success = fgsm_attack(
+                ref_model,
+                base_X.to(ref_model.parameters().__next__().device),
+                torch.tensor([target_class]),
+                epsilon=args.adversarial_epsilon,
+                max_iter=20,
+                alpha=args.adversarial_epsilon / 10
+            )
+            target_X = target_X.cpu()
+            target_y = torch.tensor([target_class])
+            
+            del ref_model
+            torch.cuda.empty_cache()
+            
+            if rank == 0:
+                print(f"Adversarial canary: Base sample (idx {sample_idx}, class {base_y.item()}) -> adversarial (class {target_class}, success={success})")
         elif args.target_type == 'sanity_check':
             target_X = X_out[-1].unsqueeze(0)
             target_y = y_out[-1].unsqueeze(0)
