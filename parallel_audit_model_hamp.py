@@ -379,7 +379,7 @@ def rank_preserving_score_replacement(original_scores, random_scores):
     return modified_scores
 
 
-def generate_augmentations(x, num_augmentations=18):
+def generate_augmentations(x, num_augmentations=18, debug=False):
     """
     Generate augmented versions of input sample for HAMP attack.
     
@@ -389,10 +389,14 @@ def generate_augmentations(x, num_augmentations=18):
     Args:
         x: Input sample (C, H, W)
         num_augmentations: Number of augmentations to generate (default: 18)
+        debug: If True, print debug info about augmentation method
     
     Returns:
         augmented_samples: Tensor of shape (num_augmentations, C, H, W)
     """
+    if debug:
+        print("    [DEBUG] Using zero-padding translation (not torch.roll)")
+    
     augmentations = []
     
     # Define shift values: -4, -2, 0, 2, 4 for both x and y
@@ -474,6 +478,16 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     # Query model on all augmentations
     binary_vector = []
     predictions = []
+    
+    if verbose:
+        # Verify augmentation method on first call
+        print("    [DEBUG] Checking augmentation quality...")
+        # Check if augmentations have wrapped edges (torch.roll artifact)
+        # For proper translation, edges should be zero-padded, not wrapped
+        first_aug = x_aug[1]  # Get a shifted augmentation
+        edge_sum = first_aug[:, :, 0].sum() + first_aug[:, :, -1].sum() + first_aug[:, 0, :].sum() + first_aug[:, -1, :].sum()
+        print(f"    [DEBUG] Edge pixel sum (should be low for zero-padding): {edge_sum:.4f}")
+    
     with torch.no_grad():
         for i in range(num_augmentations):
             output = model(x_aug[i:i+1])
@@ -879,7 +893,7 @@ def main():
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, correctly_labeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
     parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
@@ -1034,6 +1048,14 @@ def main():
             target_y = torch.from_numpy(np.array([args.mislabeled_target_class]))  # Mislabel
             if rank == 0:
                 print(f"Mislabeled canary: Using sample at index {canary_idx} (original label: {original_label}) relabeled as class {args.mislabeled_target_class}")
+        elif args.target_type == 'correctly_labeled':
+            # Use a real sample from the dataset with its CORRECT label
+            # This should be more memorable than mislabeled
+            canary_idx = np.random.randint(0, len(X_out))
+            target_X = X_out[canary_idx].unsqueeze(0)
+            target_y = y_out[canary_idx].unsqueeze(0)
+            if rank == 0:
+                print(f"Correctly labeled canary: Using sample at index {canary_idx} (label: {target_y.item()})")
         elif args.target_type == 'random_noise':
             # Random noise canary: Gaussian noise with pixel values clipped to [0, 1]
             target_X = torch.randn_like(X_out[[0]]) * args.noise_scale + 0.5
