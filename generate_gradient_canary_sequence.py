@@ -331,7 +331,12 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
             
-            drop_mask[drop_mask == 1] = 2
+            # Transition ascent->dropped ONLY for samples in the current batch
+            # This ensures samples marked at end of epoch get gradient ascent applied throughout the next epoch
+            batch_indices = global_indices.cpu().numpy()
+            batch_drop_mask = drop_mask[batch_indices]
+            samples_to_transition = batch_indices[batch_drop_mask == 1]
+            drop_mask[samples_to_transition] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
