@@ -761,8 +761,23 @@ def train_model_multi_canary(
                     if rank == 0:
                         if n_canaries_marked_this_epoch > 0:
                             print(f"  [Defense] Marked {n_newly_marked} samples for filtering (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
+                            
+                            # Show defense scores for newly marked canaries
+                            newly_marked_canary_scores = scores[newly_marked_canaries]
+                            print(f"  [Defense] Newly marked canary scores: min={newly_marked_canary_scores.min():.6f}, max={newly_marked_canary_scores.max():.6f}, mean={newly_marked_canary_scores.mean():.6f}")
                         else:
                             print(f"  [Defense] Marked {n_newly_marked} samples for filtering ({canary_fraction:.1%} of canaries filtered so far)")
+                        
+                        # Show score statistics for all canaries vs all samples
+                        canary_scores = scores[canary_indices_np]
+                        all_scores = scores[scores > 0]  # Only non-zero scores
+                        if len(all_scores) > 0:
+                            print(f"  [Defense] Canary scores: min={canary_scores.min():.6f}, max={canary_scores.max():.6f}, mean={canary_scores.mean():.6f}")
+                            print(f"  [Defense] All sample scores: min={all_scores.min():.6f}, max={all_scores.max():.6f}, mean={all_scores.mean():.6f}")
+                            
+                            # Show scores of newly filtered samples
+                            newly_marked_all_scores = scores[newly_marked_indices]
+                            print(f"  [Defense] Newly filtered sample scores: min={newly_marked_all_scores.min():.6f}, max={newly_marked_all_scores.max():.6f}, mean={newly_marked_all_scores.mean():.6f}")
                 else:
                     if rank == 0:
                         print(f"  [Defense] Marked {n_newly_marked} samples for filtering")

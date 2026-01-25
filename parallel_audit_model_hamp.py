@@ -1426,14 +1426,33 @@ def main():
                         
                         if len(canary_drop_ratio_events) > 0:
                             print(f"  [Original Defense] Drop events: {canary_drop_ratio_events}")
+                        
+                        # Detailed logging: show canary indices and their drop status
+                        canaries_dropped = canary_indices[canary_drop_epochs >= 0]
+                        canaries_not_dropped = canary_indices[canary_drop_epochs < 0]
+                        print(f"  [Original Defense] Canaries dropped (indices): {canaries_dropped[:10]}{'...' if len(canaries_dropped) > 10 else ''}")
+                        print(f"  [Original Defense] Canaries NOT dropped (indices): {canaries_not_dropped[:10]}{'...' if len(canaries_not_dropped) > 10 else ''}")
                     else:
                         print(f"  [Original Defense] No canary tracking (OUT world or no canaries)")
                 
-                # Count total samples dropped
+                # Count total samples dropped and show which ones
                 n_dropped_total = np.sum(drop_mask >= 1)
                 n_total_samples = len(drop_mask)
                 drop_ratio_total = n_dropped_total / n_total_samples if n_total_samples > 0 else 0
                 print(f"  [Original Defense] Total samples filtered: {n_dropped_total}/{n_total_samples} ({drop_ratio_total*100:.2f}%)")
+                
+                # Show indices of filtered samples (for comparison with canaries)
+                if n_dropped_total > 0:
+                    filtered_indices = np.where(drop_mask >= 1)[0]
+                    print(f"  [Original Defense] Filtered sample indices (first 20): {filtered_indices[:20]}")
+                    
+                    # If we have canaries, check overlap
+                    if canary_indices is not None:
+                        overlap = np.intersect1d(filtered_indices, canary_indices)
+                        print(f"  [Original Defense] Overlap between filtered and canaries: {len(overlap)}/{len(canary_indices)} canaries were filtered")
+                        if len(overlap) < len(canary_indices):
+                            non_filtered_canaries = np.setdiff1d(canary_indices, filtered_indices)
+                            print(f"  [Original Defense] Canaries that were NOT filtered (first 10): {non_filtered_canaries[:10]}")
             elif args.defense_type == 'hamp':
                 # Use HAMP train_model (local function)
                 model = train_model_hamp(
