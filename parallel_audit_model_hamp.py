@@ -1010,6 +1010,7 @@ def main():
     parser.add_argument('--grad_scatter_k', type=int, default=5, help='original defense: k for gradient scatter')
     parser.add_argument('--defense_apply_ascent', action='store_true', help='original defense: apply gradient ascent on filtered samples')
     parser.add_argument('--defense_global_filter', action='store_true', help='original defense: use global filtering across all samples instead of per-batch')
+    parser.add_argument('--ascent_steps', type=int, default=20, help='original defense: number of epochs to apply gradient ascent before dropping samples')
     parser.add_argument('--hamp_gamma', type=float, default=0.95, help='HAMP soft label entropy percentile (0-1, default 0.95 = 95%% of max entropy)')
     parser.add_argument('--hamp_alpha_entropy', type=float, default=1.0, help='HAMP entropy regularization weight (default: 1.0 to match original HAMP)')
 
@@ -1380,6 +1381,7 @@ def main():
                     defense_k=args.defense_k,
                     defense_apply_ascent=args.defense_apply_ascent,
                     defense_filter_every=args.defense_filter_every,
+                    ascent_steps=args.ascent_steps,
                     defense_score_fn=args.defense_score_fn,
                     defense_score_norm=args.defense_score_norm,
                     defense_global_filter=args.defense_global_filter,

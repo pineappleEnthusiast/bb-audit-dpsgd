@@ -364,6 +364,7 @@ def train_model_multi_canary(
     defense_k: int,
     defense_apply_ascent: bool,
     defense_filter_every: int,
+    ascent_steps: int,
     defense_score_fn: str,
     defense_score_norm: str,
     defense_global_filter: bool,
@@ -669,9 +670,9 @@ def train_model_multi_canary(
             batch_drop_mask = drop_mask[batch_indices]
             batch_ascent_counter = ascent_epoch_counter[batch_indices]
             
-            # Only transition samples that are in ascent state (drop_mask == 1) AND have been in ascent for >= k epochs
+            # Only transition samples that are in ascent state (drop_mask == 1) AND have been in ascent for >= ascent_steps epochs
             samples_in_ascent = batch_indices[batch_drop_mask == 1]
-            samples_ready_to_drop = samples_in_ascent[batch_ascent_counter[batch_drop_mask == 1] >= int(defense_k)]
+            samples_ready_to_drop = samples_in_ascent[batch_ascent_counter[batch_drop_mask == 1] >= int(ascent_steps)]
             
             # Track canaries transitioning 1 -> 2
             if defense and canary_indices_np is not None and canary_drop_epochs is not None and len(samples_ready_to_drop) > 0:
@@ -881,6 +882,7 @@ def main():
     parser.add_argument('--defense', action='store_true')
     parser.add_argument('--defense_k', type=int, default=5)
     parser.add_argument('--defense_apply_ascent', action='store_true', default=False)
+    parser.add_argument('--ascent_steps', type=int, default=20, help='Number of epochs to apply gradient ascent before dropping samples')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'])
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm')
     parser.add_argument('--defense_global_filter', action='store_true', default=False, help='Use global filtering (top-k across entire dataset) instead of per-class filtering')
@@ -1055,6 +1057,7 @@ def main():
                 defense_k=int(args.defense_k),
                 defense_apply_ascent=bool(args.defense_apply_ascent),
                 defense_filter_every=1,
+                ascent_steps=int(args.ascent_steps),
                 defense_score_fn=str(args.defense_score_fn),
                 defense_score_norm=str(args.defense_score_norm),
                 defense_global_filter=bool(args.defense_global_filter),
@@ -1205,6 +1208,7 @@ def main():
                 defense_k=int(args.defense_k),
                 defense_apply_ascent=bool(args.defense_apply_ascent),
                 defense_filter_every=1,
+                ascent_steps=int(args.ascent_steps),
                 defense_score_fn=str(args.defense_score_fn),
                 defense_score_norm=str(args.defense_score_norm),
                 defense_global_filter=bool(args.defense_global_filter),
