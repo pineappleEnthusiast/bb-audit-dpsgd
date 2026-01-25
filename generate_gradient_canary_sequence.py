@@ -449,9 +449,9 @@ def create_1hot_gradient(model, hot_index, norm_value, device='cuda'):
                 flat_grad = grad.view(-1)
                 flat_grad[local_idx] = norm_value
                 grad = flat_grad.view(info['shape'])
-            crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
+            crafted_grad[name] = grad
         else:
-            crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
+            crafted_grad[name] = torch.zeros_like(param)
 
     return crafted_grad
 
