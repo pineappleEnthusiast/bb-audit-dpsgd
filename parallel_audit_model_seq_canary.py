@@ -236,6 +236,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
+    # Debug: Show model parameter names
+    if gradient_space_audit and rank == 0:
+        model_param_names = list(model.named_parameters())
+        print(f"  [DEBUG] Model parameter names (first 5): {[name for name, _ in model_param_names[:5]]}")
+
     if epsilon is not None:
         sample_rate = batch_size / len(X)
         noise_multiplier = get_noise_multiplier(
@@ -952,6 +957,10 @@ def main():
                         print(f"  Epochs with canaries: {sorted(crafted_grad_sequence.keys())}")
                         print(f"  1-hot index: {gradient_canary_hot_index}")
                         print(f"  [DEBUG] Will use hot_index scoring for audit")
+                        # Debug: Show parameter names in gradient
+                        first_epoch = sorted(crafted_grad_sequence.keys())[0]
+                        first_grad = crafted_grad_sequence[first_epoch]
+                        print(f"  [DEBUG] Gradient parameter names (first 5): {list(first_grad.keys())[:5]}")
                 else:
                     # Old format (backward compatibility)
                     crafted_grad_sequence = {}
