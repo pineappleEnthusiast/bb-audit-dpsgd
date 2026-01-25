@@ -207,14 +207,83 @@ class IndexedTensorDataset(Dataset):
         return self.tensors[0].size(0)
 
 
-def generate_soft_labels(y, num_classes, gamma=0.5, device='cuda:0'):
+def compute_p_from_target_entropy(gamma, num_classes, max_iter=100, tol=1e-6):
+    """
+    Solve for probability p given target entropy gamma.
+    
+    The soft label distribution is: [p, q, q, ..., q] where q = (1-p)/(C-1)
+    Entropy: H = -p*log(p) - (C-1)*q*log(q)
+    
+    We solve for p such that H = gamma using binary search.
+    
+    Args:
+        gamma: Target entropy as percentile of max entropy (0 to 1)
+               e.g., gamma=0.95 means 95% of log(num_classes)
+        num_classes: Number of classes
+        max_iter: Maximum iterations for binary search
+        tol: Tolerance for convergence
+    
+    Returns:
+        p: Probability for ground truth class
+    """
+    import math
+    
+    # Maximum entropy is log(C) when uniform distribution
+    max_entropy = math.log(num_classes)
+    
+    # Interpret gamma as percentile of max entropy (matching original HAMP)
+    target_entropy = gamma * max_entropy
+    
+    # Clamp target_entropy to valid range
+    target_entropy = max(0.0, min(target_entropy, max_entropy))
+    
+    # If target_entropy is max entropy, return uniform distribution
+    if abs(target_entropy - max_entropy) < tol:
+        return 1.0 / num_classes
+    
+    # If target_entropy is 0, return one-hot (p=1)
+    if target_entropy < tol:
+        return 1.0
+    
+    def compute_entropy(p):
+        """Compute entropy for given p"""
+        if p <= 0 or p >= 1:
+            return 0.0
+        q = (1 - p) / (num_classes - 1)
+        if q <= 0:
+            return 0.0
+        H = -p * math.log(p) - (num_classes - 1) * q * math.log(q)
+        return H
+    
+    # Binary search for p
+    p_low, p_high = 1.0 / num_classes, 1.0
+    
+    for _ in range(max_iter):
+        p_mid = (p_low + p_high) / 2.0
+        H_mid = compute_entropy(p_mid)
+        
+        if abs(H_mid - target_entropy) < tol:
+            return p_mid
+        
+        if H_mid < target_entropy:
+            # Need higher entropy, decrease p (move toward uniform)
+            p_high = p_mid
+        else:
+            # Need lower entropy, increase p (move toward one-hot)
+            p_low = p_mid
+    
+    return (p_low + p_high) / 2.0
+
+
+def generate_soft_labels(y, num_classes, gamma=0.95, device='cuda:0'):
     """
     Generate high-entropy soft labels for HAMP defense.
     
     Args:
         y: Hard labels (batch_size,)
         num_classes: Number of classes
-        gamma: Target entropy parameter (controls confidence level)
+        gamma: Target entropy as percentile of max entropy (0 to 1)
+               e.g., gamma=0.95 means 95% of log(num_classes)
         device: Device to place tensors on
     
     Returns:
@@ -222,12 +291,8 @@ def generate_soft_labels(y, num_classes, gamma=0.5, device='cuda:0'):
     """
     batch_size = y.shape[0]
     
-    # For each sample, assign probability p to ground truth and (1-p)/C-1 to others
-    # We choose p such that entropy meets target
-    # Target entropy: H = -p*log(p) - (1-p)*log((1-p)/(C-1))
-    # For simplicity, we use p = gamma (e.g., 0.6 for 60% confidence on ground truth)
-    
-    p = gamma
+    # Compute p from target entropy gamma
+    p = compute_p_from_target_entropy(gamma, num_classes)
     other_prob = (1 - p) / (num_classes - 1)
     
     # Vectorized: initialize all to other_prob
@@ -239,16 +304,18 @@ def generate_soft_labels(y, num_classes, gamma=0.5, device='cuda:0'):
     return soft_labels
 
 
-def kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy=0.1):
+def kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy=1.0):
     """
     HAMP loss: KL divergence + entropy regularization.
     
     Loss = KL(soft_labels || softmax(logits)) - alpha * H(softmax(logits))
     
+    The entropy term is SUBTRACTED to maximize output entropy (encourage uncertainty).
+    
     Args:
         logits: Model output logits (batch_size, num_classes)
         soft_labels: Target soft label distribution (batch_size, num_classes)
-        alpha_entropy: Weight for entropy regularization term
+        alpha_entropy: Weight for entropy regularization term (default: 1.0 to match original HAMP)
     
     Returns:
         loss: Scalar loss value
@@ -261,11 +328,11 @@ def kl_divergence_with_entropy_regularization(logits, soft_labels, alpha_entropy
     log_probs = F.log_softmax(logits, dim=1)
     kl_loss = torch.sum(soft_labels * (torch.log(soft_labels + 1e-10) - log_probs), dim=1).mean()
     
-    # Entropy regularization: -sum(probs * log(probs)) - subtract to maximize entropy
+    # Entropy regularization: -sum(probs * log(probs))
     entropy = -torch.sum(probs * log_probs, dim=1).mean()
     
-    # Combined loss: KL divergence + entropy regularization to encourage uncertainty
-    loss = kl_loss + alpha_entropy * entropy
+    # Combined loss: KL divergence - alpha * entropy (subtract to maximize entropy)
+    loss = kl_loss - alpha_entropy * entropy
     
     return loss
 
@@ -357,7 +424,7 @@ def generate_augmentations(x, num_augmentations=18):
     return torch.stack(augmentations[:num_augmentations])
 
 
-def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device='cuda:0'):
+def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device='cuda:0', apply_defense=False, verbose=False):
     """
     Generate binary correctness vector for augmentation-based MIA.
     
@@ -367,6 +434,8 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
         y: True label (scalar or tensor)
         num_augmentations: Number of augmentations to use
         device: Device to run on
+        apply_defense: If True, apply rank-preserving score replacement defense
+        verbose: If True, print detailed logging
     
     Returns:
         binary_vector: Binary vector of shape (num_augmentations,) with 1 for correct, 0 for incorrect
@@ -388,10 +457,25 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     with torch.no_grad():
         for i in range(num_augmentations):
             output = model(x_aug[i:i+1])
+            
+            if apply_defense:
+                # Apply HAMP testing-time defense: rank-preserving score replacement
+                input_shape = x_aug[i:i+1].shape[1:]  # (C, H, W)
+                random_x = generate_random_samples(1, input_shape, device=device)
+                random_output = model(random_x)
+                output = rank_preserving_score_replacement(output, random_output)
+            
             pred = torch.argmax(output, dim=1).item()
-            binary_vector.append(1 if pred == y_true else 0)
+            is_correct = 1 if pred == y_true else 0
+            binary_vector.append(is_correct)
     
-    return np.array(binary_vector, dtype=np.float32)
+    binary_vector_np = np.array(binary_vector, dtype=np.float32)
+    num_correct = int(binary_vector_np.sum())
+    
+    if verbose:
+        print(f"    Augmentations classified correctly: {num_correct}/{num_augmentations} ({100*num_correct/num_augmentations:.1f}%)")
+    
+    return binary_vector_np
 
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
@@ -792,8 +876,8 @@ def main():
                         help='Target class for gradient-space audit')
 
     parser.add_argument('--defense', action='store_true', help='use HAMP defense during training')
-    parser.add_argument('--hamp_gamma', type=float, default=0.95, help='HAMP soft label confidence (gamma parameter)')
-    parser.add_argument('--hamp_alpha_entropy', type=float, default=0.001, help='HAMP entropy regularization weight')
+    parser.add_argument('--hamp_gamma', type=float, default=0.95, help='HAMP soft label entropy percentile (0-1, default 0.95 = 95%% of max entropy)')
+    parser.add_argument('--hamp_alpha_entropy', type=float, default=1.0, help='HAMP entropy regularization weight (default: 1.0 to match original HAMP)')
 
     args = parser.parse_args()
     
@@ -968,8 +1052,9 @@ def main():
             
             # Generate binary correctness vector using augmentation-based MIA
             model.eval()
+            print(f"  Generating binary correctness vector for {world.upper()} world...")
             binary_vector = generate_binary_correctness_vector(
-                model, target_X, target_y, num_augmentations=18, device=device
+                model, target_X, target_y, num_augmentations=18, device=device, apply_defense=args.defense, verbose=True
             )
             binary_vectors[world].append(binary_vector)
             
@@ -994,8 +1079,8 @@ def main():
             losses[world].append(losses_world)
             train_set_accs.append(train_acc)
             
-            if rank == 0:
-                print(f"  {world.upper()} - Train acc: {train_acc:.4f}, Binary vector sum: {binary_vector.sum():.1f}/18")
+            num_correct = int(binary_vector.sum())
+            print(f"  {world.upper()} - Train acc: {train_acc:.4f}, Canary augmentations correct: {num_correct}/18 ({100*num_correct/18:.1f}%)")
     
     # Save per-rank binary vectors
     suffix = f'_rank{rank}' if rank > 0 else ''
@@ -1034,60 +1119,49 @@ def main():
             np.save(os.path.join(args.out, 'binary_vectors_in.npy'), vectors_in_combined)
             np.save(os.path.join(args.out, 'binary_vectors_out.npy'), vectors_out_combined)
             
-            # Train logistic regression attack model
-            print("\n[Rank 0] Training logistic regression attack model...")
-            X_attack = np.vstack([vectors_in_combined, vectors_out_combined])
-            y_attack = np.concatenate([
-                np.ones(len(vectors_in_combined)),
-                np.zeros(len(vectors_out_combined))
-            ])
+            # Train logistic regression attack model with leave-one-out cross-validation
+            print("\n[Rank 0] Training logistic regression attack model with leave-one-out CV...")
             
-            # Use holdout split if requested
-            if args.holdout_audit:
-                n = len(vectors_in_combined)
-                if n < 2:
-                    raise ValueError("holdout_audit requires at least 2 samples per world")
+            num_shadow_models = len(vectors_in_combined)
+            print(f"Number of shadow models: {num_shadow_models}")
+            
+            if num_shadow_models < 2:
+                raise ValueError(f"Need at least 2 shadow models for leave-one-out, got {num_shadow_models}")
+            
+            # Prepare data: shape (num_models, num_augmentations)
+            # Each row is a model's binary correctness vector for the canary
+            all_features = np.vstack([vectors_in_combined, vectors_out_combined])  # (2*num_models, num_aug)
+            all_membership = np.concatenate([
+                np.ones(num_shadow_models, dtype=int),   # in-distribution
+                np.zeros(num_shadow_models, dtype=int)   # out-of-distribution
+            ])  # (2*num_models,)
+            
+            # Leave-one-out cross-validation: for each model, train on all others
+            labelonly_scores_raw = np.empty(2 * num_shadow_models, dtype=np.float32)
+            
+            for target_model_idx in range(2 * num_shadow_models):
+                # Create training set: all models except target_model_idx
+                train_mask = np.ones(2 * num_shadow_models, dtype=bool)
+                train_mask[target_model_idx] = False
                 
-                np.random.seed(args.seed)
-                indices = np.random.permutation(n)
-                train_idx = indices[:n // 2]
-                test_idx = indices[n // 2:]
+                X_train = all_features[train_mask]
+                y_train = all_membership[train_mask]
                 
-                # Training set: first half of in/out
-                X_train = np.vstack([
-                    vectors_in_combined[train_idx],
-                    vectors_out_combined[train_idx]
-                ])
-                y_train = np.concatenate([
-                    np.ones(len(train_idx)),
-                    np.zeros(len(train_idx))
-                ])
-                
-                # Test set: second half of in/out
-                X_test = np.vstack([
-                    vectors_in_combined[test_idx],
-                    vectors_out_combined[test_idx]
-                ])
-                y_test = np.concatenate([
-                    np.ones(len(test_idx)),
-                    np.zeros(len(test_idx))
-                ])
-                
-                # Train attack model on training set
-                attack_model = LogisticRegression(C=1.0, random_state=args.seed, max_iter=1000)
+                # Train logistic regression on all other models
+                attack_model = LogisticRegression(C=1.0, random_state=args.seed, max_iter=1000, solver='lbfgs')
                 attack_model.fit(X_train, y_train)
                 
-                # Get membership scores on test set
-                mia_scores = attack_model.predict_proba(X_test)[:, 1]  # Probability of being in training set
-                mia_labels = y_test.astype(np.int64)
-            else:
-                # Train on all data (no holdout)
-                attack_model = LogisticRegression(C=1.0, random_state=args.seed, max_iter=1000)
-                attack_model.fit(X_attack, y_attack)
+                # Get score for target model
+                X_test = all_features[target_model_idx:target_model_idx+1]
+                score = attack_model.predict_proba(X_test)[0, 1]  # Probability of being in training set
+                labelonly_scores_raw[target_model_idx] = score
                 
-                # Get membership scores on all data
-                mia_scores = attack_model.predict_proba(X_attack)[:, 1]
-                mia_labels = y_attack.astype(np.int64)
+                if target_model_idx % 10 == 0:
+                    print(f"  Processed {target_model_idx}/{2*num_shadow_models} models")
+            
+            # Separate scores by membership
+            mia_scores = labelonly_scores_raw
+            mia_labels = all_membership.astype(np.int64)
             
             # Compute empirical epsilon using attack model scores
             emp_eps, threshold, _, _ = _audit_from_scores(
