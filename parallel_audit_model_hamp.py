@@ -408,9 +408,28 @@ def generate_augmentations(x, num_augmentations=18):
                 if flip:
                     aug = torch.flip(aug, dims=[2])  # Flip width dimension
                 
-                # Apply shift (translation)
+                # Apply shift (translation) with zero-padding instead of wrapping
                 if shift_x != 0 or shift_y != 0:
-                    aug = torch.roll(aug, shifts=(shift_y, shift_x), dims=(1, 2))
+                    # Use affine transformation for proper translation
+                    C, H, W = aug.shape
+                    shifted = torch.zeros_like(aug)
+                    
+                    # Calculate source and destination slices
+                    src_y_start = max(0, -shift_y)
+                    src_y_end = min(H, H - shift_y)
+                    dst_y_start = max(0, shift_y)
+                    dst_y_end = min(H, H + shift_y)
+                    
+                    src_x_start = max(0, -shift_x)
+                    src_x_end = min(W, W - shift_x)
+                    dst_x_start = max(0, shift_x)
+                    dst_x_end = min(W, W + shift_x)
+                    
+                    # Copy the shifted region
+                    shifted[:, dst_y_start:dst_y_end, dst_x_start:dst_x_end] = \
+                        aug[:, src_y_start:src_y_end, src_x_start:src_x_end]
+                    
+                    aug = shifted
                 
                 augmentations.append(aug)
                 
