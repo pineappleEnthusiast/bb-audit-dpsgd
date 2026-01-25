@@ -1555,6 +1555,11 @@ def main():
             mia_scores = labelonly_scores_raw
             mia_labels = all_membership.astype(np.int64)
             
+            # Print mean scores for HAMP augmentation-based audit
+            hamp_scores_in = mia_scores[mia_labels == 1]
+            hamp_scores_out = mia_scores[mia_labels == 0]
+            print(f"  HAMP augmentation scores: mean_in={hamp_scores_in.mean():.4f}, mean_out={hamp_scores_out.mean():.4f}, diff={hamp_scores_in.mean() - hamp_scores_out.mean():.4f}")
+            
             # Compute empirical epsilon using attack model scores
             emp_eps, threshold, _, _ = _audit_from_scores(
                 mia_scores[mia_labels == 1],  # Scores for in-distribution
@@ -1593,14 +1598,17 @@ def main():
                 loss_in_array = np.asarray(combined_loss_in, dtype=np.float32)
                 loss_out_array = np.asarray(combined_loss_out, dtype=np.float32)
                 
+                print(f"  Loss-based scores: mean_in={loss_in_array.mean():.4f}, mean_out={loss_out_array.mean():.4f}, diff={loss_in_array.mean() - loss_out_array.mean():.4f}")
+                
                 # Compute empirical epsilon from loss-based scores
+                # Use different seed than HAMP audit to avoid identical random choices
                 emp_eps_loss, threshold_loss, loss_mia_scores, loss_mia_labels = _audit_from_scores(
                     loss_in_array,
                     loss_out_array,
                     float(args.alpha),
                     float(args.delta),
                     False,
-                    seed=int(args.seed),
+                    seed=int(args.seed) + 999999,  # Different seed for loss-based audit
                 )
                 
                 np.save(os.path.join(args.out, 'emp_eps_loss.npy'), np.asarray(emp_eps_loss, dtype=np.float32))
