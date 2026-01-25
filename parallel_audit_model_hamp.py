@@ -454,6 +454,7 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     
     # Query model on all augmentations
     binary_vector = []
+    predictions = []
     with torch.no_grad():
         for i in range(num_augmentations):
             output = model(x_aug[i:i+1])
@@ -466,6 +467,7 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
                 output = rank_preserving_score_replacement(output, random_output)
             
             pred = torch.argmax(output, dim=1).item()
+            predictions.append(pred)
             is_correct = 1 if pred == y_true else 0
             binary_vector.append(is_correct)
     
@@ -473,6 +475,14 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     num_correct = int(binary_vector_np.sum())
     
     if verbose:
+        # Count prediction distribution
+        pred_counts = {}
+        for p in predictions:
+            pred_counts[p] = pred_counts.get(p, 0) + 1
+        pred_dist = ', '.join([f"class {k}: {v}" for k, v in sorted(pred_counts.items())])
+        
+        print(f"    Target label: {y_true}")
+        print(f"    Prediction distribution: {pred_dist}")
         print(f"    Augmentations classified correctly: {num_correct}/{num_augmentations} ({100*num_correct/num_augmentations:.1f}%)")
     
     return binary_vector_np
@@ -995,10 +1005,12 @@ def main():
             class_0_indices = (y_out == 0).nonzero(as_tuple=True)[0]
             if len(class_0_indices) == 0:
                 raise ValueError("No class 0 samples found in dataset")
-            target_X = X_out[class_0_indices[0]].unsqueeze(0)
-            target_y = torch.from_numpy(np.array([1]))  # Mislabel as class 1
+            canary_idx = class_0_indices[0].item()
+            target_X = X_out[canary_idx].unsqueeze(0)
+            original_label = y_out[canary_idx].item()
+            target_y = torch.from_numpy(np.array([args.mislabeled_target_class]))  # Mislabel
             if rank == 0:
-                print(f"Mislabeled canary: Using class 0 sample labeled as class 1")
+                print(f"Mislabeled canary: Using sample at index {canary_idx} (original label: {original_label}) relabeled as class {args.mislabeled_target_class}")
         elif args.target_type == 'sanity_check':
             target_X = X_out[-1].unsqueeze(0)
             target_y = y_out[-1].unsqueeze(0)
@@ -1052,6 +1064,14 @@ def main():
             
             # Generate binary correctness vector using augmentation-based MIA
             model.eval()
+            
+            # First check what the model predicts on the original canary
+            with torch.no_grad():
+                original_output = model(target_X.to(device))
+                original_pred = torch.argmax(original_output, dim=1).item()
+                target_y_val = target_y.item() if isinstance(target_y, torch.Tensor) else int(target_y)
+                print(f"  Original canary prediction: {original_pred}, Training label: {target_y_val}")
+            
             print(f"  Generating binary correctness vector for {world.upper()} world...")
             binary_vector = generate_binary_correctness_vector(
                 model, target_X, target_y, num_augmentations=18, device=device, apply_defense=args.defense, verbose=True
