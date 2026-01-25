@@ -107,8 +107,6 @@ def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
     
     # Attack failed - return best adversarial example found
     return best_adv, max_iter, False
-
-
 class AugmentationFunction:
     def __init__(self, image_size=32, channels=3):
         self.base_transforms = v2.Compose([
@@ -489,8 +487,8 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
         first_aug = x_aug[1]
         orig = x.squeeze(0) if x.dim() == 4 else x
         
-        # Check if images are identical (no shift applied)
-        if torch.allclose(first_aug, orig):
+        # Check if images are identical (no shift applied) - ensure same device
+        if torch.allclose(first_aug.cpu(), orig.cpu()):
             print("    [DEBUG] WARNING: Augmentation 1 is identical to original (no shift applied!)")
         else:
             print("    [DEBUG] Augmentation 1 differs from original (shift applied correctly)")
@@ -498,6 +496,17 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
         # Check edge pixels - for a shifted image, some edges should be zero
         edge_sum = first_aug[:, :, 0].sum() + first_aug[:, :, -1].sum() + first_aug[:, 0, :].sum() + first_aug[:, -1, :].sum()
         print(f"    [DEBUG] Edge pixel sum: {edge_sum:.4f}")
+        
+        # Additional check: count how many edge pixels are exactly zero
+        edge_pixels = torch.cat([
+            first_aug[:, :, 0].flatten(),
+            first_aug[:, :, -1].flatten(),
+            first_aug[:, 0, :].flatten(),
+            first_aug[:, -1, :].flatten()
+        ])
+        zero_edges = (edge_pixels == 0).sum().item()
+        total_edges = edge_pixels.numel()
+        print(f"    [DEBUG] Zero-valued edge pixels: {zero_edges}/{total_edges} ({100*zero_edges/total_edges:.1f}%)")
     
     with torch.no_grad():
         for i in range(num_augmentations):
