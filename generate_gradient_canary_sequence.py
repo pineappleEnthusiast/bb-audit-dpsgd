@@ -449,9 +449,9 @@ def create_1hot_gradient(model, hot_index, norm_value, device='cuda'):
                 flat_grad = grad.view(-1)
                 flat_grad[local_idx] = norm_value
                 grad = flat_grad.view(info['shape'])
-            crafted_grad[name] = grad
+            crafted_grad[name] = grad.unsqueeze(0)  # Add batch dimension
         else:
-            crafted_grad[name] = torch.zeros_like(param)
+            crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
 
     return crafted_grad
 
@@ -556,9 +556,9 @@ def main():
     # Create gradient sequence
     print(f"\nGenerating gradient sequence...")
     
-    # Insert canary in the last 2 epochs
-    epoch_first = args.n_epochs - 2
-    epoch_second = args.n_epochs - 1
+    # Insert canary in the first 2 epochs
+    epoch_first = 0
+    epoch_second = 1
     
     # First epoch: positive norm
     print(f"  Epoch {epoch_first}: norm = {args.norm_value}")
