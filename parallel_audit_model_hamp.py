@@ -917,13 +917,16 @@ def main():
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, correctly_labeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, backdoor_mislabeled, correctly_labeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
     parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
                         help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
     parser.add_argument('--mislabeled_target_class', type=int, default=1,
                         help='Target class for mislabeled canary (default: 1). The canary will be a true class 0 sample relabeled as this class.')
+    parser.add_argument('--backdoor_patch_size', type=int, default=3, help='Size of backdoor patch (default: 3x3 pixels)')
+    parser.add_argument('--backdoor_patch_value', type=float, default=None, help='Value for backdoor patch pixels (default: None = max value in data range)')
+    parser.add_argument('--backdoor_patch_location', type=str, default='bottom_right', choices=['top_left', 'top_right', 'bottom_left', 'bottom_right', 'center'], help='Location of backdoor patch (default: bottom_right)')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
     parser.add_argument('--noise_scale', type=float, default=0.5, help='scale factor for noise-based canaries (default: 0.5)')
     parser.add_argument('--adversarial_epsilon', type=float, default=0.3, help='epsilon for adversarial canary generation (default: 0.3)')
@@ -1072,6 +1075,46 @@ def main():
             target_y = torch.from_numpy(np.array([args.mislabeled_target_class]))  # Mislabel
             if rank == 0:
                 print(f"Mislabeled canary: Using sample at index {canary_idx} (original label: {original_label}) relabeled as class {args.mislabeled_target_class}")
+        elif args.target_type == 'backdoor_mislabeled':
+            # Use a real sample with a backdoor patch and mislabel it
+            # The backdoor makes it visually distinct, so the model can learn the trigger -> label mapping
+            class_0_indices = (y_out == 0).nonzero(as_tuple=True)[0]
+            if len(class_0_indices) == 0:
+                raise ValueError("No class 0 samples found in dataset")
+            canary_idx = class_0_indices[0].item()
+            target_X = X_out[canary_idx].unsqueeze(0).clone()
+            original_label = y_out[canary_idx].item()
+            
+            # Add backdoor patch
+            C, H, W = target_X.shape[1:]
+            patch_size = args.backdoor_patch_size
+            
+            # Determine patch value (default to max value in data for visibility)
+            if args.backdoor_patch_value is not None:
+                patch_value = args.backdoor_patch_value
+            else:
+                patch_value = target_X.max().item()
+            
+            # Determine patch location
+            if args.backdoor_patch_location == 'top_left':
+                y_start, x_start = 0, 0
+            elif args.backdoor_patch_location == 'top_right':
+                y_start, x_start = 0, W - patch_size
+            elif args.backdoor_patch_location == 'bottom_left':
+                y_start, x_start = H - patch_size, 0
+            elif args.backdoor_patch_location == 'bottom_right':
+                y_start, x_start = H - patch_size, W - patch_size
+            elif args.backdoor_patch_location == 'center':
+                y_start, x_start = (H - patch_size) // 2, (W - patch_size) // 2
+            
+            # Apply patch
+            target_X[0, :, y_start:y_start+patch_size, x_start:x_start+patch_size] = patch_value
+            
+            # Mislabel
+            target_y = torch.from_numpy(np.array([args.mislabeled_target_class]))
+            
+            if rank == 0:
+                print(f"Backdoor mislabeled canary: Sample {canary_idx} (original class {original_label}) + {patch_size}x{patch_size} patch at {args.backdoor_patch_location} -> relabeled as class {args.mislabeled_target_class}")
         elif args.target_type == 'correctly_labeled':
             # Use a real sample from the dataset with its CORRECT label
             # This should be more memorable than mislabeled
