@@ -15,9 +15,13 @@ import dill
 from models import Models
 from models.wideresnet import WSConv2d
 from utils.data import load_data
+from utils.dpsgd import clip_and_accum_grads, DefenseConfig
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
+from utils.clipbkd import craft_clipbkd
 
-from models.lstm import LSTM
+# Import original train_model for original defense comparison
+import parallel_audit_model
+from parallel_audit_model import train_model
 from opacus.grad_sample import GradSampleModule
 
 
@@ -573,11 +577,11 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
     return binary_vector_np
 
 
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
+def train_model_hamp(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, num_workers: int = 4, persistent_workers: bool = True, hamp_gamma: float = 0.6, hamp_alpha_entropy: float = 0.1):
     """
-    Train a single model on a single GPU (no DDP).
+    Train a single model on a single GPU (no DDP) with HAMP defense.
     When defense=True, applies HAMP soft label training instead of standard cross-entropy.
     """
 
@@ -977,11 +981,42 @@ def main():
     parser.add_argument('--target_class', type=int, default=0,
                         help='Target class for gradient-space audit')
 
-    parser.add_argument('--defense', action='store_true', help='use HAMP defense during training')
+    parser.add_argument('--defense', action='store_true', help='use HAMP defense during training (deprecated, use --defense_type hamp)')
+    parser.add_argument('--defense_type', type=str, default='none', choices=['none', 'hamp', 'original'], help='defense type: none (no defense), hamp (HAMP defense), original (original gradient filtering defense)')
+    parser.add_argument('--run_both_audits', action='store_true', help='run both original loss-based audit and HAMP augmentation-based audit')
+    
+    # Original defense parameters
+    parser.add_argument('--defense_k', type=int, default=5, help='original defense: number of samples to filter per batch')
+    parser.add_argument('--defense_filter_every', type=int, default=1, help='original defense: filter every N batches')
+    parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='original defense: norm for scoring')
+    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', help='original defense: scoring function')
+    parser.add_argument('--grad_norm_percentile_k', type=int, default=20, help='original defense: percentile k for grad norm')
+    parser.add_argument('--grad_dir_volatility_k', type=int, default=5, help='original defense: volatility k for grad direction')
+    parser.add_argument('--grad_dir_proj_dim', type=int, default=64, help='original defense: projection dimension for grad direction')
+    parser.add_argument('--grad_dir_proj_seed', type=int, default=0, help='original defense: random seed for grad direction projection')
+    parser.add_argument('--dir_unique_k', type=int, default=5, help='original defense: k for direction uniqueness')
+    parser.add_argument('--rand_proj_var_m', type=int, default=10, help='original defense: m for random projection variance')
+    parser.add_argument('--rand_proj_var_seed', type=int, default=0, help='original defense: seed for random projection variance')
+    parser.add_argument('--maxmin_proj_k', type=int, default=10, help='original defense: k for maxmin projection')
+    parser.add_argument('--maxmin_proj_seed', type=int, default=0, help='original defense: seed for maxmin projection')
+    parser.add_argument('--grad_rank_mode', type=str, default='effdim', help='original defense: mode for gradient rank')
+    parser.add_argument('--grad_rank_eps', type=float, default=1e-12, help='original defense: epsilon for gradient rank')
+    parser.add_argument('--grad_accel_proj_dim', type=int, default=64, help='original defense: projection dim for grad acceleration')
+    parser.add_argument('--grad_accel_proj_seed', type=int, default=0, help='original defense: seed for grad acceleration projection')
+    parser.add_argument('--grad_jerk_proj_dim', type=int, default=64, help='original defense: projection dim for grad jerk')
+    parser.add_argument('--grad_jerk_proj_seed', type=int, default=0, help='original defense: seed for grad jerk projection')
+    parser.add_argument('--alignment_proj_k', type=int, default=10, help='original defense: k for alignment projection')
+    parser.add_argument('--alignment_proj_seed', type=int, default=0, help='original defense: seed for alignment projection')
+    parser.add_argument('--grad_scatter_k', type=int, default=5, help='original defense: k for gradient scatter')
+    parser.add_argument('--defense_apply_ascent', action='store_true', help='original defense: apply gradient ascent on filtered samples')
     parser.add_argument('--hamp_gamma', type=float, default=0.95, help='HAMP soft label entropy percentile (0-1, default 0.95 = 95%% of max entropy)')
     parser.add_argument('--hamp_alpha_entropy', type=float, default=1.0, help='HAMP entropy regularization weight (default: 1.0 to match original HAMP)')
 
     args = parser.parse_args()
+    
+    # Handle backward compatibility: --defense flag sets defense_type to hamp
+    if args.defense and args.defense_type == 'none':
+        args.defense_type = 'hamp'
     
     # Map -1 to None for epsilon and max_grad_norm (non-private training)
     if args.epsilon == -1:
@@ -1291,6 +1326,10 @@ def main():
     # Canary scoring: store binary correctness vectors for augmentation-based MIA
     binary_vectors = {'in': [], 'out': []}
     
+    # Also store loss-based scores if running both audits
+    if args.run_both_audits:
+        loss_scores = {'in': [], 'out': []}
+    
     # Distribute repetitions across GPUs
     reps_per_gpu = distribute_reps(args.n_reps // 2, world_size)
     my_reps = reps_per_gpu[rank]
@@ -1310,19 +1349,73 @@ def main():
             generator = torch.Generator().manual_seed(args.seed + rep * 2)
             dl_generator = torch.Generator().manual_seed(args.seed + rep * 2 + 1)
             
-            model = train_model(
-                args.model_name, curr_X, curr_y, target_X, target_y,
-                args.epsilon, args.delta, args.max_grad_norm,
-                args.n_epochs, args.lr, args.block_size, args.batch_size,
-                init_model=init_model, out_dim=out_dim,
-                defense=args.defense,
-                device=str(device),
-                generator=generator,
-                dl_generator=dl_generator,
-                rank=rank,
-                hamp_gamma=args.hamp_gamma,
-                hamp_alpha_entropy=args.hamp_alpha_entropy
-            )
+            # Choose training function based on defense type
+            if args.defense_type == 'original':
+                # Use original train_model from parallel_audit_model.py
+                model = parallel_audit_model.train_model(
+                    args.model_name, curr_X, curr_y, target_X, target_y,
+                    args.epsilon, args.delta, args.max_grad_norm,
+                    args.n_epochs, args.lr, args.block_size, args.batch_size,
+                    init_model=init_model, out_dim=out_dim,
+                    defense=True,
+                    defense_k=args.defense_k,
+                    defense_filter_every=args.defense_filter_every,
+                    defense_score_norm=args.defense_score_norm,
+                    defense_score_fn=args.defense_score_fn,
+                    grad_norm_percentile_k=args.grad_norm_percentile_k,
+                    grad_dir_volatility_k=args.grad_dir_volatility_k,
+                    grad_dir_proj_dim=args.grad_dir_proj_dim,
+                    grad_dir_proj_seed=args.grad_dir_proj_seed,
+                    dir_unique_k=args.dir_unique_k,
+                    rand_proj_var_m=args.rand_proj_var_m,
+                    rand_proj_var_seed=args.rand_proj_var_seed,
+                    maxmin_proj_k=args.maxmin_proj_k,
+                    maxmin_proj_seed=args.maxmin_proj_seed,
+                    grad_rank_mode=args.grad_rank_mode,
+                    grad_rank_eps=args.grad_rank_eps,
+                    grad_accel_proj_dim=args.grad_accel_proj_dim,
+                    grad_accel_proj_seed=args.grad_accel_proj_seed,
+                    grad_jerk_proj_dim=args.grad_jerk_proj_dim,
+                    grad_jerk_proj_seed=args.grad_jerk_proj_seed,
+                    alignment_proj_k=args.alignment_proj_k,
+                    alignment_proj_seed=args.alignment_proj_seed,
+                    grad_scatter_k=args.grad_scatter_k,
+                    defense_apply_ascent=args.defense_apply_ascent,
+                    device=str(device),
+                    generator=generator,
+                    dl_generator=dl_generator,
+                    rank=rank
+                )
+            elif args.defense_type == 'hamp':
+                # Use HAMP train_model (local function)
+                model = train_model_hamp(
+                    args.model_name, curr_X, curr_y, target_X, target_y,
+                    args.epsilon, args.delta, args.max_grad_norm,
+                    args.n_epochs, args.lr, args.block_size, args.batch_size,
+                    init_model=init_model, out_dim=out_dim,
+                    defense=True,
+                    device=str(device),
+                    generator=generator,
+                    dl_generator=dl_generator,
+                    rank=rank,
+                    hamp_gamma=args.hamp_gamma,
+                    hamp_alpha_entropy=args.hamp_alpha_entropy
+                )
+            else:  # args.defense_type == 'none'
+                # No defense - use HAMP train_model but with defense=False
+                model = train_model_hamp(
+                    args.model_name, curr_X, curr_y, target_X, target_y,
+                    args.epsilon, args.delta, args.max_grad_norm,
+                    args.n_epochs, args.lr, args.block_size, args.batch_size,
+                    init_model=init_model, out_dim=out_dim,
+                    defense=False,
+                    device=str(device),
+                    generator=generator,
+                    dl_generator=dl_generator,
+                    rank=rank,
+                    hamp_gamma=args.hamp_gamma,
+                    hamp_alpha_entropy=args.hamp_alpha_entropy
+                )
             
             # Generate binary correctness vector using augmentation-based MIA
             model.eval()
@@ -1336,11 +1429,22 @@ def main():
             
             print(f"  Generating binary correctness vector for {world.upper()} world...")
             binary_vector = generate_binary_correctness_vector(
-                model, target_X, target_y, num_augmentations=18, device=device, apply_defense=args.defense, verbose=True
+                model, target_X, target_y, num_augmentations=18, device=device, apply_defense=(args.defense_type == 'hamp'), verbose=True
             )
             binary_vectors[world].append(binary_vector)
             
-            if args.defense:
+            # Also compute loss-based score if running both audits
+            if args.run_both_audits:
+                with torch.no_grad():
+                    target_X_device = target_X.to(device)
+                    target_y_device = target_y.to(device)
+                    output = model(target_X_device)
+                    loss_score = -nn.CrossEntropyLoss()(output, target_y_device).cpu().item()
+                    loss_scores[world].append(loss_score)
+                    print(f"  Loss-based score: {loss_score:.4f}")
+            
+            # Use appropriate testing/scoring based on defense type
+            if args.defense_type == 'hamp':
                 train_acc = test_model_hamp(model, curr_X, curr_y, batch_size=args.batch_size)
                 
                 losses_world = compute_per_sample_losses_hamp(
@@ -1350,6 +1454,7 @@ def main():
                     hamp_alpha_entropy=args.hamp_alpha_entropy
                 )
             else:
+                # For 'original' defense or 'none', use standard testing
                 train_acc = test_model(model, curr_X, curr_y, batch_size=args.batch_size)
                 
                 losses_world = compute_per_sample_losses(
@@ -1369,6 +1474,11 @@ def main():
     if not args.fit_world_only:
         np.save(os.path.join(args.out, f'binary_vectors_in{suffix}.npy'), np.asarray(binary_vectors['in'], dtype=np.float32))
         np.save(os.path.join(args.out, f'binary_vectors_out{suffix}.npy'), np.asarray(binary_vectors['out'], dtype=np.float32))
+        
+        # Also save loss scores if running both audits
+        if args.run_both_audits:
+            np.save(os.path.join(args.out, f'loss_scores_in{suffix}.npy'), np.asarray(loss_scores['in'], dtype=np.float32))
+            np.save(os.path.join(args.out, f'loss_scores_out{suffix}.npy'), np.asarray(loss_scores['out'], dtype=np.float32))
     
     if rank == 0:
         save_checkpoint(args.out, outputs, losses, all_losses, train_set_accs, [], args.fit_world_only, rank)
@@ -1455,14 +1565,56 @@ def main():
                 seed=int(args.seed),
             )
             
-            np.save(os.path.join(args.out, 'emp_eps.npy'), np.asarray(emp_eps, dtype=np.float32))
-            np.save(os.path.join(args.out, 'mia_threshold.npy'), np.asarray(threshold, dtype=np.float32))
-            np.save(os.path.join(args.out, 'mia_scores.npy'), mia_scores)
-            np.save(os.path.join(args.out, 'mia_labels.npy'), mia_labels)
+            np.save(os.path.join(args.out, 'emp_eps_hamp.npy'), np.asarray(emp_eps, dtype=np.float32))
+            np.save(os.path.join(args.out, 'mia_threshold_hamp.npy'), np.asarray(threshold, dtype=np.float32))
+            np.save(os.path.join(args.out, 'mia_scores_hamp.npy'), mia_scores)
+            np.save(os.path.join(args.out, 'mia_labels_hamp.npy'), mia_labels)
             
-            print(f"\nAUDIT RESULTS")
+            print(f"\nHAMP AUGMENTATION-BASED AUDIT RESULTS")
             print(f"Theoretical epsilon: {args.epsilon}")
-            print(f"Empirical epsilon: {emp_eps}")
+            print(f"Empirical epsilon (HAMP): {emp_eps}")
+            
+            # If running both audits, also compute loss-based audit
+            if args.run_both_audits:
+                print("\n[Rank 0] Computing loss-based audit results...")
+                
+                # Load loss scores from all ranks
+                combined_loss_in = []
+                combined_loss_out = []
+                
+                for r in range(world_size):
+                    suffix = f'_rank{r}' if r > 0 else ''
+                    try:
+                        combined_loss_in.extend(np.load(os.path.join(args.out, f'loss_scores_in{suffix}.npy')))
+                        combined_loss_out.extend(np.load(os.path.join(args.out, f'loss_scores_out{suffix}.npy')))
+                    except FileNotFoundError:
+                        print(f"Warning: Could not find loss scores for rank {r}")
+                
+                loss_in_array = np.asarray(combined_loss_in, dtype=np.float32)
+                loss_out_array = np.asarray(combined_loss_out, dtype=np.float32)
+                
+                # Compute empirical epsilon from loss-based scores
+                emp_eps_loss, threshold_loss, loss_mia_scores, loss_mia_labels = _audit_from_scores(
+                    loss_in_array,
+                    loss_out_array,
+                    float(args.alpha),
+                    float(args.delta),
+                    False,
+                    seed=int(args.seed),
+                )
+                
+                np.save(os.path.join(args.out, 'emp_eps_loss.npy'), np.asarray(emp_eps_loss, dtype=np.float32))
+                np.save(os.path.join(args.out, 'mia_threshold_loss.npy'), np.asarray(threshold_loss, dtype=np.float32))
+                np.save(os.path.join(args.out, 'mia_scores_loss.npy'), loss_mia_scores)
+                np.save(os.path.join(args.out, 'mia_labels_loss.npy'), loss_mia_labels)
+                
+                print(f"\nLOSS-BASED AUDIT RESULTS")
+                print(f"Theoretical epsilon: {args.epsilon}")
+                print(f"Empirical epsilon (Loss-based): {emp_eps_loss}")
+                
+                print(f"\nCOMPARISON")
+                print(f"HAMP augmentation-based: {emp_eps}")
+                print(f"Loss-based (original):   {emp_eps_loss}")
     
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         dist.destroy_process_group()
