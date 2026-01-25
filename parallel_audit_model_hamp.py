@@ -871,6 +871,7 @@ def main():
     parser.add_argument('--noise_scale', type=float, default=0.5, help='scale factor for noise-based canaries (default: 0.5)')
     parser.add_argument('--adversarial_epsilon', type=float, default=0.3, help='epsilon for adversarial canary generation (default: 0.3)')
     parser.add_argument('--adversarial_target_class', type=int, default=None, help='target class for adversarial canary (default: None = untargeted attack on random sample)')
+    parser.add_argument('--n_canaries', type=int, default=1, help='number of identical canary copies to insert into training set (default: 1)')
     parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
     parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
     parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
@@ -1074,10 +1075,11 @@ def main():
                 # Untargeted: try to misclassify
                 target_class = (base_y.item() + 1) % out_dim
             
+            device_ref = next(ref_model.parameters()).device
             target_X, _, success = fgsm_attack(
                 ref_model,
-                base_X.to(ref_model.parameters().__next__().device),
-                torch.tensor([target_class]),
+                base_X.to(device_ref),
+                torch.tensor([target_class], device=device_ref),
                 epsilon=args.adversarial_epsilon,
                 max_iter=20,
                 alpha=args.adversarial_epsilon / 10
@@ -1096,9 +1098,19 @@ def main():
         else:
             raise ValueError(f"Unsupported target_type: {args.target_type}")
     
-    # Define 'in' world dataset: all samples except last, plus the canary
-    X_in = torch.vstack((X_out[:-1], target_X))
-    y_in = torch.cat((y_out[:-1], target_y))
+    # Define 'in' world dataset: all samples except last, plus the canary(ies)
+    # Insert n_canaries identical copies of the canary
+    if args.n_canaries > 1:
+        # Create multiple copies of the canary
+        canary_copies_X = target_X.repeat(args.n_canaries, 1, 1, 1) if target_X.ndim == 4 else target_X.repeat(args.n_canaries, 1)
+        canary_copies_y = target_y.repeat(args.n_canaries)
+        X_in = torch.vstack((X_out[:-args.n_canaries], canary_copies_X))
+        y_in = torch.cat((y_out[:-args.n_canaries], canary_copies_y))
+        if rank == 0:
+            print(f"Inserted {args.n_canaries} identical canary copies into IN world (removed {args.n_canaries} samples from end of dataset)")
+    else:
+        X_in = torch.vstack((X_out[:-1], target_X))
+        y_in = torch.cat((y_out[:-1], target_y))
     
     # Initialize run state (no resume support)
     worlds = [args.fit_world_only] if args.fit_world_only else ['in', 'out']
