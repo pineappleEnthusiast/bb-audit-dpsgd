@@ -381,8 +381,8 @@ def generate_augmentations(x, num_augmentations=18, debug=False):
     """
     Generate augmented versions of input sample for HAMP attack.
     
-    Uses horizontal flips and pixel shifts (±4 pixels on each axis) to create
-    18 augmented versions as described in the HAMP paper.
+    Uses horizontal flips and pixel shifts (±2 pixels on each axis) to create
+    18 augmented versions. Reduced from ±4 to make augmentations less severe.
     
     Args:
         x: Input sample (C, H, W)
@@ -397,8 +397,8 @@ def generate_augmentations(x, num_augmentations=18, debug=False):
     
     augmentations = []
     
-    # Define shift values: -4, -2, 0, 2, 4 for both x and y
-    shifts = [-4, -2, 0, 2, 4]
+    # Define shift values: -2, -1, 0, 1, 2 for both x and y (reduced severity)
+    shifts = [-2, -1, 0, 1, 2]
     
     # Generate augmentations: horizontal flip + shifts
     for flip in [False, True]:
@@ -945,7 +945,7 @@ def main():
     parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
     parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
     parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, backdoor_mislabeled, correctly_labeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
+    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, backdoor_mislabeled, backdoor_correctly_labeled, correctly_labeled, random_noise, gaussian_noise, uniform_noise, adversarial, sanity_check)')
     parser.add_argument('--canary_pt', type=str, default=None,
                         help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
     parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
@@ -1141,6 +1141,43 @@ def main():
             
             if rank == 0:
                 print(f"Backdoor mislabeled canary: Sample {canary_idx} (original class {original_label}) + {patch_size}x{patch_size} patch (value={patch_value:.4f}) at {args.backdoor_patch_location} -> relabeled as class {args.mislabeled_target_class}")
+        elif args.target_type == 'backdoor_correctly_labeled':
+            # Use the LAST sample with a backdoor patch but KEEP the correct label
+            # This should be much more memorable than mislabeled backdoor
+            canary_idx = len(X_out) - 1
+            target_X = X_out[canary_idx].unsqueeze(0).clone()
+            original_label = y_out[canary_idx].item()
+            
+            # Add backdoor patch
+            C, H, W = target_X.shape[1:]
+            patch_size = args.backdoor_patch_size
+            
+            # Determine patch value (default to max value in data for visibility)
+            if args.backdoor_patch_value is not None:
+                patch_value = args.backdoor_patch_value
+            else:
+                patch_value = X_out.max().item()
+            
+            # Determine patch location
+            if args.backdoor_patch_location == 'top_left':
+                y_start, x_start = 0, 0
+            elif args.backdoor_patch_location == 'top_right':
+                y_start, x_start = 0, W - patch_size
+            elif args.backdoor_patch_location == 'bottom_left':
+                y_start, x_start = H - patch_size, 0
+            elif args.backdoor_patch_location == 'bottom_right':
+                y_start, x_start = H - patch_size, W - patch_size
+            elif args.backdoor_patch_location == 'center':
+                y_start, x_start = (H - patch_size) // 2, (W - patch_size) // 2
+            
+            # Apply patch to ALL channels
+            target_X[0, :, y_start:y_start+patch_size, x_start:x_start+patch_size] = patch_value
+            
+            # Keep CORRECT label (not mislabeled)
+            target_y = y_out[canary_idx].unsqueeze(0)
+            
+            if rank == 0:
+                print(f"Backdoor correctly labeled canary: Sample {canary_idx} (class {original_label}) + {patch_size}x{patch_size} patch (value={patch_value:.4f}) at {args.backdoor_patch_location} -> kept as class {original_label}")
         elif args.target_type == 'correctly_labeled':
             # Use a real sample from the dataset with its CORRECT label
             # This should be more memorable than mislabeled
