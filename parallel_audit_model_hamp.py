@@ -491,21 +491,28 @@ def generate_binary_correctness_vector(model, x, y, num_augmentations=18, device
         orig = x.squeeze(0) if x.dim() == 4 else x
         C, H, W = orig.shape
         
-        # Check bottom-right corner (common backdoor location)
-        patch_region = orig[:, -3:, -3:]
+        # Check center region (default backdoor location)
+        center_y, center_x = H // 2, W // 2
+        patch_size = 5  # Default patch size
+        y_start = max(0, center_y - patch_size // 2)
+        y_end = min(H, center_y + patch_size // 2 + 1)
+        x_start = max(0, center_x - patch_size // 2)
+        x_end = min(W, center_x + patch_size // 2 + 1)
+        
+        patch_region = orig[:, y_start:y_end, x_start:x_end]
         patch_max = patch_region.max().item()
         img_max = orig.max().item()
         
         if abs(patch_max - img_max) < 0.01:  # Patch likely present
-            print(f"    [DEBUG] Possible backdoor patch detected in original (bottom-right max: {patch_max:.4f})")
+            print(f"    [DEBUG] Possible backdoor patch detected in original (center max: {patch_max:.4f})")
             
             # Check if patch survives in augmentations
             aug_with_patch = 0
             for i in range(min(5, len(x_aug))):
-                aug_patch = x_aug[i, :, -3:, -3:]
+                aug_patch = x_aug[i, :, y_start:y_end, x_start:x_end]
                 if aug_patch.max().item() > img_max * 0.9:
                     aug_with_patch += 1
-            print(f"    [DEBUG] Augmentations with visible patch in bottom-right: {aug_with_patch}/5")
+            print(f"    [DEBUG] Augmentations with visible patch in center: {aug_with_patch}/5")
         else:
             print(f"    [DEBUG] No obvious backdoor patch detected in original")
         
@@ -945,9 +952,9 @@ def main():
                         help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
     parser.add_argument('--mislabeled_target_class', type=int, default=1,
                         help='Target class for mislabeled canary (default: 1). The canary will be a true class 0 sample relabeled as this class.')
-    parser.add_argument('--backdoor_patch_size', type=int, default=3, help='Size of backdoor patch (default: 3x3 pixels)')
+    parser.add_argument('--backdoor_patch_size', type=int, default=5, help='Size of backdoor patch (default: 5x5 pixels)')
     parser.add_argument('--backdoor_patch_value', type=float, default=None, help='Value for backdoor patch pixels (default: None = max value in data range)')
-    parser.add_argument('--backdoor_patch_location', type=str, default='bottom_right', choices=['top_left', 'top_right', 'bottom_left', 'bottom_right', 'center'], help='Location of backdoor patch (default: bottom_right)')
+    parser.add_argument('--backdoor_patch_location', type=str, default='center', choices=['top_left', 'top_right', 'bottom_left', 'bottom_right', 'center'], help='Location of backdoor patch (default: center)')
     parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
     parser.add_argument('--noise_scale', type=float, default=0.5, help='scale factor for noise-based canaries (default: 0.5)')
     parser.add_argument('--adversarial_epsilon', type=float, default=0.3, help='epsilon for adversarial canary generation (default: 0.3)')
