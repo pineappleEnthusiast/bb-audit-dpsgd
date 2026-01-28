@@ -141,6 +141,10 @@ for idx, (exp_name, data) in enumerate(experiments.items()):
             color=color, alpha=0.5, hatch='//', edgecolor=color)
 
 # Styling
+# Add vertical dotted line to separate Defense and No Defense groups
+for val in x:
+    ax.axvline(x=val, color='black', linestyle=':', linewidth=2, alpha=0.5)
+
 ax.set_xlabel('Privacy Budget (ε)', fontsize=14, fontweight='bold')
 ax.set_ylabel('Empirical ε', fontsize=14, fontweight='bold')
 ax.set_title('Privacy Tradeoff Curves: Defense vs No Defense', 
