@@ -130,14 +130,14 @@ for idx, (exp_name, data) in enumerate(experiments.items()):
     # Plot no defense bar
     ax.bar(x + offset_nd, data['no_defense'], 
             width=bar_width, 
-            label=f'{exp_name} (No Defense)', 
+            label=f'{exp_name}', 
             color=color, alpha=0.9, edgecolor='white')
     
     # Plot defense bar (hatched to distinguish, or slightly lighter/different shade?)
     # Using hatching '//' for defense
     ax.bar(x + offset_d, data['defense'], 
             width=bar_width, 
-            label=f'{exp_name} (Defense)', 
+            label=f'{exp_name}', 
             color=color, alpha=0.5, hatch='//', edgecolor=color)
 
 # Styling
@@ -148,19 +148,38 @@ for val in x:
 ax.set_xlabel('Privacy Budget (ε)', fontsize=14, fontweight='bold')
 ax.set_ylabel('Empirical ε', fontsize=14, fontweight='bold')
 ax.set_title('Privacy Tradeoff Curves: Defense vs No Defense', 
-             fontsize=16, fontweight='bold', pad=20)
+             fontsize=18, fontweight='bold', pad=20)
 ax.grid(True, axis='y', alpha=0.3, linestyle='--')
 ax.set_xticks(x)
 ax.set_xticklabels(epsilon_values, fontsize=12)
 
+# handles, labels = ax.get_legend_handles_labels()
+# sorted_handles = handles[::2] + handles[1::2]
+# sorted_labels = labels[::2] + labels[1::2]
+# ax.legend(handles=sorted_handles, labels=sorted_labels, loc='upper left', fontsize=13.5, ncol=2)
+
+
 # Reorder legend: All No Defense (evens) then All Defense (odds)
 handles, labels = ax.get_legend_handles_labels()
-# handles list order matches creation: ND1, D1, ND2, D2...
-# We want: [ND1, ND2...] then [D1, D2...]
 sorted_handles = handles[::2] + handles[1::2]
 sorted_labels = labels[::2] + labels[1::2]
 
-ax.legend(handles=sorted_handles, labels=sorted_labels, loc='upper right', fontsize=10, ncol=2)
+# Create invisible handle for headers
+from matplotlib.patches import Patch
+header_handle = Patch(facecolor='none', edgecolor='none')
+
+# Insert headers at the beginning of each column
+n_experiments = len(sorted_handles) // 2
+sorted_handles.insert(0, header_handle)  # Before No Defense experiments
+sorted_handles.insert(n_experiments + 1, header_handle)  # Before Defense experiments
+sorted_labels.insert(0, 'No Defense')
+sorted_labels.insert(n_experiments + 1, 'Defense')
+
+ax.legend(handles=sorted_handles, labels=sorted_labels, loc='upper left', fontsize=16, ncol=2)
+
+
+
+
 ax.set_ylim(0, 3.0)
 
 plt.tight_layout()
