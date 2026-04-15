@@ -16,7 +16,7 @@ from utils.data import load_data
 from utils.audit import compute_eps_lower_from_mia
 from utils.audit import compute_eps_lower_from_mia_given_t
 from utils.dpsgd import clip_and_accum_grads, DefenseConfig
-from opacus.accountants.utils import get_noise_multiplier
+from utils.accounting import get_noise_multiplier
 
 from parallel_audit_model import (
     AugmentationFunction,

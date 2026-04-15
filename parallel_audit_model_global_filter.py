@@ -8,7 +8,7 @@ import torch.optim as optim
 import torch.distributed as dist
 import numpy as np
 import argparse
-from opacus.accountants.utils import get_noise_multiplier
+from utils.accounting import get_noise_multiplier
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import dill
 
@@ -17,10 +17,16 @@ from models.wideresnet import WSConv2d
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads, DefenseConfig
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
-from utils.clipbkd import craft_clipbkd
+from utils.canaries import craft_clipbkd
 
 from models.lstm import LSTM
-from opacus.grad_sample import GradSampleModule
+try:
+    from opacus.grad_sample import GradSampleModule as _GradSampleModule
+    _OPACUS_AVAILABLE = True
+except ImportError:
+    _GradSampleModule = None
+    _OPACUS_AVAILABLE = False
+GradSampleModule = _GradSampleModule  # backwards compat within this file
 
 
 import torch.nn.functional as F

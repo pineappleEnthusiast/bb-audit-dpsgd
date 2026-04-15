@@ -9,8 +9,14 @@ import matplotlib.pyplot as plt
 import threading
 import copy
 import pdb
-from opacus.grad_sample import GradSampleModule
 from models.lstm import LSTM
+
+try:
+    from opacus.grad_sample import GradSampleModule as _GradSampleModule
+    _OPACUS_AVAILABLE = True
+except ImportError:
+    _GradSampleModule = None
+    _OPACUS_AVAILABLE = False
 import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Optional
@@ -655,7 +661,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 ps_losses = None
 
             if isinstance(model_to_use, LSTM):
-                ps_grads = _get_per_sample_grads(GradSampleModule(model), X_aug, y_aug, criterion)
+                if not _OPACUS_AVAILABLE:
+                    raise RuntimeError("LSTM per-sample gradients require opacus: pip install opacus")
+                ps_grads = _get_per_sample_grads(_GradSampleModule(model), X_aug, y_aug, criterion)
             else:
                 ps_grads = get_per_sample_grads(model, X_aug, y_aug, criterion)
 
@@ -720,7 +728,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
                 ps_losses = None
 
             if isinstance(model_to_use, LSTM):
-                ps_grads = _get_per_sample_grads(GradSampleModule(model), X, y, criterion)
+                if not _OPACUS_AVAILABLE:
+                    raise RuntimeError("LSTM per-sample gradients require opacus: pip install opacus")
+                ps_grads = _get_per_sample_grads(_GradSampleModule(model), X, y, criterion)
             else:
                 ps_grads = get_per_sample_grads(model, X, y, criterion)
         
