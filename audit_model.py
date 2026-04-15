@@ -20,7 +20,7 @@ import os
 import sys
 import numpy as np
 import argparse
-from opacus.accountants.utils import get_noise_multiplier
+from utils.accounting import get_noise_multiplier
 import copy
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 import time
@@ -36,7 +36,7 @@ from models.wideresnet import WSConv2d
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads, get_per_sample_grads
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
-from utils.clipbkd import craft_clipbkd, choose_worstcase_label
+from utils.canaries import craft_clipbkd, choose_worstcase_label
 
 import gc
 import torch.nn.functional as F

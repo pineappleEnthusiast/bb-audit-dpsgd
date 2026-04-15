@@ -1,4 +1,4 @@
-"""Auditing DP-SGD in black-box setting - Modified for model parallelism"""
+"""Auditing DP-SGD in black-box setting - parallel / distributed entry-point."""
 import os
 import time
 import copy
@@ -8,209 +8,52 @@ import torch.optim as optim
 import torch.distributed as dist
 import numpy as np
 import argparse
-from opacus.accountants.utils import get_noise_multiplier
-from torch.utils.data import TensorDataset, DataLoader, Dataset
-import dill
+from torch.utils.data import TensorDataset, DataLoader
 
 from models import Models
-from models.wideresnet import WSConv2d
 from utils.data import load_data
 from utils.dpsgd import clip_and_accum_grads, DefenseConfig
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
-from utils.clipbkd import craft_clipbkd
-
-from models.lstm import LSTM
-from opacus.grad_sample import GradSampleModule
-
+from utils.accounting import get_noise_multiplier
+from utils.canaries import craft_clipbkd, craft_gradient, fgsm_attack, choose_worstcase_label
+from utils.training import (
+    AugmentationFunction, IndexedTensorDataset,
+    xavier_init_model, init_wideresnet,
+    test_model, compute_per_sample_losses,
+)
+from utils.checkpoint import save_checkpoint, init_run_state
+from utils.args import build_parser
 
 import torch.nn.functional as F
-import torchvision.transforms.v2 as v2
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
-def fgsm_attack(model, X, y, epsilon=0.1, max_iter=10, alpha=0.01):
-    """
-    Perform iterative FGSM (I-FGSM/PGD) targeted attack to generate adversarial example.
-    
-    This implements a targeted attack that minimizes the cross-entropy loss for the target 
-    class y, causing the model to misclassify the input as the target class. The attack 
-    uses projected gradient descent with L∞ norm constraints.
-    
-    Algorithm:
-        1. Initialize X_adv = X
-        2. For i in range(max_iter):
-            a. Compute loss = CrossEntropy(model(X_adv), y)
-            b. Compute gradient: grad = ∇_{X_adv} loss
-            c. Update: X_adv = X_adv - alpha * sign(grad)
-            d. Project to L∞ ball: X_adv = clip(X + clip(X_adv - X, -ε, ε), 0, 1)
-            e. If model predicts y, return success
-        3. Return best adversarial example found
-    
-    Args:
-        model (nn.Module): PyTorch model to attack (will be set to eval mode)
-        X (torch.Tensor): Input tensor to perturb, shape (1, ...) for single sample
-        y (torch.Tensor or int): Target class to fool the model into predicting
-        epsilon (float): Maximum L∞ perturbation bound (default: 0.1)
-        max_iter (int): Maximum number of attack iterations (default: 10)
-        alpha (float): Step size for each iteration (default: 0.01)
-    
-    Returns:
-        tuple: (X_adv, iters, success) where:
-            - X_adv (torch.Tensor): Adversarial example (best found if attack fails)
-            - iters (int): Number of iterations used
-            - success (bool): True if attack succeeded, False otherwise
-    
-    Raises:
-        AssertionError: If epsilon <= 0, alpha not in (0, epsilon], or max_iter <= 0
-    
-    Reference:
-        Madry et al., "Towards Deep Learning Models Resistant to Adversarial Attacks", 
-        ICLR 2018 (PGD attack)
-    """
-    # Input validation
-    assert epsilon > 0, f"epsilon must be positive, got {epsilon}"
-    assert 0 < alpha <= epsilon, f"alpha must be in (0, epsilon], got alpha={alpha}, epsilon={epsilon}"
-    assert max_iter > 0, f"max_iter must be positive, got {max_iter}"
-    
-    model.eval()
-    X_adv = X.clone().detach().requires_grad_(True)
-    best_adv = X_adv.detach().clone()
-    best_confidence = -float('inf')
-    
-    for i in range(max_iter):
-        output = model(X_adv)
-        _, predicted = torch.max(output, 1)
-        
-        # Handle both scalar and tensor y
-        y_idx = y.item() if isinstance(y, torch.Tensor) else int(y)
-        predicted_idx = predicted.item() if isinstance(predicted, torch.Tensor) else int(predicted)
-        
-        # Targeted attack: success when model predicts target class y
-        if predicted_idx == y_idx:
-            return X_adv.detach(), i + 1, True
-        confidence = F.softmax(output, dim=1)[0, y_idx].item()
-        if confidence > best_confidence:
-            best_confidence = confidence
-            best_adv = X_adv.detach().clone()
-        
-        # Targeted attack: minimize loss to increase confidence in target class
-        loss = F.cross_entropy(output, y)
-        model.zero_grad()
-        loss.backward()
-        
-        data_grad = X_adv.grad.data
-        sign_data_grad = data_grad.sign()
-        # Move in negative gradient direction to minimize loss
-        X_adv = X_adv.detach() - alpha * sign_data_grad
-        delta = X_adv - X
-        delta = torch.clamp(delta, -epsilon, epsilon)
-        X_adv = torch.clamp(X + delta, 0, 1).detach().requires_grad_(True)
-    
-    # Attack failed - return best adversarial example found
-    return best_adv, max_iter, False
+try:
+    from opacus.grad_sample import GradSampleModule as _GradSampleModule
+    _OPACUS_AVAILABLE = True
+except ImportError:
+    _GradSampleModule = None
+    _OPACUS_AVAILABLE = False
 
 
-class AugmentationFunction:
-    def __init__(self, image_size=32, channels=3):
-        self.base_transforms = v2.Compose([
-            v2.RandomCrop(image_size, padding=4),
-            v2.RandomHorizontalFlip(p=0.5),
-        ])
-    
-    def __call__(self, x):
-        return self.base_transforms(x)
-
-
-def craft_gradient(model, hot_index=None, device='cuda'):
-    """
-    Craft a 1-hot gradient vector that spans all parameters in the model.
-    """
-    params = {}
-    total_elements = 0
-    
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            num_elements = param.numel()
-            params[name] = {
-                'param': param,
-                'start_idx': total_elements,
-                'end_idx': total_elements + num_elements,
-                'shape': param.shape
-            }
-            total_elements += num_elements
-    
-    if hot_index is None:
-        hot_index = total_elements // 2 if total_elements > 0 else 0
-    
-    if hot_index < 0 or (total_elements > 0 and hot_index >= total_elements):
-        raise ValueError(f"hot_index {hot_index} is out of bounds for model with {total_elements} parameters")
-    
-    crafted_grad = {}
-    for name, info in params.items():
-        param = info['param']
-        if param.requires_grad:
-            grad = torch.zeros_like(param)
-            
-            if info['start_idx'] <= hot_index < info['end_idx']:
-                local_idx = hot_index - info['start_idx']
-                flat_grad = grad.view(-1)
-                flat_grad[local_idx] = 10000000
-                grad = flat_grad.view(info['shape'])
-                
-            crafted_grad[name] = grad.unsqueeze(0)
-        else:
-            crafted_grad[name] = torch.zeros_like(param).unsqueeze(0)
-    
-    flat_grad = torch.cat([grad.view(-1) for grad in crafted_grad.values()], dim=0)
-    flat_grad_norm = flat_grad.norm()
-    print(f"Flattened crafted gradient norm: {flat_grad_norm}")
-    
-    return crafted_grad
-
-
-def xavier_init_model(model):
-    """Initialize model using Xavier initialization"""
-    def init_weights(m):
-        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-            torch.nn.init.xavier_normal_(m.weight)
-            if m.bias is not None:
-                m.bias.data.fill_(0.01)
-    model.apply(init_weights)
-
-
-def init_wideresnet(model):
-    """Initialize model using Kaiming initialization (He init) for ReLU"""
-    for m in model.modules():
-        if isinstance(m, WSConv2d):
-            m._initialize_weights()
-        elif isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.GroupNorm):
-            nn.init.constant_(m.weight, 1)
-            nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.Linear):
-            nn.init.kaiming_normal_(m.weight)
-            nn.init.constant_(m.bias, 0)
-
-
-class IndexedTensorDataset(Dataset):
-    """A dataset that includes the index of each sample."""
-    def __init__(self, *tensors):
-        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
-        self.tensors = tensors
-        
-    def __getitem__(self, index):
-        return tuple(tensor[index] for tensor in self.tensors) + (index,)
-        
-    def __len__(self):
-        return self.tensors[0].size(0)
-
-
-def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
+def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm,
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, defense_filter_every: int = 1, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5, num_workers: int = 4, persistent_workers: bool = True, return_defense_state: bool = False):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5,
+               defense_apply_ascent=True, defense_filter_every: int = 1, device='cuda:0',
+               generator=None, dl_generator=None, rank=0, world_size=None,
+               defense_score_norm='linf', defense_score_fn='grad_norm',
+               loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20,
+               grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64,
+               grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10,
+               rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10,
+               maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim',
+               grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64,
+               grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64,
+               grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5,
+               alignment_proj_k: int = 10, alignment_proj_seed: int = 0,
+               grad_scatter_k: int = 5, num_workers: int = 4,
+               persistent_workers: bool = True, return_defense_state: bool = False,
+               sampling: str = 'poisson'):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -233,15 +76,17 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         model = copy.deepcopy(init_model).to(device)
 
-    if model_name == "lstm" and not isinstance(model, GradSampleModule):
-        model = GradSampleModule(model)
+    if model_name == "lstm":
+        if not _OPACUS_AVAILABLE:
+            raise RuntimeError("LSTM training requires opacus: pip install opacus")
+        if not isinstance(model, _GradSampleModule):
+            model = _GradSampleModule(model)
 
     model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
 
     # Set DP noise
-    # TODO: switch accountant
     if epsilon is not None:
         sample_rate = batch_size / len(X)
         noise_multiplier = get_noise_multiplier(
@@ -249,7 +94,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             target_delta=delta,
             sample_rate=sample_rate,
             epochs=n_epochs,
-            accountant='rdp'
         )
         if rank == 0:
             print(f"DP config: eps={epsilon}, delta={delta}, sample_rate={sample_rate:.6f}, epochs={n_epochs}, noise_multiplier={noise_multiplier}")
@@ -263,36 +107,43 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         aug_fn = None
 
-    # Create Dataset + DataLoader (no DDP sampler)
+    # Create dataset
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset), dtype=np.float32)
     # 0 = active, 1 = apply gradient ascent, 2 = inactive (dropped)
     # Must be integer (NOT bool) because we rely on the 3-state semantics downstream.
     drop_mask = np.zeros(len(dataset), dtype=np.int8)
-    
+
     # Create global index to gradient mapping for gradient space canary (single canary at last index)
     global_idx_to_grad = None
     if gradient_space_audit and crafted_gradient is not None:
         canary_idx = len(dataset) - 1
         global_idx_to_grad = {canary_idx: crafted_gradient}
-    
-    sampler = torch.utils.data.RandomSampler(
-        dataset,
-        replacement=False,
-        num_samples=None,
-        generator=generator
-    )
-    
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        pin_memory=True,
-        num_workers=int(num_workers),
-        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
-        drop_last=False,
-        generator=dl_generator
-    )
+
+    # Set up batch iteration based on sampling strategy.
+    # 'poisson': each sample independently included with prob q = batch_size / n (standard DP analysis).
+    # 'shuffle': standard random-sampler DataLoader (every sample once per epoch).
+    n_samples = len(dataset)
+    if sampling == 'poisson':
+        _poisson_q = batch_size / n_samples
+        _poisson_n_batches = (n_samples + batch_size - 1) // batch_size
+        loader = None  # not used for Poisson
+    else:
+        _poisson_q = None
+        _poisson_n_batches = None
+        sampler = torch.utils.data.RandomSampler(
+            dataset, replacement=False, num_samples=None, generator=generator
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            pin_memory=True,
+            num_workers=int(num_workers),
+            persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
+            drop_last=False,
+            generator=dl_generator,
+        )
 
     prev_params = None
     prev_delta_theta = None
@@ -323,7 +174,20 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
+        # Build a unified batch iterator regardless of sampling strategy.
+        if sampling == 'poisson':
+            def _poisson_iter():
+                for _ in range(_poisson_n_batches):
+                    mask = torch.rand(n_samples, generator=generator) < _poisson_q
+                    idx = torch.where(mask)[0]
+                    if len(idx) == 0:
+                        continue
+                    yield X[idx], y[idx], idx
+            batch_iter = enumerate(_poisson_iter())
+        else:
+            batch_iter = enumerate(loader)
+
+        for batch_idx, (curr_X, curr_y, global_indices) in batch_iter:
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
 
@@ -540,117 +404,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     return model
 
 
-def test_model(model, X, y, batch_size=128):
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    X = X.to(device)
-    y = y.to(device)
-
-    test_loader = DataLoader(TensorDataset(X, y), batch_size=batch_size, shuffle=False)
-
-    model.eval()
-    acc = 0
-    total = 0
-    with torch.no_grad():
-        for curr_X, curr_y in test_loader:
-            curr_X = curr_X.to(device)
-            curr_y = curr_y.to(device)
-            curr_y_hat = torch.argmax(model(curr_X), dim=1)
-            acc += torch.sum(curr_y_hat == curr_y).cpu().item()
-            total += len(curr_y)
-
-    model.train()
-    return acc / total if total > 0 else 0.0
-
-
-def compute_per_sample_losses(model, X, y, device, batch_size=256):
-    model = model.to(device)
-    X = X.to(device)
-    y = y.to(device)
-
-    loader = DataLoader(TensorDataset(X, y), batch_size=batch_size, shuffle=False)
-    per_sample_losses = []
-
-    model.eval()
-    with torch.no_grad():
-        for curr_X, curr_y in loader:
-            curr_X = curr_X.to(device)
-            curr_y = curr_y.to(device)
-
-            logits = model(curr_X)
-
-            # Handle both classification (B, C) and sequence modeling (B, T, C)
-            if curr_y.ndim == 2 and logits.ndim == 3:
-                b, t, c = logits.shape
-                token_losses = F.cross_entropy(
-                    logits.reshape(b * t, c),
-                    curr_y.reshape(b * t),
-                    reduction='none'
-                ).reshape(b, t)
-                batch_losses = token_losses.mean(dim=1)
-            else:
-                batch_losses = F.cross_entropy(logits, curr_y, reduction='none')
-
-            per_sample_losses.append(batch_losses.detach().cpu())
-
-    model.train()
-    return torch.cat(per_sample_losses, dim=0).numpy()
-
-
-def save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only, rank=0):
-    """Save checkpoint - each rank saves to its own file"""
-    os.makedirs(out_folder, exist_ok=True)
-
-    # Save with rank suffix
-    suffix = f'_rank{rank}' if rank > 0 else ''
-    
-    random_state = {
-        'np': np.random.get_state(),
-        'torch': torch.random.get_rng_state()
-    }
-    dill.dump(random_state, open(f'{out_folder}/random_state{suffix}.dill', 'wb'))
-
-    if fit_world_only:
-        np.save(f'{out_folder}/outputs_{fit_world_only}{suffix}.npy', outputs[fit_world_only])
-        np.save(f'{out_folder}/losses_{fit_world_only}{suffix}.npy', losses[fit_world_only])
-        if all_losses is not None:
-            np.save(f'{out_folder}/all_losses_{fit_world_only}{suffix}.npy', all_losses[fit_world_only])
-
-        if fit_world_only == 'out':
-            np.save(f'{out_folder}/train_set_accs{suffix}.npy', train_set_accs)
-            np.save(f'{out_folder}/test_set_accs{suffix}.npy', test_set_accs)
-    else:
-        np.save(f'{out_folder}/outputs_in{suffix}.npy', outputs['in'])
-        np.save(f'{out_folder}/outputs_out{suffix}.npy', outputs['out'])
-        np.save(f'{out_folder}/train_set_accs{suffix}.npy', train_set_accs)
-        np.save(f'{out_folder}/test_set_accs{suffix}.npy', test_set_accs)
-        np.save(f'{out_folder}/losses_in{suffix}.npy', losses['in'])
-        np.save(f'{out_folder}/losses_out{suffix}.npy', losses['out'])
-        if all_losses is not None:
-            np.save(f'{out_folder}/all_losses_in{suffix}.npy', all_losses['in'])
-            np.save(f'{out_folder}/all_losses_out{suffix}.npy', all_losses['out'])
-
-
-def init_run_state(out_folder, fit_world_only, rank=0):
-    """Initialize fresh run state and write an initial checkpoint."""
-    outputs = {'out': [], 'in': []}
-    losses = {'out': [], 'in': []}
-    all_losses = {'in': [], 'out': []}
-    train_set_accs = []
-    test_set_accs = []
-
-    os.makedirs(out_folder, exist_ok=True)
-    save_checkpoint(out_folder, outputs, losses, all_losses, train_set_accs, test_set_accs, fit_world_only, rank)
-
-    return outputs, losses, all_losses, train_set_accs, test_set_accs
-
-
 def distribute_reps(n_reps, world_size):
-    """Distribute model training repetitions across GPUs"""
+    """Distribute model training repetitions across GPUs."""
     reps_per_gpu = [[] for _ in range(world_size)]
     for i in range(n_reps):
-        gpu_id = i % world_size
-        reps_per_gpu[gpu_id].append(i)
+        reps_per_gpu[i % world_size].append(i)
     return reps_per_gpu
 
 
@@ -689,73 +447,8 @@ def main():
             device = torch.device('cpu')
             print(f'Single GPU mode - Using CPU')
     
-    # Parse arguments
-    parser.add_argument('--local_rank', type=int, default=0,
-                         help='Local rank for distributed training')
-    parser.add_argument('--data_name', type=str, default='mnist', help='dataset to use (mnist, cifar10, cifar100)')
-    parser.add_argument('--model_name', type=str, default='lr', choices=list(Models.keys()), help='model to audit')
-    parser.add_argument('--n_reps', type=int, default=200, help='number of models')
-    parser.add_argument('--n_df', type=int, default=0, help='|D| (0 => use full dataset)')
-    parser.add_argument('--n_epochs', type=int, default=100, help='number of epochs to train for')
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
-    parser.add_argument('--max_grad_norm', type=float, default=1, help='gradient clipping norm')
-    parser.add_argument('--epsilon', type=float, default=None, help='privacy parameter, epsilon')
-    parser.add_argument('--delta', type=float, default=1e-5, help='privacy parameter, delta')
-    parser.add_argument('--target_type', type=str, default='blank', help='sample to use as target (blank, mislabeled, clipbkd, badnets, or path to target sample)')
-    parser.add_argument('--canary_pt', type=str, default=None,
-                        help='Path to a .pt canary file (torch.save). If provided, overrides --target_type and uses the loaded canary/label as the target sample.')
-    parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
-                        help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
-    parser.add_argument('--mislabeled_target_class', type=int, default=1,
-                        help='Target class for mislabeled canary (default: 1). The canary will be a true class 0 sample relabeled as this class.')
-    parser.add_argument('--blank_alpha', type=float, default=0.0, help='interpolation factor for blank target (0.0 = fully blank, 1.0 = fully label 9 image)')
-    parser.add_argument('--seed', type=int, default=0, help='seed for reproducibility')
-    parser.add_argument('--out', type=str, default='exp_data/', help='folder to write results to')
-    parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
-    parser.add_argument('--block_size', type=int, help='process samples within a batch in blocks to conserve GPU space')
-    parser.add_argument('--batch_size', type=int, help='batch size for training')
-    parser.add_argument('--fit_world_only', type=str, default=None, choices=['in', 'out'], help='just fit models in world and calculate losses')
-    parser.add_argument('--alpha', type=float, default=0.05, help='significance level for empirical eps estimation')
-    parser.add_argument('--badnets_label', type=int, default=-1, help='assign badnets poison this label')
-
-    # Options for Debugging
-    parser.add_argument('--view_badnets', action='store_true')
-    parser.add_argument('--store_canary_rank', action='store_true')
-    parser.add_argument('--holdout_audit', action='store_true')
-    parser.add_argument('--store_all_losses', action='store_true', help='store per-sample losses for the full dataset for each trained model')
-    
-    # Gradient-space audit options
-    parser.add_argument('--target_class', type=int, default=0,
-                        help='Target class for gradient-space audit')
-
-    # Options for Forgetting Canary Candidates
-    parser.add_argument('--defense', action='store_true', help='use filtering defense during audit')
-    parser.add_argument('--defense_k', type=int, default=5, help='number of samples dropped per class per epoch when defense is enabled')
-    parser.add_argument('--defense_apply_ascent', action='store_true', default=False, help='apply gradient ascent to high-scoring samples')
-    parser.add_argument('--defense_filter_every', type=int, default=1, help='apply defense filtering every N epochs (default: 1, i.e., every epoch)')
-    parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
-    parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
-    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0', 'loss', 'loss_momentum', 'loss_volatility', 'grad_norm_x_loss'], help='score function used for defense (grad_norm, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, inv_confidence, prediction_margin, pred_entropy, cos_update, cos_theta0, loss, loss_momentum, loss_volatility, or grad_norm_x_loss)')
-    parser.add_argument('--grad_norm_percentile_k', type=int, default=20, help='lookback window for grad_norm_percentile score (percentile of current grad norm within last k observed grad norms per sample)')
-    parser.add_argument('--grad_dir_volatility_k', type=int, default=5, help='lookback window for grad_dir_volatility score (mean(1 - cos_sim(curr_dir, past_dir)) over last k directions)')
-    parser.add_argument('--grad_dir_proj_dim', type=int, default=64, help='projection dimension for grad_dir_volatility direction embedding')
-    parser.add_argument('--grad_dir_proj_seed', type=int, default=0, help='seed for grad_dir_volatility random projection')
-    parser.add_argument('--dir_unique_k', type=int, default=5, help='lookback window K for norm_x_dir_uniqueness score (std of cos sims to last K directions)')
-
-    parser.add_argument('--rand_proj_var_m', type=int, default=10, help='number of random directions for rand_proj_var score')
-    parser.add_argument('--rand_proj_var_seed', type=int, default=0, help='seed for rand_proj_var random directions')
-    parser.add_argument('--maxmin_proj_k', type=int, default=10, help='number of random directions for maxmin_proj_ratio score')
-    parser.add_argument('--maxmin_proj_seed', type=int, default=0, help='seed for maxmin_proj_ratio random directions')
-    parser.add_argument('--grad_rank_mode', type=str, default='effdim', choices=['effdim', 'entropy'], help="mode for gradient_rank score: 'effdim' uses (||g||1/||g||2)^2/d, 'entropy' uses ||g||2 * H(|g|/||g||1)")
-    parser.add_argument('--grad_rank_eps', type=float, default=1e-12, help='epsilon for numerical stability in gradient_rank score')
-    parser.add_argument('--grad_accel_proj_dim', type=int, default=64, help='projection dimension for grad_accel score')
-    parser.add_argument('--grad_accel_proj_seed', type=int, default=0, help='seed for grad_accel random projection')
-    parser.add_argument('--grad_jerk_proj_dim', type=int, default=64, help='projection dimension for grad_jerk score')
-    parser.add_argument('--grad_jerk_proj_seed', type=int, default=0, help='seed for grad_jerk random projection')
-    parser.add_argument('--alignment_proj_k', type=int, default=10, help='number of random directions for alignment_with_rand_proj score')
-    parser.add_argument('--alignment_proj_seed', type=int, default=0, help='seed for alignment_with_rand_proj random directions')
-    parser.add_argument('--grad_scatter_k', type=int, default=5, help='lookback window for gradient_scatter score (number of recent gradients to track)')
-
+    # Parse arguments — base parser is shared across all entry-points
+    parser = build_parser()
     args = parser.parse_args()
     if args.epsilon == -1:
         args.epsilon = None
@@ -1131,7 +824,8 @@ def main():
                 alignment_proj_k=args.alignment_proj_k,
                 alignment_proj_seed=args.alignment_proj_seed,
                 grad_scatter_k=args.grad_scatter_k,
-                defense_apply_ascent=args.defense_apply_ascent
+                defense_apply_ascent=args.defense_apply_ascent,
+                sampling=args.sampling,
             )
             
             # Compute outputs and losses
