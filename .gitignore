@@ -6,6 +6,9 @@
 data/
 exp_data/
 logs/
+*.npy
+*.pt
+status/
 
 ### macOS ###
 # General
