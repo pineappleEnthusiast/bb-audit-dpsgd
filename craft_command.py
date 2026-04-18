@@ -374,7 +374,7 @@ def collect_wizard_sections(mode: int) -> tuple:
         args["defense_score_fn"] = ask("defense_score_fn",
                                         description="Scoring function used to rank samples",
                                         default="grad_norm",
-                                        choices=["grad_norm", "grad_norm_percentile",
+                                        choices=["grad_norm", "grad_norm_unclipped", "grad_norm_percentile",
                                                  "grad_dir_volatility", "rand_proj_var",
                                                  "inv_confidence", "prediction_margin",
                                                  "pred_entropy", "loss", "loss_momentum",

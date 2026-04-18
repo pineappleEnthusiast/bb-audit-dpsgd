@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Norm used to score per-sample gradients')
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm',
                         choices=[
-                            'grad_norm', 'grad_norm_percentile', 'grad_dir_volatility',
+                            'grad_norm', 'grad_norm_unclipped', 'grad_norm_percentile', 'grad_dir_volatility',
                             'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank',
                             'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness',
                             'alignment_with_rand_proj', 'gradient_sparsity',
