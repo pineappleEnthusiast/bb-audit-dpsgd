@@ -3,10 +3,16 @@
 Interactive command builder for parallel_audit_model.py.
 
 Walks through every argument group, forces explicit input for critical
-parameters, and emits a ready-to-paste command for a TACC idev session.
+parameters, and emits a ready-to-use command for a TACC idev session
+or a .slurm batch file.
 
 Usage (on a login node or in an idev session):
     python3 craft_command.py
+
+Modes:
+    1 = write a .slurm batch file
+    2 = full audit in idev session (multi-node, multi-GPU) — srun + torchrun
+    3 = single model run in idev session (single GPU) — torchrun --standalone
 """
 
 import sys
@@ -91,18 +97,25 @@ def confirm(message: str, default: bool = True) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Print helper
+# ---------------------------------------------------------------------------
+
+def _print_command_box(cmd: str) -> None:
+    print()
+    print(_c("  ┌─── Copy-paste command ───────────────────────────────────┐", BOLD, YELLOW))
+    print()
+    for line in cmd.splitlines():
+        print("  " + line)
+    print()
+    print(_c("  └──────────────────────────────────────────────────────────┘", BOLD, YELLOW))
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Command rendering
 # ---------------------------------------------------------------------------
 
-def render_command(n_nodes: int, master_port: int, script_args: dict, output_dir: str) -> str:
-    """
-    Build the full srun / torchrun command string.
-
-    script_args is an ordered dict of {flag_name: value}.
-    Flags whose value is 'true' are rendered as bare flags (--flag).
-    Flags whose value is None are omitted.
-    """
-    # Build the python argument list
+def _build_args_str(script_args: dict) -> str:
     parts = []
     for flag, value in script_args.items():
         if value is None:
@@ -111,10 +124,13 @@ def render_command(n_nodes: int, master_port: int, script_args: dict, output_dir
             parts.append(f"--{flag}")
         else:
             parts.append(f"--{flag} {value}")
-
     indent = " " * 4
-    args_str = (" \\\n" + indent * 3).join(parts)
+    return (" \\\n" + indent * 3).join(parts)
 
+
+def render_srun_command(n_nodes: int, master_port: int, script_args: dict) -> str:
+    """Build the srun / torchrun command string for an idev session."""
+    args_str = _build_args_str(script_args)
     cmd = textwrap.dedent(f"""\
         srun --ntasks={n_nodes} --nodes={n_nodes} bash -c '
           MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
@@ -130,12 +146,65 @@ def render_command(n_nodes: int, master_port: int, script_args: dict, output_dir
     return cmd.rstrip()
 
 
+def render_single_gpu_command(script_args: dict) -> str:
+    """Build a standalone torchrun command for a single-GPU idev session."""
+    args_str = _build_args_str(script_args)
+    indent = " " * 2
+    cmd = textwrap.dedent(f"""\
+        torchrun \\
+          --standalone \\
+          --nproc_per_node=1 \\
+          parallel_audit_model.py \\
+          {args_str}
+    """)
+    return cmd.rstrip()
+
+
+def render_slurm_file(n_nodes: int, master_port: int, script_args: dict, sbatch_opts: dict) -> str:
+    """Build a full #SBATCH script matching spec.md Pattern 2."""
+    job_name   = sbatch_opts["job_name"]
+    time_limit = sbatch_opts["time_limit"]
+    account    = sbatch_opts["account"]
+
+    args_str = _build_args_str(script_args)
+
+    script = textwrap.dedent(f"""\
+        #!/bin/bash
+        #SBATCH -J {job_name}
+        #SBATCH -o {job_name}.o%j
+        #SBATCH -e {job_name}.e%j
+        #SBATCH -p gh
+        #SBATCH -N {n_nodes}
+        #SBATCH -n {n_nodes}
+        #SBATCH --ntasks-per-node=1
+        #SBATCH -t {time_limit}
+        #SBATCH -A {account}
+
+        module load cuda/12.4
+
+        set -e
+        cd $SCRATCH
+        eval "$(conda shell.bash hook)"
+        conda activate bb_audit_dpsgd
+        cd bb-audit-dpsgd
+
+        srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
+          MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
+          MASTER_PORT={master_port};
+          RANK=$SLURM_PROCID;
+          torchrun --nnodes=$SLURM_JOB_NUM_NODES --nproc_per_node=1 \\
+            --rdzv_backend=c10d \\
+            --rdzv_endpoint=${{MASTER_ADDR}}:${{MASTER_PORT}} \\
+            parallel_audit_model.py \\
+            {args_str}'
+    """)
+    return script.rstrip()
+
+
 # ---------------------------------------------------------------------------
 # Dataset-specific defaults
 # ---------------------------------------------------------------------------
 
-# These are the typical hyperparameters validated on each dataset.
-# They are shown as default suggestions but the user must confirm them.
 DATASET_DEFAULTS = {
     "mnist":    {"lr": "3",  "batch_size": "4000",  "block_size": "4000",  "model_name": "cnn"},
     "cifar10":  {"lr": "3",  "batch_size": "3125",  "block_size": "3125",  "model_name": "cnn"},
@@ -144,34 +213,15 @@ DATASET_DEFAULTS = {
 
 
 # ---------------------------------------------------------------------------
-# Main wizard
+# Wizard sections 2–8 (shared across all modes)
 # ---------------------------------------------------------------------------
 
-def main():
-    print()
-    print(_c("  ╔══════════════════════════════════════════════╗", BOLD, CYAN))
-    print(_c("  ║    parallel_audit_model.py command builder  ║", BOLD, CYAN))
-    print(_c("  ╚══════════════════════════════════════════════╝", BOLD, CYAN))
-    print()
-    print("  For each argument: press Enter to accept the default shown in [brackets].")
-    print("  Arguments marked " + _c("[REQUIRED]", RED, BOLD) + " must be set explicitly.")
-
-    args = {}  # ordered: will become the CLI flags
-
-    # ------------------------------------------------------------------
-    # 1. TACC distributed setup
-    # ------------------------------------------------------------------
-    section("1 · TACC / idev session")
-
-    n_nodes = ask("n_nodes",
-                  description="Number of GPU nodes allocated in your idev session",
-                  required=True)
-    n_nodes = int(n_nodes)
-
-    master_port = ask("master_port",
-                      description="Base torchrun rendezvous port",
-                      default=29500)
-    master_port = int(master_port)
+def collect_wizard_sections(mode: int) -> tuple:
+    """
+    Run wizard sections 2–8 and return (args, data_name, epsilon, use_defense).
+    mode adjusts defaults for n_reps and fit_world_only.
+    """
+    args = {}
 
     # ------------------------------------------------------------------
     # 2. Data and model
@@ -203,9 +253,11 @@ def main():
     # ------------------------------------------------------------------
     section("3 · Training")
 
+    n_reps_default = "2" if mode == 3 else None
     args["n_reps"] = ask("n_reps",
                          description="Shadow models to train (split across nodes)",
-                         required=True)
+                         default=n_reps_default,
+                         required=(mode != 3))
 
     args["n_epochs"] = ask("n_epochs", default="100")
 
@@ -292,10 +344,9 @@ def main():
                      is_flag=False,
                      default=None)
     if fixed_init:
-        # Could be a path or an empty string (constant-seed init)
         args["fixed_init"] = fixed_init
     elif ask("fixed_init (use fixed random init, no path)", is_flag=True, default=False):
-        args["fixed_init"] = "true"   # renders as bare --fixed_init flag
+        args["fixed_init"] = "true"
 
     if ask("holdout_audit", description="Hold out half the reps for threshold selection", is_flag=True, default=True):
         args["holdout_audit"] = "true"
@@ -303,9 +354,10 @@ def main():
     if ask("store_all_losses", description="Save per-sample training losses for every rep (large!)", is_flag=True, default=False):
         args["store_all_losses"] = "true"
 
+    fw_default = "in" if mode == 3 else None
     args["fit_world_only"] = ask("fit_world_only",
                                   description="Train only one world (skip to run both in/out)",
-                                  default=None,
+                                  default=fw_default,
                                   choices=["in", "out"])
 
     # ------------------------------------------------------------------
@@ -344,7 +396,6 @@ def main():
     # ------------------------------------------------------------------
     section("8 · Output")
 
-    # Suggest a reasonable directory name based on the experiment config
     eps_str = f"eps{epsilon}" if epsilon else "non_private"
     defense_str = "_defense" if use_defense else "_no_defense"
     sampling_str = "" if args.get("sampling") == "poisson" else "_shuffle"
@@ -356,6 +407,103 @@ def main():
               default=suggested_out,
               required=False)
     args["out"] = out or suggested_out
+
+    return args, data_name, epsilon, use_defense
+
+
+# ---------------------------------------------------------------------------
+# SLURM directives (mode 1 only)
+# ---------------------------------------------------------------------------
+
+def collect_slurm_directives(args: dict) -> tuple:
+    """Prompt for SBATCH fields. Returns (sbatch_opts dict, slurm_filename str)."""
+    section("9 · SLURM job directives")
+
+    job_name = ask("job_name",
+                   description="SLURM job name (-J)",
+                   default=args.get("out", "audit_job"))
+
+    time_limit = ask("time_limit",
+                     description="Wall time limit (HH:MM:SS)",
+                     default="04:00:00")
+
+    account = ask("account",
+                  description="TACC allocation account (-A)",
+                  default="ASC25081",
+                  choices=["ASC25081", "ASC25102"])
+
+    slurm_filename = ask("slurm_filename",
+                         description="Output .slurm filename",
+                         default=f"{job_name}.slurm")
+
+    sbatch_opts = {
+        "job_name":   job_name,
+        "time_limit": time_limit,
+        "account":    account,
+    }
+    return sbatch_opts, slurm_filename
+
+
+# ---------------------------------------------------------------------------
+# Main wizard
+# ---------------------------------------------------------------------------
+
+def main():
+    print()
+    print(_c("  ╔══════════════════════════════════════════════╗", BOLD, CYAN))
+    print(_c("  ║    parallel_audit_model.py command builder  ║", BOLD, CYAN))
+    print(_c("  ╚══════════════════════════════════════════════╝", BOLD, CYAN))
+    print()
+    print("  For each argument: press Enter to accept the default shown in [brackets].")
+    print("  Arguments marked " + _c("[REQUIRED]", RED, BOLD) + " must be set explicitly.")
+
+    # ------------------------------------------------------------------
+    # 0. Mode selection
+    # ------------------------------------------------------------------
+    section("0 · Mode")
+
+    mode = int(ask(
+        "mode",
+        description=(
+            "1 = write a .slurm batch file\n"
+            "  2 = full audit in idev session (multi-node, multi-GPU)\n"
+            "  3 = single model run in idev session (single GPU, --fit_world_only in, --n_reps 2)"
+        ),
+        choices=["1", "2", "3"],
+        required=True,
+    ))
+
+    # ------------------------------------------------------------------
+    # 1. TACC distributed setup (skipped for mode 3)
+    # ------------------------------------------------------------------
+    if mode in (1, 2):
+        section("1 · TACC / idev session")
+
+        n_nodes = ask("n_nodes",
+                      description="Number of GPU nodes allocated in your idev session",
+                      required=True)
+        n_nodes = int(n_nodes)
+
+        master_port = ask("master_port",
+                          description="Base torchrun rendezvous port",
+                          default=29500)
+        master_port = int(master_port)
+    else:
+        n_nodes = 1
+        master_port = None
+
+    # ------------------------------------------------------------------
+    # 2–8. Shared wizard sections
+    # ------------------------------------------------------------------
+    args, data_name, epsilon, use_defense = collect_wizard_sections(mode)
+
+    # ------------------------------------------------------------------
+    # 9. SLURM directives (mode 1 only)
+    # ------------------------------------------------------------------
+    sbatch_opts = None
+    slurm_filename = None
+    if mode == 1:
+        sbatch_opts, slurm_filename = collect_slurm_directives(args)
 
     # ------------------------------------------------------------------
     # Review and confirm
@@ -374,28 +522,39 @@ def main():
         sys.exit(0)
 
     # ------------------------------------------------------------------
-    # Render
+    # Render and output
     # ------------------------------------------------------------------
-    cmd = render_command(n_nodes, master_port, args, args["out"])
+    if mode == 2:
+        cmd = render_srun_command(n_nodes, master_port, args)
+        _print_command_box(cmd)
+        save = ask("save_to",
+                   description="Save command to a file (leave blank to skip)",
+                   default=None)
+        if save:
+            with open(save, "w") as f:
+                f.write("#!/bin/bash\n")
+                f.write(cmd + "\n")
+            print(f"  {_c('Written to ' + save, GREEN)}")
 
-    print()
-    print(_c("  ┌─── Copy-paste command ───────────────────────────────────┐", BOLD, YELLOW))
-    print()
-    for line in cmd.splitlines():
-        print("  " + line)
-    print()
-    print(_c("  └──────────────────────────────────────────────────────────┘", BOLD, YELLOW))
-    print()
+    elif mode == 3:
+        cmd = render_single_gpu_command(args)
+        _print_command_box(cmd)
+        save = ask("save_to",
+                   description="Save command to a file (leave blank to skip)",
+                   default=None)
+        if save:
+            with open(save, "w") as f:
+                f.write("#!/bin/bash\n")
+                f.write(cmd + "\n")
+            print(f"  {_c('Written to ' + save, GREEN)}")
 
-    # Offer to write to a file
-    save = ask("save_to",
-               description="Save command to a file (leave blank to skip)",
-               default=None)
-    if save:
-        with open(save, "w") as f:
-            f.write("#!/bin/bash\n")
-            f.write(cmd + "\n")
-        print(f"  {_c('Written to ' + save, GREEN)}")
+    elif mode == 1:
+        slurm_script = render_slurm_file(n_nodes, master_port, args, sbatch_opts)
+        _print_command_box(slurm_script)
+        with open(slurm_filename, "w") as f:
+            f.write(slurm_script + "\n")
+        print(f"  {_c('Written to ' + slurm_filename, GREEN)}")
+        print(f"  Submit with: {_c('sbatch ' + slurm_filename, BOLD)}")
 
 
 if __name__ == "__main__":
