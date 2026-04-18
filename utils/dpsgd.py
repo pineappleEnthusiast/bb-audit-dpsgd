@@ -228,6 +228,10 @@ class DefenseConfig:
     grad_scatter_hist: Optional[np.ndarray] = None
     grad_scatter_hist_pos: Optional[np.ndarray] = None
     grad_scatter_k: int = 5
+    prev_losses: Optional[np.ndarray] = None
+    loss_hist: Optional[np.ndarray] = None
+    loss_hist_pos: Optional[np.ndarray] = None
+    loss_volatility_k: int = 5
 
 
 def _norm_p_from_name(score_norm: str):
@@ -1175,6 +1179,35 @@ def clip_and_accum_grads(model, X, y, optimizer, criterion, max_grad_norm,
 
             defense_cfg.dir_unique_hist[curr_idx_np, pos, :] = curr_dirs
             defense_cfg.dir_unique_hist_pos[curr_idx_np] = (pos + 1) % k
+        elif defense_cfg is not None and defense_cfg.score_fn == 'loss_momentum':
+            curr_idx_np = curr_global_indices.detach().cpu().numpy()
+            curr_losses = score_aux_block.astype(np.float32, copy=False)
+            if defense_cfg.prev_losses is None:
+                raise ValueError("defense_cfg.prev_losses must be provided for score_fn='loss_momentum'")
+            prev = defense_cfg.prev_losses[curr_idx_np]
+            valid = ~np.isnan(prev)
+            score = np.zeros_like(curr_losses)
+            score[valid] = curr_losses[valid] - prev[valid]
+            scores[curr_idx_np] = score
+            defense_cfg.prev_losses[curr_idx_np] = curr_losses
+
+        elif defense_cfg is not None and defense_cfg.score_fn == 'loss_volatility':
+            curr_idx_np = curr_global_indices.detach().cpu().numpy()
+            curr_losses = score_aux_block.astype(np.float32, copy=False)
+            if defense_cfg.loss_hist is None or defense_cfg.loss_hist_pos is None:
+                raise ValueError("defense_cfg.loss_hist and defense_cfg.loss_hist_pos must be provided for score_fn='loss_volatility'")
+            k = defense_cfg.loss_volatility_k
+            pos = defense_cfg.loss_hist_pos[curr_idx_np].astype(np.int64, copy=False)
+            defense_cfg.loss_hist[curr_idx_np, pos] = curr_losses
+            defense_cfg.loss_hist_pos[curr_idx_np] = (pos + 1) % k
+            hist = defense_cfg.loss_hist[curr_idx_np]
+            valid_counts = (~np.isnan(hist)).sum(axis=1)
+            vol = np.zeros_like(curr_losses)
+            enough = valid_counts >= 2
+            if np.any(enough):
+                vol[enough] = np.nanstd(hist[enough], axis=1).astype(np.float32, copy=False)
+            scores[curr_idx_np] = vol
+
         else:
             scores[curr_global_indices.cpu().numpy()] = score_aux_block
 

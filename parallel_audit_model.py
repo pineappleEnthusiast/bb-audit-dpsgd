@@ -296,7 +296,11 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 dir_unique_hist=dir_unique_hist,
                 dir_unique_hist_pos=dir_unique_hist_pos,
                 dir_unique_k=int(dir_unique_k),
-                grad_scatter_k=int(grad_scatter_k)
+                grad_scatter_k=int(grad_scatter_k),
+                prev_losses=prev_losses,
+                loss_hist=loss_hist,
+                loss_hist_pos=loss_hist_pos,
+                loss_volatility_k=int(loss_volatility_k),
             )
             
             # Clip & accumulate gradients (no world_size/rank needed)
@@ -335,7 +339,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
             
-            drop_mask[drop_mask == 1] = 2
+            processed = global_indices.cpu().numpy()
+            drop_mask[processed[drop_mask[processed] == 1]] = 2
 
             # Apply the accumulated gradients
             with torch.no_grad():
