@@ -544,6 +544,12 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             "defense_score_fn='gradient_scatter' is history-based and must be computed in clip_and_accum_grads(...), keyed by global_indices"
         )
 
+    if score_fn == 'grad_norm_unclipped':
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads)
+        p = _norm_p_from_name(defense_cfg.score_norm)
+        return per_sample_flat_grads.norm(p, dim=1).to(dtype=torch.float32)
+
+    # Default: grad_norm (clipped)
     per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
     p = _norm_p_from_name(defense_cfg.score_norm)
     return per_sample_flat_grads.norm(p, dim=1).to(dtype=torch.float32)
