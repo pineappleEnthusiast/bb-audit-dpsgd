@@ -39,7 +39,7 @@ except ImportError:
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm,
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
                gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5,
-               defense_apply_ascent=True, defense_filter_every: int = 1, device='cuda:0',
+               defense_apply_ascent=False, defense_filter_every: int = 1, device='cuda:0',
                generator=None, dl_generator=None, rank=0, world_size=None,
                defense_score_norm='linf', defense_score_fn='grad_norm',
                loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20,
@@ -71,8 +71,10 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             model = Models[model_name](X.shape, out_dim=out_dim).to(device)
             if model_name == 'cnn':
                 xavier_init_model(model)
-            else:
+            elif model_name == 'wideresnet':
                 init_wideresnet(model)
+            else:
+                xavier_init_model(model)
     else:
         model = copy.deepcopy(init_model).to(device)
 
@@ -358,9 +360,9 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                         noise = noise_std * torch.randn_like(grad)
                         grad.add_(noise)
                     
-                    # Average the noisy gradient sum
-                    batch_size_in = int(curr_X.shape[0])
-                    grad.div_(float(batch_size_in))
+                    # Average the noisy gradient sum by the nominal batch size so that the
+                    # effective LR and noise scale are consistent across Poisson draws.
+                    grad.div_(float(batch_size))
                     
                     if param.grad is None:
                         param.grad = grad.clone()
@@ -385,7 +387,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             active_mask = torch.from_numpy(drop_mask == 0)
 
             canary_global = len(dataset) - 1
-            canary_cls = int(y[canary_global].item()) if canary_global < len(y) else None
 
             for cls in unique_classes:
                 cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
@@ -399,21 +400,6 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
 
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
-
-                # Log canary stats every filter epoch for its class
-                if canary_cls is not None and int(cls.item()) == canary_cls and drop_mask[canary_global] != 2:
-                    canary_score = float(scores[canary_global])
-                    n_above = int((cls_scores > canary_score).sum().item())
-                    rank = n_above  # 0 = highest score in class
-                    n_cls = len(cls_indices)
-                    pct = 100.0 * (1.0 - n_above / n_cls)
-                    s = cls_scores.cpu().numpy()
-                    print(
-                        f"  [Defense e{epoch:03d}] canary score={canary_score:.4f} "
-                        f"rank={rank}/{n_cls} (top {pct:.1f}%) "
-                        f"class_min={s.min():.4f} class_mean={s.mean():.4f} "
-                        f"class_max={s.max():.4f} class_std={s.std():.4f}"
-                    )
 
                 if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
                     canary_score = float(scores[X.shape[0] - 1])
@@ -498,15 +484,13 @@ def main():
         np.random.seed(args.seed)
         
         init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
-        if args.model_name == 'cnn':
-            xavier_init_model(init_model)
-        else:
-            init_wideresnet(init_model)
         if args.fixed_init == '':
             if args.model_name == 'cnn':
                 xavier_init_model(init_model)
-            else:
+            elif args.model_name == 'wideresnet':
                 init_wideresnet(init_model)
+            else:
+                xavier_init_model(init_model)
         else:
             init_model.load_state_dict(torch.load(args.fixed_init))
             X_out, y_out = X_out[len(X_out) // 2:], y_out[len(y_out) // 2:]

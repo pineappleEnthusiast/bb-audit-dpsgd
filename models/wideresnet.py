@@ -213,9 +213,6 @@ class WSConv2d(nn.Module):
         
         # Gain parameter for weight standardization
         self.gain = nn.Parameter(torch.ones(out_channels))
-        
-        # # Initialize weights with fan-in variance scaling
-        # self._initialize_weights()
     
     def _initialize_weights(self):
         """Initialize weights using fan-in variance scaling."""
@@ -331,8 +328,8 @@ class WideResNet(nn.Module):
             x = block(x)
         
         # Final processing
-        x = F.relu(x)
         x = self.final_norm(x)
+        x = F.relu(x)
         
         # Global average pooling
         x = F.adaptive_avg_pool2d(x, (1, 1))
@@ -368,11 +365,7 @@ class ResidualBlock(nn.Module):
         # Skip connection projection (if needed)
         self.skip_projection = None
         if stride != 1 or in_channels != out_channels:
-            self.skip_projection = nn.Sequential(
-                nn.ReLU(inplace=False),  # inplace=False required for Opacus compatibility
-                nn.GroupNorm(16, in_channels),
-                WSConv2d(in_channels, out_channels, kernel_size=1, stride=stride)
-            )
+            self.skip_projection = WSConv2d(in_channels, out_channels, kernel_size=1, stride=stride)
         
         # Main residual path - first conv
         self.norm1 = nn.GroupNorm(16, in_channels)
@@ -394,17 +387,17 @@ class ResidualBlock(nn.Module):
             skip = x
         
         # Main residual path - first convolution
-        out = F.relu(x)
-        out = self.norm1(out)
+        out = self.norm1(x)
+        out = F.relu(out)
         out = self.conv1(out)
-        
+
         # Apply dropout if specified
         if self.dropout_rate > 0.0:
             out = F.dropout(out, p=self.dropout_rate, training=self.training)
-        
+
         # Main residual path - second convolution
-        out = F.relu(out)
         out = self.norm2(out)
+        out = F.relu(out)
         out = self.conv2(out)
         
         # Apply dropout if specified
