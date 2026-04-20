@@ -383,25 +383,43 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             k = int(defense_k)
             unique_classes = torch.unique(y).cpu()
             active_mask = torch.from_numpy(drop_mask == 0)
-            
+
+            canary_global = len(dataset) - 1
+            canary_cls = int(y[canary_global].item()) if canary_global < len(y) else None
+
             for cls in unique_classes:
                 cls_indices = ((y.cpu() == cls.item()) & active_mask).nonzero(as_tuple=True)[0]
                 if len(cls_indices) == 0:
                     continue
-                    
+
                 cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
                 _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
-                
+
                 topk_global_indices = cls_indices[topk_indices]
-                
+
                 dropped_indices = topk_global_indices.cpu().numpy()
                 drop_mask[dropped_indices] = 1
-                
+
+                # Log canary stats every filter epoch for its class
+                if canary_cls is not None and int(cls.item()) == canary_cls and drop_mask[canary_global] != 2:
+                    canary_score = float(scores[canary_global])
+                    n_above = int((cls_scores > canary_score).sum().item())
+                    rank = n_above  # 0 = highest score in class
+                    n_cls = len(cls_indices)
+                    pct = 100.0 * (1.0 - n_above / n_cls)
+                    s = cls_scores.cpu().numpy()
+                    print(
+                        f"  [Defense e{epoch:03d}] canary score={canary_score:.4f} "
+                        f"rank={rank}/{n_cls} (top {pct:.1f}%) "
+                        f"class_min={s.min():.4f} class_mean={s.mean():.4f} "
+                        f"class_max={s.max():.4f} class_std={s.std():.4f}"
+                    )
+
                 if X.shape[0] - 1 in dropped_indices and canary_dropped_epoch is None:
                     canary_score = float(scores[X.shape[0] - 1])
                     print(f"\n[INFO] Canary (index {X.shape[0]-1}) was dropped from the training set! Score: {canary_score:.6f}")
                     canary_dropped_epoch = int(epoch)
-        
+
             scores.fill(0)
 
     if return_defense_state:
