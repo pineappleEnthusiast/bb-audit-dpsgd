@@ -65,6 +65,11 @@ if [ "${DEFENSE}" = "true" ]; then
     DEFENSE_ARGS="--defense --defense_k ${DEFENSE_K} --defense_score_fn ${DEFENSE_SCORE_FN} --defense_score_norm ${DEFENSE_SCORE_NORM}"
 fi
 
+STORE_LOSSES_FLAG=""
+if [ "${EPSILON}" = "10.0" ]; then
+    STORE_LOSSES_FLAG="--store_all_losses"
+fi
+
 srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
   MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
   MASTER_PORT=$((29500 + '"${SLURM_ARRAY_TASK_ID}"'));
@@ -89,6 +94,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --sampling poisson \
     --holdout_audit \
     '"${DEFENSE_ARGS}"' \
+    '"${STORE_LOSSES_FLAG}"' \
     --out '"${PARENT_OUT}"'/'"${OUT_NAME}"''
 
 echo "Task ${SLURM_ARRAY_TASK_ID} completed: ${OUT_NAME}"
