@@ -373,6 +373,7 @@ def train_model_multi_canary(
     num_workers: int,
     persistent_workers: bool,
     canary_indices: np.ndarray | None,
+    sampling: str = 'poisson',
     is_gradient_space_canary: bool = False,
     global_idx_to_grad: dict | None = None,
     loss_volatility_k: int = 5,
@@ -425,8 +426,10 @@ def train_model_multi_canary(
         model = Models[model_name](X.shape, out_dim=out_dim)
         if model_name == 'cnn':
             xavier_init_model(model)
-        else:
+        elif model_name == 'wideresnet':
             init_wideresnet(model)
+        else:
+            xavier_init_model(model)
     else:
         model = copy.deepcopy(init_model)
     model = model.to(dev)
@@ -459,17 +462,25 @@ def train_model_multi_canary(
     scores = np.zeros(len(dataset), dtype=np.float32)
     drop_mask = np.zeros(len(dataset), dtype=np.int8)
 
-    sampler = torch.utils.data.RandomSampler(dataset, replacement=False, generator=generator)
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=int(batch_size),
-        sampler=sampler,
-        pin_memory=True,
-        num_workers=int(num_workers),
-        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
-        drop_last=False,
-        generator=dl_generator,
-    )
+    n_samples = len(dataset)
+    if sampling == 'poisson':
+        _poisson_q = batch_size / n_samples
+        _poisson_n_batches = (n_samples + batch_size - 1) // batch_size
+        loader = None
+    else:
+        _poisson_q = None
+        _poisson_n_batches = None
+        sampler = torch.utils.data.RandomSampler(dataset, replacement=False, generator=generator)
+        loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=int(batch_size),
+            sampler=sampler,
+            pin_memory=True,
+            num_workers=int(num_workers),
+            persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
+            drop_last=False,
+            generator=dl_generator,
+        )
 
     # Multi-canary defense tracking
     canary_drop_epochs = None
@@ -506,7 +517,19 @@ def train_model_multi_canary(
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for _, (curr_X, curr_y, global_indices) in enumerate(loader):
+        if sampling == 'poisson':
+            def _poisson_iter():
+                for _ in range(_poisson_n_batches):
+                    mask = torch.rand(n_samples, generator=generator) < _poisson_q
+                    idx = torch.where(mask)[0]
+                    if len(idx) == 0:
+                        continue
+                    yield dataset[idx]
+            batch_iter = enumerate(_poisson_iter())
+        else:
+            batch_iter = enumerate(loader)
+
+        for _, (curr_X, curr_y, global_indices) in batch_iter:
             curr_X = curr_X.to(dev, non_blocking=True)
             curr_y = curr_y.to(dev, non_blocking=True)
             global_indices = global_indices.to(dev, non_blocking=True)
@@ -671,8 +694,9 @@ def train_model_multi_canary(
                             dropped_ratio = dropped_count / float(canary_indices_np.size)
                             canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
 
-            # Transition ascent->dropped
-            drop_mask[drop_mask == 1] = 2
+            # Transition ascent->dropped (only for samples in this batch)
+            processed = global_indices.cpu().numpy()
+            drop_mask[processed[drop_mask[processed] == 1]] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
@@ -684,10 +708,9 @@ def train_model_multi_canary(
                     if noise_multiplier > 0 and max_grad_norm is not None:
                         noise_std = float(noise_multiplier) * float(max_grad_norm)
                         grad.add_(noise_std * torch.randn_like(grad))
-                    
-                    # Average the noisy gradient sum
-                    batch_size_in = int(curr_X.shape[0])
-                    grad.div_(float(batch_size_in))
+
+                    # Average by nominal batch size (zero-sentinel equivalence)
+                    grad.div_(float(batch_size))
 
                     if param.grad is None:
                         param.grad = grad.clone()
@@ -833,6 +856,7 @@ def main():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--out', type=str, default='parallel_results_multi_canary/')
     parser.add_argument('--fixed_init', type=str, nargs='?', default=None, const='', help='initialize all models to the same weights (if path provided, weights loaded from path (worst-case), else fix to some randomly chosen weights)')
+    parser.add_argument('--sampling', type=str, default='poisson', choices=['poisson', 'shuffle'])
 
     parser.add_argument('--holdout_audit', action='store_true')
 
@@ -903,17 +927,13 @@ def main():
         np.random.seed(args.seed)
         
         init_model = Models[args.model_name](X_out.shape, out_dim=out_dim)
-        if args.model_name == 'cnn':
-            xavier_init_model(init_model)
-        else:
-            init_wideresnet(init_model)
-        
         if args.fixed_init == '':
-            # Empty string: use the randomly initialized weights above
             if args.model_name == 'cnn':
                 xavier_init_model(init_model)
-            else:
+            elif args.model_name == 'wideresnet':
                 init_wideresnet(init_model)
+            else:
+                xavier_init_model(init_model)
         else:
             # Path provided: load pretrained weights
             init_model.load_state_dict(torch.load(args.fixed_init))
@@ -1037,6 +1057,7 @@ def main():
                 canary_indices=None,
                 is_gradient_space_canary=False,
                 global_idx_to_grad=None,
+                sampling=args.sampling,
                 rank=rank,
             )
 
@@ -1181,6 +1202,7 @@ def main():
                 canary_indices=canary_indices if (world == 'in') else None,
                 is_gradient_space_canary=(args.target_type == 'gradient_space_canary' and world == 'in'),
                 global_idx_to_grad=global_idx_to_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
+                sampling=args.sampling,
                 rank=rank,
             )
 
