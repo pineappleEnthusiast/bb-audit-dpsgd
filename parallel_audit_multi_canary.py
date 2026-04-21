@@ -446,7 +446,6 @@ def train_model_multi_canary(
             target_delta=float(delta) if delta is not None else 1e-5,
             sample_rate=sample_rate,
             epochs=int(n_epochs),
-            accountant='rdp',
         )
     else:
         noise_multiplier = 0.0
