@@ -562,14 +562,16 @@ def main():
     parser.add_argument('--defense', action='store_true', help='use filtering defense during training')
     parser.add_argument('--defense_k', type=int, default=5,
                         help='number of top samples to mark per class per epoch (default: 5)')
-    parser.add_argument('--defense_apply_ascent', action='store_true', default=True,
-                        help='if set, apply gradient ascent before dropping (default: True)')
+    parser.add_argument('--defense_apply_ascent', action='store_true', default=False,
+                        help='if set, apply gradient ascent before dropping (default: False)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'],
                         help='norm used for defense score computation (default: linf)')
     parser.add_argument('--defense_score_fn', type=str, default='grad_norm',
                         help='defense scoring function name (default: grad_norm)')
     parser.add_argument('--defense_global_filter', action='store_true',
                         help='if set, apply defense filtering globally across all samples instead of per-class (default: per-class)')
+
+    parser.add_argument('--sampling', type=str, default='poisson', choices=['poisson', 'shuffle'])
 
     parser.add_argument('--debug_mode', action='store_true',
                         help='if set, enter an interactive loop after training to recompute empirical epsilon for different k_plus/k_minus values without retraining')
@@ -723,6 +725,7 @@ def main():
         num_workers=0,
         persistent_workers=False,
         canary_indices=canary_indices_in_train,
+        sampling=args.sampling,
     )
     print(f"Training done in {time.time() - start:.2f}s")
     
