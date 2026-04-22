@@ -2,11 +2,76 @@
 Utility functions to load and transform datasets
 """
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10, MNIST, CIFAR100
 from torch.utils.data import TensorDataset
 import os
 import numpy as np
+
+def load_colored_mnist(root='./', split='train', seed=0):
+    """
+    Binary Colored MNIST (digits 0 vs 1).
+
+    Class 0: 98% red, 2% blue
+    Class 1: 98% blue, 2% red
+
+    Subgroups:
+      0 = class 0, red   (majority for class 0)
+      1 = class 0, blue  (minority for class 0)
+      2 = class 1, red   (minority for class 1)
+      3 = class 1, blue  (majority for class 1)
+
+    Returns X (N,3,32,32), y (N,), subgroups (N,), out_dim=2.
+    Images are resized to 32x32 so the CNN BigNetwork (designed for CIFAR-10) works.
+    """
+    os.makedirs(f'{root}/data/colored_mnist', exist_ok=True)
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,)),
+    ])
+    dataset = MNIST(root=f'{root}/data/colored_mnist', train=(split == 'train'),
+                    download=True, transform=transform)
+
+    xs, ys_list = [], []
+    for x, y in dataset:
+        if y in (0, 1):
+            xs.append(x)
+            ys_list.append(y)
+    X_gray = torch.stack(xs)                              # (N, 1, 28, 28)
+    y = torch.tensor(ys_list, dtype=torch.long)
+    N = len(y)
+
+    rng = np.random.default_rng(seed)
+    color = np.zeros(N, dtype=np.int64)  # 0=red, 1=blue
+    y_np = y.numpy()
+    for cls, p_red in [(0, 0.98), (1, 0.02)]:
+        idx = np.where(y_np == cls)[0]
+        n_red = max(1, round(p_red * len(idx)))
+        cls_color = np.concatenate([
+            np.zeros(n_red, dtype=np.int64),
+            np.ones(len(idx) - n_red, dtype=np.int64),
+        ])
+        rng.shuffle(cls_color)
+        color[idx] = cls_color
+
+    # subgroup = class * 2 + color: 0=c0_red, 1=c0_blue, 2=c1_red, 3=c1_blue
+    subgroups = torch.tensor(y_np * 2 + color, dtype=torch.long)
+
+    # Colorize: broadcast gray to 3 channels, then zero non-dominant channels
+    X_rgb = X_gray.expand(-1, 3, -1, -1).clone()   # (N, 3, 28, 28)
+    is_red = torch.tensor(color == 0)
+    is_blue = ~is_red
+    X_rgb[is_red, 1] = 0.0    # red → zero G
+    X_rgb[is_red, 2] = 0.0    # red → zero B
+    X_rgb[is_blue, 0] = 0.0   # blue → zero R
+    X_rgb[is_blue, 1] = 0.0   # blue → zero G
+
+    # Resize to 32x32
+    X_rgb = F.interpolate(X_rgb, size=(32, 32), mode='bilinear', align_corners=False)
+
+    return X_rgb, y, subgroups, 2
+
 
 def load_data(data_name, n_df, root='./', split='train'):
     os.makedirs(f'{root}/data', exist_ok=True)
@@ -100,6 +165,9 @@ def load_data(data_name, n_df, root='./', split='train'):
 
         dataset = TensorDataset(X, y)
         out_dim = vocab_size
+    elif data_name == 'colored_mnist':
+        X, y, _, out_dim = load_colored_mnist(root=root, split=split)
+        return X, y, out_dim
     elif os.path.exists(f'{DATA_ROOT}'):
         # load pre-processed local data
         X, y = np.load(f'{DATA_ROOT}/X_{split}.npy'), np.load(f'{DATA_ROOT}/y_{split}.npy')
