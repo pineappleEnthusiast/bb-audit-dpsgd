@@ -106,11 +106,24 @@ def main():
             print(f'  {SUBGROUP_NAMES[sg]:26s}: train={n_tr:5d}, test={n_te:4d}')
 
     # ------------------------------------------------------------------ canary
-    # Blank canary: all-zeros, label 0. Appended as the last training sample.
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    target_X = torch.zeros(1, *X_train.shape[1:])
-    target_y = torch.zeros(1, dtype=torch.long)
+    if args.target_type == 'minority':
+        # Use the first class0_blue (sg==1) sample as the canary; remove from training.
+        minority_idx = int((sg_train == 1).nonzero(as_tuple=True)[0][0])
+        target_X = X_train[[minority_idx]]
+        target_y = y_train[[minority_idx]]
+        keep = torch.ones(len(y_train), dtype=torch.bool)
+        keep[minority_idx] = False
+        X_train  = X_train[keep]
+        y_train  = y_train[keep]
+        sg_train = sg_train[keep]
+        if rank == 0:
+            print(f'Minority canary: sg=1 (class0_blue), index {minority_idx}, label {target_y.item()}')
+    else:
+        # Blank canary: all-zeros, label 0.
+        target_X = torch.zeros(1, *X_train.shape[1:])
+        target_y = torch.zeros(1, dtype=torch.long)
 
     X_with_canary = torch.vstack((X_train, target_X))
     y_with_canary = torch.cat((y_train, target_y))
