@@ -562,9 +562,7 @@ def main():
         elif args.data_name == 'cifar100':
             pass # compatible with all canaries
         elif args.data_name == 'purchase':
-            # only compatible with blank
-            if args.target_type != 'blank':
-                raise Exception("Canary type does not support tabular data.")
+            pass # compatible with all canaries
         elif args.data_name == 'tiny_shakespeare':
             if args.target_type != 'empty_sequence':
                 raise Exception("For tiny_shakespeare, only target_type='empty_sequence' is supported.")
