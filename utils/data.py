@@ -45,7 +45,7 @@ def load_colored_mnist(root='./', split='train', seed=0):
     rng = np.random.default_rng(seed)
     color = np.zeros(N, dtype=np.int64)  # 0=red, 1=blue
     y_np = y.numpy()
-    for cls, p_red in [(0, 0.98), (1, 0.02)]:
+    for cls, p_red in [(0, 0.995), (1, 0.005)]:
         idx = np.where(y_np == cls)[0]
         n_red = max(1, round(p_red * len(idx)))
         cls_color = np.concatenate([
