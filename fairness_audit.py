@@ -84,6 +84,8 @@ def main():
         print(f'Single GPU mode: {device}')
 
     parser = build_parser()
+    parser.add_argument('--majority_pct', type=float, default=0.995,
+                        help='Fraction of each class assigned the majority color (e.g. 0.995)')
     args = parser.parse_args()
     if args.epsilon == -1:
         args.epsilon = None
@@ -94,9 +96,9 @@ def main():
 
     # ------------------------------------------------------------------ data
     if rank == 0:
-        print('Loading Colored MNIST (binary: digits 0 and 1)...')
-    X_train, y_train, sg_train, out_dim = load_colored_mnist(split='train', seed=args.seed)
-    X_test,  y_test,  sg_test,  _       = load_colored_mnist(split='test',  seed=args.seed)
+        print(f'Loading Colored MNIST (binary: digits 0 and 1, majority_pct={args.majority_pct})...')
+    X_train, y_train, sg_train, out_dim = load_colored_mnist(split='train', seed=args.seed, majority_pct=args.majority_pct)
+    X_test,  y_test,  sg_test,  _       = load_colored_mnist(split='test',  seed=args.seed, majority_pct=args.majority_pct)
 
     if rank == 0:
         print(f'Train: {len(y_train)}  |  Test: {len(y_test)}')
@@ -188,7 +190,7 @@ def main():
     # ------------------------------------------------------------------ summary
     if rank == 0:
         print('\n' + '=' * 60)
-        print(f'FAIRNESS SUMMARY  defense={args.defense}  epsilon={args.epsilon}  n_reps={args.n_reps}')
+        print(f'FAIRNESS SUMMARY  defense={args.defense}  epsilon={args.epsilon}  n_reps={args.n_reps}  majority_pct={args.majority_pct}')
         print('=' * 60)
 
         print('\nPer-subgroup test accuracy (mean ± std over reps):')
