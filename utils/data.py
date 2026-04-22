@@ -9,12 +9,12 @@ from torch.utils.data import TensorDataset
 import os
 import numpy as np
 
-def load_colored_mnist(root='./', split='train', seed=0):
+def load_colored_mnist(root='./', split='train', seed=0, majority_pct=0.995):
     """
     Binary Colored MNIST (digits 0 vs 1).
 
-    Class 0: 98% red, 2% blue
-    Class 1: 98% blue, 2% red
+    majority_pct fraction of class 0 is red; (1-majority_pct) is blue.
+    Symmetrically, majority_pct of class 1 is blue; (1-majority_pct) is red.
 
     Subgroups:
       0 = class 0, red   (majority for class 0)
@@ -45,7 +45,8 @@ def load_colored_mnist(root='./', split='train', seed=0):
     rng = np.random.default_rng(seed)
     color = np.zeros(N, dtype=np.int64)  # 0=red, 1=blue
     y_np = y.numpy()
-    for cls, p_red in [(0, 0.995), (1, 0.005)]:
+    minority_pct = 1.0 - majority_pct
+    for cls, p_red in [(0, majority_pct), (1, minority_pct)]:
         idx = np.where(y_np == cls)[0]
         n_red = max(1, round(p_red * len(idx)))
         cls_color = np.concatenate([
