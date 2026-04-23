@@ -25,7 +25,7 @@ python generate_gradient_cancelling_attack.py \
     --block_size 12143 \
     --n_group_a 2000 \
     --n_group_b 200 \
-    --alpha 5.0 \
+    --alpha 0.9 \
     --defense_k 5 \
     --output_dir "${OUTPUT_DIR}" \
     --device cuda:0
