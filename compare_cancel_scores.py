@@ -2,7 +2,7 @@ import numpy as np
 import os
 
 for tag in ['no_defense', 'defense']:
-    d = 'grad_cancel_test/audit_' + tag
+    d = 'grad_cancel_test/audit_' + tag + '/mnist_cnn_epsNone'
     scores_in  = np.load(os.path.join(d, 'scores_in.npy'))
     scores_out = np.load(os.path.join(d, 'scores_out.npy'))
     mean_in  = scores_in.mean()
