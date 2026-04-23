@@ -3,7 +3,7 @@ Generate gradient cancelling attack with multi-canary gradient space approach.
 
 This script:
 1. Trains a model without canaries using the defense
-2. Identifies the direction of least update (argmin of final - init params)
+2. Identifies the direction of most update (argmax of final - init params)
 3. Creates two groups of canaries (A and B) with opposite gradient directions in that direction
 4. Group A: n_group_a canaries with norm alpha (positive gradients)
 5. Group B: n_group_b canaries with norm beta (negative gradients)
@@ -93,12 +93,12 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
                                                 grad_dir_proj_dim=64, dir_unique_k=5, rand_proj_var_m=10, maxmin_proj_k=10,
                                                 grad_rank_mode='effdim', grad_rank_eps=1e-12, grad_accel_proj_dim=64,
                                                 grad_jerk_proj_dim=64, alignment_proj_k=10, grad_scatter_k=5, block_size=None, 
-                                                aug_mult=1, generator=None, dl_generator=None, num_workers=4, persistent_workers=True, device='cuda:0'):
+                                                aug_mult=1, generator=None, dl_generator=None, num_workers=4, persistent_workers=True, sampling='poisson', device='cuda:0'):
     """
     Train a DP-SGD model without canaries using the defense, and find the direction of least update.
     
     Returns:
-        hot_index: Global index of the parameter with smallest absolute update
+        hot_index: Global index of the parameter with largest absolute update
         model: Trained model
         init_params: Initial parameters before training
     """
@@ -114,8 +114,10 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
         model = Models[model_name](X.shape, out_dim=out_dim).to(device)
         if model_name == 'cnn':
             xavier_init_model(model)
-        else:
+        elif model_name == 'wideresnet':
             init_wideresnet(model)
+        else:
+            xavier_init_model(model)
 
     if model_name == "lstm" and not isinstance(model, GradSampleModule):
         model = GradSampleModule(model)
@@ -153,24 +155,31 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
     dataset = IndexedTensorDataset(X, y)
     scores = np.zeros(len(dataset), dtype=np.float32)
     drop_mask = np.zeros(len(dataset), dtype=np.int8)
-    
-    sampler = torch.utils.data.RandomSampler(
-        dataset,
-        replacement=False,
-        num_samples=None,
-        generator=generator
-    )
-    
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        pin_memory=True,
-        num_workers=int(num_workers),
-        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
-        drop_last=False,
-        generator=dl_generator
-    )
+
+    n_samples = len(dataset)
+    if sampling == 'poisson':
+        _poisson_q = batch_size / n_samples
+        _poisson_n_batches = (n_samples + batch_size - 1) // batch_size
+        loader = None
+    else:
+        _poisson_q = None
+        _poisson_n_batches = None
+        sampler = torch.utils.data.RandomSampler(
+            dataset,
+            replacement=False,
+            num_samples=None,
+            generator=generator
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            pin_memory=True,
+            num_workers=int(num_workers),
+            persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
+            drop_last=False,
+            generator=dl_generator
+        )
 
     prev_params = None
     prev_delta_theta = None
@@ -200,7 +209,19 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
+        if sampling == 'poisson':
+            def _poisson_iter():
+                for _ in range(_poisson_n_batches):
+                    mask = torch.rand(n_samples, generator=generator) < _poisson_q
+                    idx = torch.where(mask)[0]
+                    if len(idx) == 0:
+                        continue
+                    yield X[idx], y[idx], idx
+            batch_iter = enumerate(_poisson_iter())
+        else:
+            batch_iter = enumerate(loader)
+
+        for batch_idx, (curr_X, curr_y, global_indices) in batch_iter:
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
 
@@ -301,7 +322,11 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
                 dir_unique_hist=dir_unique_hist,
                 dir_unique_hist_pos=dir_unique_hist_pos,
                 dir_unique_k=int(dir_unique_k),
-                grad_scatter_k=int(grad_scatter_k)
+                grad_scatter_k=int(grad_scatter_k),
+                prev_losses=prev_losses,
+                loss_hist=loss_hist,
+                loss_hist_pos=loss_hist_pos,
+                loss_volatility_k=int(loss_volatility_k),
             )
             curr_accumulated_gradients, scores = clip_and_accum_grads(
                 model,
@@ -336,7 +361,8 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
             
-            drop_mask[drop_mask == 1] = 2
+            processed = global_indices.cpu().numpy()
+            drop_mask[processed[drop_mask[processed] == 1]] = 2
 
             with torch.no_grad():
                 for name, param in model.named_parameters():
@@ -351,8 +377,7 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
                         noise = noise_std * torch.randn_like(grad)
                         grad.add_(noise)
                     
-                    batch_size_in = int(curr_X.shape[0])
-                    grad.div_(float(batch_size_in))
+                    grad.div_(float(batch_size))
                     
                     if param.grad is None:
                         param.grad = grad.clone()
@@ -390,11 +415,11 @@ def train_model_and_find_least_update_direction(model_name, X, y, epsilon, delta
             
             scores.fill(0)
 
-    # Compute parameter updates and find the direction of least update
+    # Compute parameter updates and find the direction of most update
     final_params = model.state_dict()
     update = {n: final_params[n] - init_params[n] for n in init_params}
     flat_update = torch.cat([p.view(-1) for p in update.values()])
-    hot_index = torch.argmin(flat_update.abs()).item()
+    hot_index = torch.argmax(flat_update.abs()).item()
     print(f"\nSelected 1-hot index: {hot_index} with update magnitude: {flat_update[hot_index].abs().item():.6f}")
     
     return hot_index, model, init_params
