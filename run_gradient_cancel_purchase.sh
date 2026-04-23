@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-OUTPUT_DIR="grad_cancel_test"
+OUTPUT_DIR="grad_cancel_test_purchase"
 
 echo "=========================================="
 echo "Step 0: Check natural gradient norm distribution"
 echo "=========================================="
 python check_gradient_norms.py \
-    --data_name mnist \
-    --model_name cnn \
+    --data_name purchase \
+    --model_name mlp \
     --n_samples 500 \
     --device cuda:0
 
@@ -16,12 +16,13 @@ echo "=========================================="
 echo "Step 1: Generate gradient cancelling canaries"
 echo "=========================================="
 python generate_gradient_cancelling_attack.py \
-    --model_name cnn \
-    --data_name mnist \
+    --model_name mlp \
+    --data_name purchase \
+    --out_dim 100 \
     --n_epochs 5 \
-    --lr 3 \
-    --batch_size 4000 \
-    --block_size 4000 \
+    --lr 10 \
+    --batch_size 12143 \
+    --block_size 12143 \
     --n_group_a 2000 \
     --n_group_b 200 \
     --alpha 5.0 \
@@ -36,13 +37,15 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29500 \
     parallel_audit_multi_canary.py \
-    --data_name mnist \
-    --model_name cnn \
+    --data_name purchase \
+    --model_name mlp \
+    --n_df 153800 \
     --n_reps 8 \
     --n_epochs 30 \
-    --lr 3 \
-    --batch_size 4000 \
-    --block_size 4000 \
+    --lr 10 \
+    --batch_size 12143 \
+    --block_size 12143 \
+    --aug_mult 1 \
     --epsilon -1 \
     --max_grad_norm -1 \
     --sampling poisson \
@@ -60,13 +63,15 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29500 \
     parallel_audit_multi_canary.py \
-    --data_name mnist \
-    --model_name cnn \
+    --data_name purchase \
+    --model_name mlp \
+    --n_df 153800 \
     --n_reps 8 \
     --n_epochs 30 \
-    --lr 3 \
-    --batch_size 4000 \
-    --block_size 4000 \
+    --lr 10 \
+    --batch_size 12143 \
+    --block_size 12143 \
+    --aug_mult 1 \
     --epsilon -1 \
     --max_grad_norm -1 \
     --sampling poisson \
