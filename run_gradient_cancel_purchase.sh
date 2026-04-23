@@ -52,6 +52,7 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     --holdout_audit \
     --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
     --target_type gradient_space_canary \
+    --gradient_space_score_fn hot_param \
     --seed 0 \
     --fixed_init \
     --out "${OUTPUT_DIR}/audit_no_defense"
@@ -78,6 +79,7 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     --holdout_audit \
     --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
     --target_type gradient_space_canary \
+    --gradient_space_score_fn hot_param \
     --seed 0 \
     --fixed_init \
     --defense \

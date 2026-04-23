@@ -857,6 +857,11 @@ def main():
     parser.add_argument('--canary_pt', type=str, default=None, help='Path to a .pt file containing canaries + audit labels (overrides --target_type/--n_canaries)')
     parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
                         help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
+    parser.add_argument('--gradient_space_score_fn', type=str, default='linf',
+                        choices=['linf', 'hot_param'],
+                        help='Scoring function for gradient_space_canary. '
+                             '"linf": L∞ norm over all model parameters (may overflow for large models). '
+                             '"hot_param": signed delta at hot_index from the canary file (requires hot_index in .pt).')
     parser.add_argument('--blank_alpha', type=float, default=0.0)
 
     parser.add_argument('--aug_mult', type=int, default=1)
@@ -935,6 +940,7 @@ def main():
 
     # Handle gradient space canary loading
     crafted_grad = None
+    gradient_cancel_hot_index = None  # hot_index for gradient cancelling attack scoring
     if args.target_type == 'gradient_space_canary':
         if args.gradient_space_canary_pt is not None:
             if not os.path.exists(args.gradient_space_canary_pt):
@@ -943,6 +949,11 @@ def main():
             
             # Support multiple gradient space canaries
             if isinstance(payload, dict):
+                # Extract hot_index for gradient cancelling attack (score at specific parameter)
+                if 'hot_index' in payload:
+                    gradient_cancel_hot_index = int(payload['hot_index'])
+                    if rank == 0:
+                        print(f"Loaded hot_index={gradient_cancel_hot_index} for gradient cancelling score")
                 if 'gradients' in payload:
                     # Multiple gradients: list of gradient dicts
                     gradients_list = payload['gradients']
@@ -1199,20 +1210,25 @@ def main():
             )
 
             if args.target_type == 'gradient_space_canary':
-                # For gradient space canary, score by L∞ norm of parameter update in both worlds
                 model.eval()
                 with torch.no_grad():
                     final_params = {n: p.detach().clone().to(device) for n, p in model.named_parameters()}
-                    # Use the saved initial parameters from before training
                     init_params = init_params_saved
-                    
+
                     update = {n: final_params[n] - init_params[n] for n in final_params}
                     flat_update = torch.cat([p.view(-1) for p in update.values()])
-                    
-                    update_norm = flat_update.norm(p=float('inf')).item()
-                    max_score = float(update_norm)
-                    if rank == 0:
-                        print(f"[Rank {rank}] Gradient space canary score (L∞ norm of update): {max_score:.6f}")
+
+                    if args.gradient_space_score_fn == 'hot_param':
+                        if gradient_cancel_hot_index is None:
+                            raise ValueError("--gradient_space_score_fn=hot_param requires hot_index in the canary .pt file")
+                        max_score = float(flat_update[gradient_cancel_hot_index].item())
+                        if rank == 0:
+                            print(f"[Rank {rank}] score(hot_param@{gradient_cancel_hot_index}): {max_score:.6f}")
+                    else:  # linf
+                        update_norm = flat_update.norm(p=float('inf')).item()
+                        max_score = float(update_norm)
+                        if rank == 0:
+                            print(f"[Rank {rank}] score(linf): {max_score:.6f}")
             else:
                 per_canary = _score_canaries(model, X_canary, y_canary)
                 max_score = float(per_canary.max())
