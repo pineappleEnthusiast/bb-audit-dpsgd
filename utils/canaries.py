@@ -146,4 +146,4 @@ def craft_clipbkd(X: torch.Tensor, model: nn.Module):
 
     model.to(device)
     target_y = choose_worstcase_label(model, target_X)
-    return target_X, target_y
+    return target_X.cpu(), target_y.cpu()
