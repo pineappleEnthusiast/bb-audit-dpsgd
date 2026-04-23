@@ -486,6 +486,12 @@ def main():
                         help='number of canaries in group B (negative gradients)')
     parser.add_argument('--alpha', type=float, default=1000.0,
                         help='L∞ norm magnitude for group A canaries')
+    parser.add_argument('--beta', type=float, default=None,
+                        help='L∞ norm magnitude for group B canaries. '
+                             'If omitted, computed as n_group_a * alpha / n_group_b (non-private regime). '
+                             'For DP training with max_grad_norm=C, set beta > C so group B is detectable '
+                             'by the defense (unclipped norms) while being clipped to C in the parameter update; '
+                             'cancellation then requires n_group_a * alpha = n_group_b * C.')
     parser.add_argument('--output_dir', type=str, default='gradient_cancelling_canaries',
                         help='output directory for canary files')
     parser.add_argument('--seed', type=int, default=0,
@@ -544,13 +550,21 @@ def main():
         device=args.device
     )
 
-    # Compute beta such that n_group_a * alpha = n_group_b * beta
-    beta = (args.n_group_a * args.alpha) / args.n_group_b
-    print(f"\nGroup A: {args.n_group_a} canaries with norm alpha={args.alpha:.6f}")
-    print(f"Group B: {args.n_group_b} canaries with norm beta={beta:.6f}")
-    print(f"Constraint check: {args.n_group_a} * {args.alpha:.6f} = {args.n_group_b} * {beta:.6f}")
-    print(f"  LHS: {args.n_group_a * args.alpha:.6f}")
-    print(f"  RHS: {args.n_group_b * beta:.6f}")
+    # Compute beta: explicit override or derived from cancellation constraint
+    if args.beta is not None:
+        beta = args.beta
+        clipped_beta = min(beta, args.max_grad_norm) if args.max_grad_norm is not None else beta
+        print(f"\nGroup A: {args.n_group_a} canaries with norm alpha={args.alpha:.6f}")
+        print(f"Group B: {args.n_group_b} canaries with norm beta={beta:.6f} (explicit)")
+        print(f"Unclipped cancellation: {args.n_group_a} * {args.alpha:.4f} vs {args.n_group_b} * {beta:.4f} = {args.n_group_a*args.alpha:.4f} vs {args.n_group_b*beta:.4f}")
+        print(f"DP-clipped cancellation (max_grad_norm={args.max_grad_norm}): {args.n_group_a} * {args.alpha:.4f} vs {args.n_group_b} * {clipped_beta:.4f} = {args.n_group_a*args.alpha:.4f} vs {args.n_group_b*clipped_beta:.4f}")
+    else:
+        beta = (args.n_group_a * args.alpha) / args.n_group_b
+        print(f"\nGroup A: {args.n_group_a} canaries with norm alpha={args.alpha:.6f}")
+        print(f"Group B: {args.n_group_b} canaries with norm beta={beta:.6f} (auto: n_A*alpha/n_B)")
+        print(f"Cancellation check: {args.n_group_a} * {args.alpha:.6f} = {args.n_group_b} * {beta:.6f}")
+        print(f"  LHS: {args.n_group_a * args.alpha:.6f}")
+        print(f"  RHS: {args.n_group_b * beta:.6f}")
 
     # Create a dummy model to get parameter structure
     device = torch.device(args.device)
@@ -652,10 +666,17 @@ def main():
     print(f"Saved metadata to {metadata_file}")
 
     # Verify cancellation property
+    clipped_beta_eff = min(beta, args.max_grad_norm) if args.max_grad_norm is not None else beta
     print(f"\nVerification:")
-    print(f"  Group A total gradient contribution: {args.n_group_a} * {args.alpha:.6f} = {args.n_group_a * args.alpha:.6f}")
-    print(f"  Group B total gradient contribution: {args.n_group_b} * (-{beta:.6f}) = {args.n_group_b * (-beta):.6f}")
-    print(f"  Cancellation check (sum): {args.n_group_a * args.alpha + args.n_group_b * (-beta):.10f} (should be ~0)")
+    print(f"  Group A: {args.n_group_a} * alpha={args.alpha:.4f} = {args.n_group_a * args.alpha:.4f}")
+    print(f"  Group B (unclipped): {args.n_group_b} * beta={beta:.4f} = {args.n_group_b * beta:.4f}")
+    if clipped_beta_eff != beta:
+        print(f"  Group B (DP-clipped at {args.max_grad_norm}): {args.n_group_b} * {clipped_beta_eff:.4f} = {args.n_group_b * clipped_beta_eff:.4f}")
+        dp_cancel = args.n_group_a * args.alpha - args.n_group_b * clipped_beta_eff
+        print(f"  DP cancellation check: {dp_cancel:.6f} (should be ~0)")
+    else:
+        cancel = args.n_group_a * args.alpha - args.n_group_b * beta
+        print(f"  Cancellation check: {cancel:.10f} (should be ~0)")
 
 
 if __name__ == '__main__':
