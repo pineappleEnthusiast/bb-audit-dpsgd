@@ -2,6 +2,19 @@
 set -e
 
 OUTPUT_DIR="grad_cancel_test"
+EPSILON=10
+DELTA=1e-5
+MAX_GRAD_NORM=1.0
+
+# Private-regime gradient cancelling attack on MNIST/CNN.
+#
+# Design:
+#   alpha=0.1 < max_grad_norm=1.0  -> Group A NOT clipped by DP; L∞=0.1
+#                                      so defense does NOT filter Group A.
+#   beta=9.0  > max_grad_norm=1.0  -> Group B clipped to 1.0 by DP; unclipped L∞=9.0
+#                                      so defense easily detects and removes Group B.
+#   Cancellation (DP-effective): n_A * alpha = n_B * min(beta, C)
+#                                2000 * 0.1  = 200  * 1.0  = 200  ✓
 
 echo "=========================================="
 echo "Step 0: Check natural gradient norm distribution"
@@ -20,11 +33,13 @@ python generate_gradient_cancelling_attack.py \
     --data_name mnist \
     --n_epochs 5 \
     --lr 3 \
+    --max_grad_norm "${MAX_GRAD_NORM}" \
     --batch_size 4000 \
     --block_size 4000 \
     --n_group_a 2000 \
     --n_group_b 200 \
-    --alpha 5.0 \
+    --alpha 0.1 \
+    --beta 9.0 \
     --defense_k 5 \
     --output_dir "${OUTPUT_DIR}" \
     --device cuda:0
@@ -43,13 +58,14 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
-    --epsilon -1 \
-    --max_grad_norm -1 \
+    --epsilon "${EPSILON}" \
+    --delta "${DELTA}" \
+    --max_grad_norm "${MAX_GRAD_NORM}" \
     --sampling poisson \
     --holdout_audit \
     --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
     --target_type gradient_space_canary \
-    --gradient_space_score_fn linf \
+    --gradient_space_score_fn hot_param \
     --seed 0 \
     --fixed_init \
     --out "${OUTPUT_DIR}/audit_no_defense"
@@ -68,13 +84,14 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
-    --epsilon -1 \
-    --max_grad_norm -1 \
+    --epsilon "${EPSILON}" \
+    --delta "${DELTA}" \
+    --max_grad_norm "${MAX_GRAD_NORM}" \
     --sampling poisson \
     --holdout_audit \
     --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
     --target_type gradient_space_canary \
-    --gradient_space_score_fn linf \
+    --gradient_space_score_fn hot_param \
     --seed 0 \
     --fixed_init \
     --defense \

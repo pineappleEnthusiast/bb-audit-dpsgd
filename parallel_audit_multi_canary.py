@@ -858,10 +858,11 @@ def main():
     parser.add_argument('--gradient_space_canary_pt', type=str, default=None,
                         help='Path to a .pt file containing a pre-crafted gradient space canary (dict of parameter gradients). Used when --target_type=gradient_space_canary.')
     parser.add_argument('--gradient_space_score_fn', type=str, default='linf',
-                        choices=['linf', 'hot_param'],
+                        choices=['linf', 'hot_param', 'dot_product'],
                         help='Scoring function for gradient_space_canary. '
                              '"linf": L∞ norm over all model parameters (may overflow for large models). '
-                             '"hot_param": signed delta at hot_index from the canary file (requires hot_index in .pt).')
+                             '"hot_param": signed delta at hot_index from the canary file (requires hot_index in .pt). '
+                             '"dot_product": dot(Δθ, v) where v is the direction vector from the canary file (requires direction in .pt).')
     parser.add_argument('--blank_alpha', type=float, default=0.0)
 
     parser.add_argument('--aug_mult', type=int, default=1)
@@ -941,12 +942,13 @@ def main():
     # Handle gradient space canary loading
     crafted_grad = None
     gradient_cancel_hot_index = None  # hot_index for gradient cancelling attack scoring
+    gradient_cancel_direction = None  # unit vector for dot_product scoring
     if args.target_type == 'gradient_space_canary':
         if args.gradient_space_canary_pt is not None:
             if not os.path.exists(args.gradient_space_canary_pt):
                 raise FileNotFoundError(f"--gradient_space_canary_pt not found: {args.gradient_space_canary_pt}")
             payload = torch.load(args.gradient_space_canary_pt, map_location='cpu')
-            
+
             # Support multiple gradient space canaries
             if isinstance(payload, dict):
                 # Extract hot_index for gradient cancelling attack (score at specific parameter)
@@ -954,6 +956,11 @@ def main():
                     gradient_cancel_hot_index = int(payload['hot_index'])
                     if rank == 0:
                         print(f"Loaded hot_index={gradient_cancel_hot_index} for gradient cancelling score")
+                # Extract direction vector for dot_product scoring (dense gradient canary)
+                if 'direction' in payload:
+                    gradient_cancel_direction = payload['direction'].to(device)
+                    if rank == 0:
+                        print(f"Loaded direction vector (dim={gradient_cancel_direction.shape[0]}) for dot_product score")
                 if 'gradients' in payload:
                     # Multiple gradients: list of gradient dicts
                     gradients_list = payload['gradients']
@@ -1224,6 +1231,12 @@ def main():
                         max_score = float(flat_update[gradient_cancel_hot_index].item())
                         if rank == 0:
                             print(f"[Rank {rank}] score(hot_param@{gradient_cancel_hot_index}): {max_score:.6f}")
+                    elif args.gradient_space_score_fn == 'dot_product':
+                        if gradient_cancel_direction is None:
+                            raise ValueError("--gradient_space_score_fn=dot_product requires 'direction' in the canary .pt file")
+                        max_score = float(torch.dot(flat_update, gradient_cancel_direction).item())
+                        if rank == 0:
+                            print(f"[Rank {rank}] score(dot_product): {max_score:.6f}")
                     else:  # linf
                         update_norm = flat_update.norm(p=float('inf')).item()
                         max_score = float(update_norm)
