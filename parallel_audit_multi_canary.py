@@ -325,9 +325,6 @@ def _audit_from_scores(
 def test_model(model, X, y, batch_size=128):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    X = X.to(device)
-    y = y.to(device)
-
     test_loader = DataLoader(TensorDataset(X, y), batch_size=batch_size, shuffle=False)
 
     model.eval()
@@ -638,7 +635,11 @@ def train_model_multi_canary(
                 dir_unique_hist=dir_unique_hist,
                 dir_unique_hist_pos=dir_unique_hist_pos,
                 dir_unique_k=int(dir_unique_k),
-                grad_scatter_k=int(grad_scatter_k)
+                grad_scatter_k=int(grad_scatter_k),
+                prev_losses=prev_losses,
+                loss_hist=loss_hist,
+                loss_hist_pos=loss_hist_pos,
+                loss_volatility_k=int(loss_volatility_k),
             )
 
             curr_accumulated_gradients, scores = clip_and_accum_grads(
@@ -678,20 +679,6 @@ def train_model_multi_canary(
                 grad_accel_proj = defense_cfg.grad_accel_proj
             if defense_cfg.grad_jerk_proj is not None:
                 grad_jerk_proj = defense_cfg.grad_jerk_proj
-
-            # Track canaries transitioning 1 -> 2 (in this implementation the 1->2 happens here)
-            if defense and canary_indices_np is not None and canary_drop_epochs is not None:
-                to_drop = np.where(drop_mask == 1)[0].astype(np.int64, copy=False)
-                if to_drop.size > 0:
-                    newly_dropped = np.intersect1d(to_drop, canary_indices_np, assume_unique=False)
-                    if newly_dropped.size > 0:
-                        pos = np.nonzero(np.isin(canary_indices_np, newly_dropped))[0]
-                        unset = canary_drop_epochs[pos] < 0
-                        if np.any(unset):
-                            canary_drop_epochs[pos[unset]] = int(epoch)
-                            dropped_count = int((canary_drop_epochs >= 0).sum())
-                            dropped_ratio = dropped_count / float(canary_indices_np.size)
-                            canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
 
             # Transition ascent->dropped (only for samples in this batch)
             processed = global_indices.cpu().numpy()
@@ -733,21 +720,17 @@ def train_model_multi_canary(
             k = int(defense_k)
             active_mask = torch.from_numpy(drop_mask == 0)
 
-            # Track how many samples are marked before this epoch's filtering
-            n_marked_before = int((drop_mask == 1).sum())
+            # Snapshot the set of already-marked samples before this epoch's filtering
+            marked_before = set(np.where(drop_mask == 1)[0].tolist())
 
             if defense_global_filter:
                 # GLOBAL FILTERING: Filter top k scores across entire dataset (not per-class)
                 active_indices = active_mask.nonzero(as_tuple=True)[0]
-                
                 if len(active_indices) > 0:
                     active_scores = torch.tensor(scores[active_indices.cpu().numpy()], device=y.device)
                     _, topk_indices = torch.topk(active_scores, min(k, len(active_scores)))
-                    
                     topk_global_indices = active_indices[topk_indices]
-                    
-                    dropped_indices = topk_global_indices.cpu().numpy()
-                    drop_mask[dropped_indices] = 1
+                    drop_mask[topk_global_indices.cpu().numpy()] = 1
             else:
                 # PER-CLASS FILTERING: Filter top k per class
                 unique_classes = torch.unique(y).cpu()
@@ -758,29 +741,35 @@ def train_model_multi_canary(
                     cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
                     _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
                     topk_global_indices = cls_indices[topk_indices]
-                    dropped_indices = topk_global_indices.cpu().numpy()
-                    drop_mask[dropped_indices] = 1
+                    drop_mask[topk_global_indices.cpu().numpy()] = 1
 
-            # Check how many samples were newly marked in this epoch
-            n_marked_after = int((drop_mask == 1).sum())
-            n_newly_marked = n_marked_after - n_marked_before
-            
+            # Compute newly marked = marked after - marked before (exact diff, no stale entries)
+            marked_after = set(np.where(drop_mask == 1)[0].tolist())
+            newly_marked = np.array(list(marked_after - marked_before), dtype=np.int64)
+            n_newly_marked = len(newly_marked)
+
+            # Record the epoch when each canary was first marked (correct epoch, not off-by-one)
+            if canary_indices_np is not None and canary_drop_epochs is not None and newly_marked.size > 0:
+                hit = np.intersect1d(newly_marked, canary_indices_np)
+                if hit.size > 0:
+                    pos = np.nonzero(np.isin(canary_indices_np, hit))[0]
+                    unset = canary_drop_epochs[pos] < 0
+                    if np.any(unset):
+                        canary_drop_epochs[pos[unset]] = int(epoch)
+                        dropped_count = int((canary_drop_epochs >= 0).sum())
+                        dropped_ratio = dropped_count / float(canary_indices_np.size)
+                        canary_drop_ratio_events.append((int(epoch), float(dropped_ratio), int(dropped_count)))
+
             if n_newly_marked > 0:
                 if canary_indices_np is not None:
-                    # Check which canaries were newly marked in this epoch
-                    newly_marked_indices = np.where(drop_mask == 1)[0]
-                    newly_marked_canaries = np.intersect1d(newly_marked_indices, canary_indices_np)
-                    n_canaries_marked_this_epoch = len(newly_marked_canaries)
-                    
-                    # Count total canaries that have been marked or dropped (drop_mask >= 1)
-                    total_canaries_filtered = np.sum(np.isin(canary_indices_np, np.where(drop_mask >= 1)[0]))
-                    canary_fraction = total_canaries_filtered / len(canary_indices_np) if len(canary_indices_np) > 0 else 0
-                    
+                    n_canaries_marked_this_epoch = int(np.isin(newly_marked, canary_indices_np).sum())
+                    total_canaries_filtered = int(np.isin(canary_indices_np, np.where(drop_mask >= 1)[0]).sum())
+                    canary_fraction = total_canaries_filtered / len(canary_indices_np)
                     if rank == 0:
                         if n_canaries_marked_this_epoch > 0:
-                            print(f"  [Defense] Marked {n_newly_marked} samples for filtering (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
+                            print(f"  [Defense] Marked {n_newly_marked} samples (including {n_canaries_marked_this_epoch} canaries, {canary_fraction:.1%} of canaries filtered so far)")
                         else:
-                            print(f"  [Defense] Marked {n_newly_marked} samples for filtering ({canary_fraction:.1%} of canaries filtered so far)")
+                            print(f"  [Defense] Marked {n_newly_marked} samples ({canary_fraction:.1%} of canaries filtered so far)")
                 else:
                     if rank == 0:
                         print(f"  [Defense] Marked {n_newly_marked} samples for filtering")
@@ -990,8 +979,10 @@ def main():
             temp_model = Models[args.model_name](X_out.shape, out_dim=out_dim).to(device)
             if args.model_name == 'cnn':
                 xavier_init_model(temp_model)
-            else:
+            elif args.model_name == 'wideresnet':
                 init_wideresnet(temp_model)
+            else:
+                xavier_init_model(temp_model)
             crafted_grad = craft_gradient(model=temp_model, device=device)
             del temp_model
     
@@ -1145,7 +1136,7 @@ def main():
             
             # Create unique generators for each repetition
             # Use rep (global repetition number) to ensure uniqueness across all GPUs
-            rep_seed = int(args.seed) + rep * 2 + (0 if world == 'out' else 100000)
+            rep_seed = int(args.seed) + rep * 2
             gen = torch.Generator(device='cpu')
             gen.manual_seed(rep_seed)
             dl_gen = torch.Generator(device='cpu')
@@ -1161,8 +1152,10 @@ def main():
                     rep_init_model = Models[args.model_name](curr_X.shape, out_dim=out_dim)
                     if args.model_name == 'cnn':
                         xavier_init_model(rep_init_model)
-                    else:
+                    elif args.model_name == 'wideresnet':
                         init_wideresnet(rep_init_model)
+                    else:
+                        xavier_init_model(rep_init_model)
                 else:
                     rep_init_model = copy.deepcopy(init_model)
                 
