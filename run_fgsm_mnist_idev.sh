@@ -6,18 +6,26 @@ EPSILON=10
 DELTA=1e-5
 MAX_GRAD_NORM=1.0
 N_REPS=400
-N_GPUS=5
+N_NODES=5
+MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
+MASTER_PORT=29500
 
 # FGSM canary audit on MNIST/CNN, private regime (eps=10).
 # Canary: adversarial example (FGSM, target = original_label + 1 mod 10).
 # Expected: no-defense run shows gap; defense run shows gap shrinks / disappears.
 
+echo "Master node: ${MASTER_ADDR}"
+
 echo "=========================================="
 echo "Step 1: Audit WITHOUT defense"
 echo "=========================================="
-torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
+srun --nodes=${N_NODES} --ntasks=${N_NODES} --ntasks-per-node=1 \
+    torchrun \
+    --nnodes=${N_NODES} \
+    --nproc_per_node=1 \
     --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29500 \
+    --rdzv_id=${SLURM_JOB_ID}_1 \
+    --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
     parallel_audit_model.py \
     --data_name mnist \
     --model_name cnn \
@@ -39,9 +47,13 @@ torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
 echo "=========================================="
 echo "Step 2: Audit WITH defense (unclipped grad norm, linf, no ascent)"
 echo "=========================================="
-torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
+srun --nodes=${N_NODES} --ntasks=${N_NODES} --ntasks-per-node=1 \
+    torchrun \
+    --nnodes=${N_NODES} \
+    --nproc_per_node=1 \
     --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29501 \
+    --rdzv_id=${SLURM_JOB_ID}_2 \
+    --rdzv_endpoint=${MASTER_ADDR}:$((MASTER_PORT + 1)) \
     parallel_audit_model.py \
     --data_name mnist \
     --model_name cnn \
