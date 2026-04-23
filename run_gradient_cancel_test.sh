@@ -15,7 +15,7 @@ python generate_gradient_cancelling_attack.py \
     --block_size 4000 \
     --n_group_a 50 \
     --n_group_b 5 \
-    --alpha 0.1 \
+    --alpha 5.0 \
     --defense_k 5 \
     --output_dir "${OUTPUT_DIR}" \
     --device cuda:0
@@ -76,14 +76,13 @@ echo "=========================================="
 echo "Step 4: Compare mean MIA scores"
 echo "=========================================="
 python -c "
-import numpy as np
+import numpy as np, os
 for tag in ['no_defense', 'defense']:
-    path = f'${OUTPUT_DIR}/audit_{tag}/results.npy'
-    d = np.load(path, allow_pickle=True).item()
-    scores = np.array(d['mia_scores'])
-    labels = np.array(d['mia_labels'])
-    mean_in  = scores[labels == 1].mean()
-    mean_out = scores[labels == 0].mean()
+    d = '${OUTPUT_DIR}/audit_' + tag
+    scores_in  = np.load(os.path.join(d, 'scores_in.npy'))
+    scores_out = np.load(os.path.join(d, 'scores_out.npy'))
+    mean_in  = scores_in.mean()
+    mean_out = scores_out.mean()
     gap = mean_in - mean_out
     print(f'{tag:12s}: in={mean_in:.4f}  out={mean_out:.4f}  gap={gap:.4f}')
 "
