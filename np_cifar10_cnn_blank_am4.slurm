@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH -J tc_cifar10_blank_cnn_am4
-#SBATCH -o status/tc_cifar10_blank_cnn_am4_%A_%a.o
-#SBATCH -e status/tc_cifar10_blank_cnn_am4_%A_%a.e
+#SBATCH -J np_cifar10_cnn_blank_am4
+#SBATCH -o status/np_cifar10_cnn_blank_am4_%A_%a.o
+#SBATCH -e status/np_cifar10_cnn_blank_am4_%A_%a.e
 #SBATCH -p gh
 #SBATCH -N 20
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 10:00:00
 #SBATCH -A ASC25102
-#SBATCH --array=0-9
+#SBATCH --array=0-1
 
 module load cuda/12.4
 
@@ -19,7 +19,6 @@ cd bb-audit-dpsgd
 
 mkdir -p status
 
-# Fixed hyperparameters
 DATA_NAME="cifar10"
 MODEL_NAME="cnn"
 LR=3
@@ -28,36 +27,24 @@ BLOCK_SIZE=2000
 AUG_MULT=4
 N_REPS=400
 N_EPOCHS=100
-MAX_GRAD_NORM=1
-DELTA=1e-5
 SEED=0
 TARGET_TYPE="blank"
 DEFENSE_K=5
 DEFENSE_SCORE_FN="grad_norm_unclipped"
 DEFENSE_SCORE_NORM="linf"
-PARENT_OUT="tradeoff_curves"
+PARENT_OUT="non_private_audits"
 
-# Array: 10 tasks — (eps=2,4,6,8,10) x (no_defense, defense)
-# Format: "epsilon|defense|output_name"
 experiments=(
-    "2.0|false|cifar10_cnn_am4_no_defense_eps2"
-    "2.0|true|cifar10_cnn_am4_defense_eps2"
-    "4.0|false|cifar10_cnn_am4_no_defense_eps4"
-    "4.0|true|cifar10_cnn_am4_defense_eps4"
-    "6.0|false|cifar10_cnn_am4_no_defense_eps6"
-    "6.0|true|cifar10_cnn_am4_defense_eps6"
-    "8.0|false|cifar10_cnn_am4_no_defense_eps8"
-    "8.0|true|cifar10_cnn_am4_defense_eps8"
-    "10.0|false|cifar10_cnn_am4_no_defense_eps10"
-    "10.0|true|cifar10_cnn_am4_defense_eps10"
+    "false|cifar10_cnn_am4_no_defense_non_private"
+    "true|cifar10_cnn_am4_defense_non_private"
 )
 
-IFS='|' read -r EPSILON DEFENSE OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
+IFS='|' read -r DEFENSE OUT_NAME <<< "${experiments[$SLURM_ARRAY_TASK_ID]}"
 
 echo "=========================================="
 echo "Task ${SLURM_ARRAY_TASK_ID}: ${OUT_NAME}"
 echo "Dataset: ${DATA_NAME}  Model: ${MODEL_NAME}  AugMult: ${AUG_MULT}"
-echo "Epsilon: ${EPSILON}  Defense: ${DEFENSE}"
+echo "Non-private  Defense: ${DEFENSE}"
 echo "=========================================="
 
 DEFENSE_ARGS=""
@@ -80,9 +67,8 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --batch_size '"${BATCH_SIZE}"' \
     --block_size '"${BLOCK_SIZE}"' \
     --aug_mult '"${AUG_MULT}"' \
-    --epsilon '"${EPSILON}"' \
-    --delta '"${DELTA}"' \
-    --max_grad_norm '"${MAX_GRAD_NORM}"' \
+    --epsilon -1 \
+    --max_grad_norm -1 \
     --target_type '"${TARGET_TYPE}"' \
     --seed '"${SEED}"' \
     --fixed_init \
