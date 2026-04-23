@@ -144,5 +144,6 @@ def craft_clipbkd(X: torch.Tensor, model: nn.Module):
     target_X = avg_norm * torch.from_numpy(pca.components_[-1:]).to(device)
     target_X = torch.unsqueeze(target_X.reshape(X.shape[1:]), dim=0)
 
+    model.to(device)
     target_y = choose_worstcase_label(model, target_X)
     return target_X, target_y
