@@ -4,6 +4,15 @@ set -e
 OUTPUT_DIR="grad_cancel_test"
 
 echo "=========================================="
+echo "Step 0: Check natural gradient norm distribution"
+echo "=========================================="
+python check_gradient_norms.py \
+    --data_name mnist \
+    --model_name cnn \
+    --n_samples 500 \
+    --device cuda:0
+
+echo "=========================================="
 echo "Step 1: Generate gradient cancelling canaries"
 echo "=========================================="
 python generate_gradient_cancelling_attack.py \
@@ -13,9 +22,9 @@ python generate_gradient_cancelling_attack.py \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
-    --n_group_a 50 \
-    --n_group_b 5 \
-    --alpha 5.0 \
+    --n_group_a 500 \
+    --n_group_b 50 \
+    --alpha 0.5 \
     --defense_k 5 \
     --output_dir "${OUTPUT_DIR}" \
     --device cuda:0
