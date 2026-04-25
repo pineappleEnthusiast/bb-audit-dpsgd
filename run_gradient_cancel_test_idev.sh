@@ -6,8 +6,9 @@ EPSILON=10
 DELTA=1e-5
 MAX_GRAD_NORM=1.0
 N_REPS=400
-N_GPUS=5
-PORT=29500
+N_NODES=5
+MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
+MASTER_PORT=29500
 
 # Gradient cancelling attack on MNIST/CNN, private regime (eps=10), 5-GPU idev run.
 #
@@ -45,11 +46,15 @@ python generate_gradient_cancelling_attack.py \
     --device cuda:0
 
 echo "=========================================="
-echo "Step 2: Audit WITHOUT defense (expect no gap) — ${N_GPUS} GPUs, ${N_REPS} reps"
+echo "Step 2: Audit WITHOUT defense (expect no gap) — ${N_NODES} nodes, ${N_REPS} reps"
 echo "=========================================="
-torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
+srun --nodes=${N_NODES} --ntasks=${N_NODES} --ntasks-per-node=1 \
+    torchrun \
+    --nnodes=${N_NODES} \
+    --nproc_per_node=1 \
     --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:${PORT} \
+    --rdzv_id=${SLURM_JOB_ID}_1 \
+    --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
     parallel_audit_multi_canary.py \
     --data_name mnist \
     --model_name cnn \
@@ -71,11 +76,15 @@ torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
     --out "${OUTPUT_DIR}/audit_no_defense"
 
 echo "=========================================="
-echo "Step 3: Audit WITH defense (expect gap) — ${N_GPUS} GPUs, ${N_REPS} reps"
+echo "Step 3: Audit WITH defense (expect gap) — ${N_NODES} nodes, ${N_REPS} reps"
 echo "=========================================="
-torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
+srun --nodes=${N_NODES} --ntasks=${N_NODES} --ntasks-per-node=1 \
+    torchrun \
+    --nnodes=${N_NODES} \
+    --nproc_per_node=1 \
     --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:$((PORT + 1)) \
+    --rdzv_id=${SLURM_JOB_ID}_2 \
+    --rdzv_endpoint=${MASTER_ADDR}:$((MASTER_PORT + 1)) \
     parallel_audit_multi_canary.py \
     --data_name mnist \
     --model_name cnn \

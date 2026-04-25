@@ -588,6 +588,15 @@ def main():
             if rank == 0:
                 print(f'Minority canary: sg=1 (class0_blue) from TEST split, '
                       f'index {minority_test_idx}, label {target_y.item()}')
+        elif args.target_type == 'majority':
+            X_test_col, y_test_col, sg_test_col, _ = load_colored_mnist(
+                split='test', seed=args.seed, majority_pct=args.majority_pct)
+            majority_test_idx = int((sg_test_col == 0).nonzero(as_tuple=True)[0][0])
+            target_X = X_test_col[[majority_test_idx]]
+            target_y = y_test_col[[majority_test_idx]]
+            if rank == 0:
+                print(f'Majority canary: sg=0 (class0_red) from TEST split, '
+                      f'index {majority_test_idx}, label {target_y.item()}')
         elif args.target_type == 'gradient_space_canary':
             target_X = X_out[-1].unsqueeze(0)
             # Use the target class from the canary file if available, otherwise use the last sample's label
