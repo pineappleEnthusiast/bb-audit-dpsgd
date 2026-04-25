@@ -5,7 +5,7 @@ OUTPUT_DIR="grad_cancel_test"
 EPSILON=10
 DELTA=1e-5
 MAX_GRAD_NORM=1.0
-N_REPS=50
+N_REPS=400
 N_GPUS=5
 PORT=29500
 
@@ -54,7 +54,7 @@ torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
     --data_name mnist \
     --model_name cnn \
     --n_reps ${N_REPS} \
-    --n_epochs 30 \
+    --n_epochs 100 \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
@@ -80,7 +80,7 @@ torchrun --nnodes=1 --nproc_per_node=${N_GPUS} \
     --data_name mnist \
     --model_name cnn \
     --n_reps ${N_REPS} \
-    --n_epochs 30 \
+    --n_epochs 100 \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
