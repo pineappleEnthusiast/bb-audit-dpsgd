@@ -277,9 +277,10 @@ def main():
                              '0 = fixed-point at θ_0 (original behaviour). '
                              'Nonzero = optimize against a warmed-up θ_t so the canary '
                              'evades the defense at the epoch it will actually fire, not just at init.')
-    parser.add_argument('--init_mode',  type=str,   nargs='+', default=['blank', 'in_dist'],
-                        choices=['blank', 'in_dist'],
-                        help='Canary initialization strategy')
+    parser.add_argument('--init_mode',  type=str,   nargs='+', default=['in_dist', 'mislabeled'],
+                        choices=['blank', 'in_dist', 'mislabeled'],
+                        help='Canary initialization: blank=zeros, in_dist=real same-class sample, '
+                             'mislabeled=real different-class sample with wrong label')
     parser.add_argument('--canary_label', type=int, default=0,
                         help='Label assigned to the canary')
     # Training check
@@ -324,11 +325,15 @@ def main():
     tau = estimate_threshold(model, X_holdout, y_holdout, args.defense_k,
                              norm=args.norm, device=args.device)
 
-    # Pick one in-distribution sample per class as init
+    # Pick one sample per class for in_dist / mislabeled inits
     in_dist_inits = {}
     for cls in torch.unique(y).tolist():
         idx = (y == cls).nonzero(as_tuple=True)[0][0].item()
         in_dist_inits[cls] = X[idx].clone()
+
+    # Mislabeled init: first sample from a different class, labeled as canary_label
+    other_classes = [c for c in torch.unique(y).tolist() if c != args.canary_label]
+    mislabeled_init = in_dist_inits[other_classes[0]].clone()
 
     results = []
     print(f"\n{'='*60}")
@@ -372,6 +377,8 @@ def main():
 
             if init_mode == 'blank':
                 x_init = torch.zeros_like(X[0])
+            elif init_mode == 'mislabeled':
+                x_init = mislabeled_init.clone()
             else:
                 x_init = in_dist_inits[args.canary_label].clone()
 
