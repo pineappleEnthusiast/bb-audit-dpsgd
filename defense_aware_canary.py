@@ -389,12 +389,9 @@ def main():
                          canary=x_opt, drop_epochs=[])
 
             if args.check_training:
-                cls_mask = y == args.canary_label
-                X_base = X[~cls_mask] if not cls_mask.all() else X.clone()
-                y_base = y[~cls_mask] if not cls_mask.all() else y.clone()
-                # Append canary as last sample
-                X_with = torch.cat([X_base, x_opt.unsqueeze(0)], dim=0)
-                y_with = torch.cat([y_base,
+                # Replacement DP: replace last sample with canary so |X_in| = |X_out| = N
+                X_with = torch.cat([X[:-1], x_opt.unsqueeze(0)], dim=0)
+                y_with = torch.cat([y[:-1],
                                     torch.tensor([args.canary_label], dtype=torch.long)], dim=0)
 
                 drop_epochs = []
