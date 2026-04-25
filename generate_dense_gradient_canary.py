@@ -50,12 +50,9 @@ def main():
 
     device = torch.device(args.device)
 
-    # Load a small slice of data just to get input shape
-    X, y, X_test, y_test = load_data(args.data_name)
-    X = torch.tensor(X, dtype=torch.float32)
-    y = torch.tensor(y, dtype=torch.long)
-
-    out_dim = args.out_dim if args.out_dim is not None else int(y.max().item()) + 1
+    # Load a small slice of data just to get input shape and out_dim
+    X, y, out_dim_data = load_data(args.data_name, n_df=None)
+    out_dim = args.out_dim if args.out_dim is not None else out_dim_data
 
     # Build model to get parameter structure
     model = Models[args.model_name](X.shape, out_dim=out_dim).to(device)
