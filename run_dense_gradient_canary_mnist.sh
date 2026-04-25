@@ -43,8 +43,8 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     parallel_audit_multi_canary.py \
     --data_name mnist \
     --model_name cnn \
-    --n_reps 8 \
-    --n_epochs 30 \
+    --n_reps 4 \
+    --n_epochs 100 \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
@@ -69,8 +69,8 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     parallel_audit_multi_canary.py \
     --data_name mnist \
     --model_name cnn \
-    --n_reps 8 \
-    --n_epochs 30 \
+    --n_reps 4 \
+    --n_epochs 100 \
     --lr 3 \
     --batch_size 4000 \
     --block_size 4000 \
