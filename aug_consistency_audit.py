@@ -55,6 +55,7 @@ from parallel_audit_model import train_model   # reuse existing training loop
 def aug_consistency_score(
     model: nn.Module,
     x: torch.Tensor,
+    canary_label: int,
     aug_fn: AugmentationFunction,
     k: int,
     device: torch.device,
@@ -62,22 +63,22 @@ def aug_consistency_score(
     """
     Compute augmentation-consistency score for a single sample x.
 
-    Query the model on k independently-augmented copies of x, record the
-    predicted label for each, and return the fraction that agree with the
-    modal (most-common) predicted label.
+    Query the model on k independently-augmented copies of x and return the
+    fraction of views on which the model predicts the canary's assigned label.
 
-    A perfectly consistent model returns 1.0; a completely uncertain model
-    returns approximately 1/num_classes.
+    A model that memorized the canary predicts its label consistently → high
+    score. A model that never saw it predicts a natural class → low score.
 
     Args:
-        model:  trained shadow model (eval mode expected).
-        x:      single image tensor, shape (1, C, H, W) or (C, H, W).
-        aug_fn: AugmentationFunction instance (random crop + horizontal flip).
-        k:      number of augmented views.
-        device: device to run inference on.
+        model:        trained shadow model (eval mode expected).
+        x:            single image tensor, shape (1, C, H, W) or (C, H, W).
+        canary_label: the label assigned to the canary during training.
+        aug_fn:       AugmentationFunction instance (random crop + horizontal flip).
+        k:            number of augmented views.
+        device:       device to run inference on.
 
     Returns:
-        Scalar float in [1/num_classes, 1.0].
+        Scalar float in [0.0, 1.0]. Higher = more consistent with canary label.
     """
     model.eval()
 
@@ -85,20 +86,16 @@ def aug_consistency_score(
     if x.ndim == 3:
         x = x.unsqueeze(0)   # (1, C, H, W)
 
-    predicted_labels = []
+    canary_label_count = 0
     with torch.no_grad():
         for _ in range(k):
             x_aug = aug_fn(x).to(device)
             logits = model(x_aug)            # (1, num_classes)
             pred = logits.argmax(dim=1).item()
-            predicted_labels.append(pred)
+            if pred == canary_label:
+                canary_label_count += 1
 
-    labels_arr = np.array(predicted_labels, dtype=np.int64)
-    # count of the most frequent predicted label
-    _, counts = np.unique(labels_arr, return_counts=True)
-    majority_count = int(counts.max())
-
-    return majority_count / k
+    return canary_label_count / k
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +277,7 @@ def main():
             score = aug_consistency_score(
                 model=model,
                 x=target_X,
+                canary_label=int(target_y.item()),
                 aug_fn=aug_fn_score,
                 k=args.aug_k,
                 device=device,
