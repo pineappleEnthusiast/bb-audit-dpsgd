@@ -21,7 +21,7 @@ mkdir -p status
 
 DATA_NAME="cifar10"
 MODEL_NAME="cnn"
-LR=3
+LR=0.1
 BATCH_SIZE=3125
 BLOCK_SIZE=2000
 AUG_MULT=4
