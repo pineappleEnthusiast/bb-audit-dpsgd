@@ -149,6 +149,9 @@ def main():
 
     X_test, y_test, _ = load_data(args.data_name, None, split='test')
 
+    # DEBUG ONLY — remove this line to restore full dataset
+    X_out, y_out = X_out[:500], y_out[:500]
+
     init_model = None
     if args.fixed_init is not None:
         torch.manual_seed(args.seed)
