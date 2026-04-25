@@ -5,10 +5,10 @@ Runs n_reps independent training runs (canary always included) and reports
 averaged per-subgroup utility and defense removal distribution.
 
 Subgroups:
-  0 = class 0, red   (majority for class 0: 98%)
-  1 = class 0, blue  (minority for class 0:  2%)
-  2 = class 1, red   (minority for class 1:  2%)
-  3 = class 1, blue  (majority for class 1: 98%)
+  0 = class 0 (even digits), red   (majority for class 0)
+  1 = class 0 (even digits), blue  (minority for class 0)
+  2 = class 1 (odd digits),  red   (minority for class 1)
+  3 = class 1 (odd digits),  blue  (majority for class 1)
 """
 import os
 import copy

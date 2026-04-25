@@ -11,19 +11,22 @@ import numpy as np
 
 def load_colored_mnist(root='./', split='train', seed=0, majority_pct=0.995):
     """
-    Binary Colored MNIST (digits 0 vs 1).
+    Binary Colored MNIST (even digits vs odd digits).
+
+    Class 0 = even digits {0,2,4,6,8}, class 1 = odd digits {1,3,5,7,9}.
+    Uses all 60k training / 10k test samples.
 
     majority_pct fraction of class 0 is red; (1-majority_pct) is blue.
     Symmetrically, majority_pct of class 1 is blue; (1-majority_pct) is red.
 
     Subgroups:
-      0 = class 0, red   (majority for class 0)
-      1 = class 0, blue  (minority for class 0)
-      2 = class 1, red   (minority for class 1)
-      3 = class 1, blue  (majority for class 1)
+      0 = class 0 (even), red   (majority for class 0)
+      1 = class 0 (even), blue  (minority for class 0)
+      2 = class 1 (odd),  red   (minority for class 1)
+      3 = class 1 (odd),  blue  (majority for class 1)
 
     Returns X (N,3,32,32), y (N,), subgroups (N,), out_dim=2.
-    Images are resized to 32x32 so the CNN BigNetwork (designed for CIFAR-10) works.
+    Images are resized to 32x32 so the CNN (designed for CIFAR-10) works.
     """
     os.makedirs(f'{root}/data/colored_mnist', exist_ok=True)
     transform = transforms.Compose([
@@ -35,9 +38,8 @@ def load_colored_mnist(root='./', split='train', seed=0, majority_pct=0.995):
 
     xs, ys_list = [], []
     for x, y in dataset:
-        if y in (0, 1):
-            xs.append(x)
-            ys_list.append(y)
+        xs.append(x)
+        ys_list.append(0 if y % 2 == 0 else 1)   # even→0, odd→1
     X_gray = torch.stack(xs)                              # (N, 1, 28, 28)
     y = torch.tensor(ys_list, dtype=torch.long)
     N = len(y)
