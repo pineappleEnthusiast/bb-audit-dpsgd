@@ -39,15 +39,15 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     parallel_audit_multi_canary.py \
     --data_name purchase \
     --model_name mlp \
-    --n_df 153800 \
-    --n_reps 8 \
-    --n_epochs 30 \
+    --n_df 153801 \
+    --n_reps 4 \
+    --n_epochs 100 \
     --lr 10 \
     --batch_size 12143 \
     --block_size 12143 \
     --aug_mult 1 \
-    --epsilon -1 \
-    --max_grad_norm -1 \
+    --epsilon 10 \
+    --max_grad_norm 1 \
     --sampling poisson \
     --holdout_audit \
     --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
@@ -66,15 +66,15 @@ torchrun --nnodes=1 --nproc_per_node=1 \
     parallel_audit_multi_canary.py \
     --data_name purchase \
     --model_name mlp \
-    --n_df 153800 \
-    --n_reps 8 \
-    --n_epochs 30 \
+    --n_df 153801 \
+    --n_reps 4 \
+    --n_epochs 100 \
     --lr 10 \
     --batch_size 12143 \
     --block_size 12143 \
     --aug_mult 1 \
-    --epsilon -1 \
-    --max_grad_norm -1 \
+    --epsilon 10 \
+    --max_grad_norm 1 \
     --sampling poisson \
     --holdout_audit \
     --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
