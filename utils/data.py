@@ -25,8 +25,7 @@ def load_colored_mnist(root='./', split='train', seed=0, majority_pct=0.995):
       2 = class 1 (odd),  red   (minority for class 1)
       3 = class 1 (odd),  blue  (majority for class 1)
 
-    Returns X (N,3,32,32), y (N,), subgroups (N,), out_dim=2.
-    Images are resized to 32x32 so the CNN (designed for CIFAR-10) works.
+    Returns X (N,3,28,28), y (N,), subgroups (N,), out_dim=2.
     """
     os.makedirs(f'{root}/data/colored_mnist', exist_ok=True)
     transform = transforms.Compose([
@@ -69,9 +68,6 @@ def load_colored_mnist(root='./', split='train', seed=0, majority_pct=0.995):
     X_rgb[is_red, 2] = 0.0    # red → zero B
     X_rgb[is_blue, 0] = 0.0   # blue → zero R
     X_rgb[is_blue, 1] = 0.0   # blue → zero G
-
-    # Resize to 32x32
-    X_rgb = F.interpolate(X_rgb, size=(32, 32), mode='bilinear', align_corners=False)
 
     return X_rgb, y, subgroups, 2
 

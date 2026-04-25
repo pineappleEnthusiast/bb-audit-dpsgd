@@ -9,11 +9,14 @@ class CNN(nn.Module):
     def __init__(self, in_shape=None, out_dim=10, dropout_rate=0):
         super().__init__()
         self.embeddings = None
-        if in_shape[1] == 1:
-            # MNIST
-            self.net = SmallNetwork(out_dim=out_dim, dropout_rate=dropout_rate)
-        elif in_shape[1] == 3:
-            # CIFAR-10
+        in_channels = in_shape[1]
+        spatial = in_shape[2]  # height (assumed square)
+        if spatial == 28:
+            # MNIST / Colored MNIST (28×28): use SmallNetwork regardless of channels
+            self.net = SmallNetwork(out_dim=out_dim, dropout_rate=dropout_rate,
+                                    in_channels=in_channels)
+        else:
+            # CIFAR-10 / 32×32 inputs: use BigNetwork
             self.net = BigNetwork(out_dim=out_dim, dropout_rate=dropout_rate)
 
 
@@ -72,14 +75,14 @@ class BigNetwork(nn.Module):
 class SmallNetwork(nn.Module):
     """Network used in the experiments on MNIST"""
 
-    def __init__(self, act_func=torch.tanh, out_dim=10, dropout_rate=0.0) -> None:
+    def __init__(self, act_func=torch.tanh, out_dim=10, dropout_rate=0.0, in_channels=1) -> None:
         super(SmallNetwork, self).__init__()
 
         # Variables to keep track of taken steps and samples in the model
         self.n_samples: int = 0
         self.n_steps: int = 0
 
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=(5, 5))
+        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=(5, 5))
         self.conv2 = nn.Conv2d(16, 32, kernel_size=(4, 4))
         self.dropout = nn.Dropout(dropout_rate)
         self.fc1 = nn.Linear(512, 32)
