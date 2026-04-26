@@ -201,7 +201,7 @@ def optimize_canary_trajectory(checkpoints, x_init, wrong_label, norm,
     y_t = torch.tensor([wrong_label], device=device_)
 
     # Build model shells for each checkpoint (share architecture, swap weights)
-    ep0, sd0, tau0 = checkpoints[0]
+    ep0, sd0, tau0, _ = checkpoints[0]
     # Infer model from first checkpoint key shape — caller passes model_name separately,
     # so we receive pre-built models via `ckpt_models` (see main).
     # Here we just load state dicts into the passed models.
