@@ -700,14 +700,16 @@ def main():
                args.output)
     print(f"\nSaved {len(results)} results to {args.output}")
 
-    print(f"\n{'src':>5}  {'steps':>6}  {'ss':>5}  {'λ':>6}  {'L_nn_opt':>9}  "
-          f"{'survived':>9}  {'avg_drop_ep':>12}  drop_epochs")
-    print('-' * 85)
+    print(f"\n{'mode':>8}  {'src':>4}  {'steps':>6}  {'ss':>5}  {'λ':>6}  "
+          f"{'L_nn_opt':>9}  {'survived':>9}  {'avg_drop_ep':>12}  drop_epochs")
+    print('-' * 95)
     for r in results:
         survived = sum(1 for e in r['drop_epochs'] if e == -1)
         detected = [e for e in r['drop_epochs'] if e != -1]
         avg_drop = f"{np.mean(detected):.1f}" if detected else '  n/a'
-        print(f"{r['src_cls']:>5}  {r['n_steps']:>6}  {r['step_size']:>5.3f}  "
+        mode_str = r.get('mode', 'proxy')
+        steps_str = str(r['n_outer']) if mode_str == 'bilevel' else str(r.get('n_steps', 0))
+        print(f"{mode_str:>8}  {r['src_cls']:>4}  {steps_str:>6}  {r['step_size']:>5.3f}  "
               f"{r['lam']:>6.1f}  {r['loss_nn_opt']:>9.4f}  "
               f"{survived:>4}/{args.n_runs}  {avg_drop:>12}  {r['drop_epochs']}")
 
