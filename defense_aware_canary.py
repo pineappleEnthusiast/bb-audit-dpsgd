@@ -193,18 +193,15 @@ def optimize_canary_trajectory(checkpoints, x_init, wrong_label, norm,
     FGSM minimizing:
         CE(f_θ₀(x), y_wrong) + λ * Σ_t max(0, ||∇_θ L(f_θ_t(x), y_wrong)||_linf − τ_t)
 
-    checkpoints: list of (epoch, state_dict, tau_t) from collect_trajectory().
+    checkpoints: list of (epoch, state_dict, tau_t, model) from collect_trajectory().
+    n_steps=0 returns the unoptimized init as a baseline.
     Returns (x_opt, final_loss_nn, {epoch: grad_norm}).
     """
     device_ = torch.device(device)
     criterion = nn.CrossEntropyLoss()
     y_t = torch.tensor([wrong_label], device=device_)
 
-    # Build model shells for each checkpoint (share architecture, swap weights)
     ep0, sd0, tau0, _ = checkpoints[0]
-    # Infer model from first checkpoint key shape — caller passes model_name separately,
-    # so we receive pre-built models via `ckpt_models` (see main).
-    # Here we just load state dicts into the passed models.
 
     x = x_init.clone().detach().to(device_)
 
@@ -372,8 +369,10 @@ def main():
     parser.add_argument('--lam',         type=float, nargs='+', default=[1.0],
                         help='Penalty weight(s) on gradient-norm evasion term. '
                              'One result per λ per source class.')
-    parser.add_argument('--n_steps',     type=int,   default=100)
-    parser.add_argument('--step_size',   type=float, default=0.01)
+    parser.add_argument('--n_steps',     type=int,   nargs='+', default=[0, 100],
+                        help='FGSM step counts to sweep. 0 = unoptimized baseline.')
+    parser.add_argument('--step_size',   type=float, nargs='+', default=[0.01],
+                        help='FGSM step size(s) to sweep.')
     # Training check
     parser.add_argument('--n_runs',      type=int,   default=10)
     parser.add_argument('--n_epochs',    type=int,   default=100)
@@ -455,65 +454,73 @@ def main():
     for src_cls in source_classes:
         x_init = class_exemplars[src_cls].clone()
 
-        for lam in args.lam:
-            print(f"\n--- src_cls={src_cls} → label={args.canary_label}  λ={lam} ---")
+        for n_steps in args.n_steps:
+            for step_size in args.step_size:
+                for lam in (args.lam if n_steps > 0 else [0.0]):
+                    label = (f"src={src_cls} → {args.canary_label}  "
+                             f"n_steps={n_steps}  step_size={step_size}  λ={lam}")
+                    print(f"\n--- {label} ---")
 
-            x_canary, loss_nn_opt, final_norms = optimize_canary_trajectory(
-                checkpoints_with_models, x_init, args.canary_label,
-                args.norm, args.n_steps, args.step_size, lam, args.device,
-            )
+                    x_canary, loss_nn_opt, final_norms = optimize_canary_trajectory(
+                        checkpoints_with_models, x_init, args.canary_label,
+                        args.norm, n_steps, step_size, lam, args.device,
+                        verbose=(n_steps > 0),
+                    )
 
-            print(f"  Final: L_nn={loss_nn_opt:.4f}")
-            for ep, _, tau_t, _ in checkpoints_with_models:
-                gn = final_norms[ep]
-                status = 'ABOVE τ ✗' if gn >= tau_t else 'below τ ✓'
-                print(f"    ep={ep:3d}: grad_norm={gn:.6f}  τ={tau_t:.6f}  {status}")
+                    print(f"  Final: L_nn={loss_nn_opt:.4f}")
+                    for ep, _, tau_t, _ in checkpoints_with_models:
+                        gn = final_norms[ep]
+                        status = 'ABOVE τ ✗' if gn >= tau_t else 'below τ ✓'
+                        print(f"    ep={ep:3d}: grad_norm={gn:.6f}  τ={tau_t:.6f}  {status}")
 
-            X_with = torch.cat([X[:-1], x_canary.unsqueeze(0)], dim=0)
-            y_with = torch.cat([y[:-1], torch.tensor([args.canary_label], dtype=torch.long)], dim=0)
+                    X_with = torch.cat([X[:-1], x_canary.unsqueeze(0)], dim=0)
+                    y_with = torch.cat([y[:-1], torch.tensor([args.canary_label],
+                                        dtype=torch.long)], dim=0)
 
-            drop_epochs, all_score_histories = [], []
-            for run in range(args.n_runs):
-                print(f"  run {run+1}/{args.n_runs}...", end=' ', flush=True)
-                t0 = time.time()
-                drop_ep, score_hist = train_with_defense(
-                    args.model_name, X_with, y_with,
-                    args.epsilon, args.delta, args.max_grad_norm,
-                    args.n_epochs, args.lr, args.batch_size,
-                    init_state, out_dim, args.defense_k, args.norm,
-                    args.device, seed=args.seed + run,
-                )
-                drop_epochs.append(drop_ep)
-                all_score_histories.append(score_hist)
-                status = f"dropped ep={drop_ep}" if drop_ep != -1 else "survived"
-                print(f"{status}  ({time.time()-t0:.1f}s)")
+                    drop_epochs, all_score_histories = [], []
+                    for run in range(args.n_runs):
+                        print(f"  run {run+1}/{args.n_runs}...", end=' ', flush=True)
+                        t0 = time.time()
+                        drop_ep, score_hist = train_with_defense(
+                            args.model_name, X_with, y_with,
+                            args.epsilon, args.delta, args.max_grad_norm,
+                            args.n_epochs, args.lr, args.batch_size,
+                            init_state, out_dim, args.defense_k, args.norm,
+                            args.device, seed=args.seed + run,
+                        )
+                        drop_epochs.append(drop_ep)
+                        all_score_histories.append(score_hist)
+                        status = f"dropped ep={drop_ep}" if drop_ep != -1 else "survived"
+                        print(f"{status}  ({time.time()-t0:.1f}s)")
 
-            survived = sum(1 for e in drop_epochs if e == -1)
-            detected = [e for e in drop_epochs if e != -1]
-            avg_drop = np.mean(detected) if detected else float('nan')
-            print(f"  Summary: survived {survived}/{args.n_runs}  "
-                  f"avg_detection_epoch={avg_drop:.1f}  drop_epochs={drop_epochs}")
+                    survived = sum(1 for e in drop_epochs if e == -1)
+                    detected = [e for e in drop_epochs if e != -1]
+                    avg_drop = np.mean(detected) if detected else float('nan')
+                    print(f"  Summary: survived {survived}/{args.n_runs}  "
+                          f"avg_detection_epoch={avg_drop:.1f}  drop_epochs={drop_epochs}")
 
-            results.append(dict(
-                src_cls=src_cls, canary_label=args.canary_label, lam=lam,
-                canary=x_canary.cpu(), loss_nn_opt=loss_nn_opt,
-                final_norms=final_norms, drop_epochs=drop_epochs,
-                score_histories=all_score_histories,
-            ))
+                    results.append(dict(
+                        src_cls=src_cls, canary_label=args.canary_label,
+                        n_steps=n_steps, step_size=step_size, lam=lam,
+                        canary=x_canary.cpu(), loss_nn_opt=loss_nn_opt,
+                        final_norms=final_norms, drop_epochs=drop_epochs,
+                        score_histories=all_score_histories,
+                    ))
 
     torch.save({'results': results, 'args': vars(args),
                 'checkpoints': [(ep, sd, tau) for ep, sd, tau, _ in checkpoints_with_models]},
                args.output)
     print(f"\nSaved {len(results)} results to {args.output}")
 
-    print(f"\n{'src':>5}  {'λ':>6}  {'L_nn_opt':>9}  {'survived':>9}  "
-          f"{'avg_drop_ep':>12}  drop_epochs")
-    print('-' * 70)
+    print(f"\n{'src':>5}  {'steps':>6}  {'ss':>5}  {'λ':>6}  {'L_nn_opt':>9}  "
+          f"{'survived':>9}  {'avg_drop_ep':>12}  drop_epochs")
+    print('-' * 85)
     for r in results:
         survived = sum(1 for e in r['drop_epochs'] if e == -1)
         detected = [e for e in r['drop_epochs'] if e != -1]
         avg_drop = f"{np.mean(detected):.1f}" if detected else '  n/a'
-        print(f"{r['src_cls']:>5}  {r['lam']:>6.1f}  {r['loss_nn_opt']:>9.4f}  "
+        print(f"{r['src_cls']:>5}  {r['n_steps']:>6}  {r['step_size']:>5.3f}  "
+              f"{r['lam']:>6.1f}  {r['loss_nn_opt']:>9.4f}  "
               f"{survived:>4}/{args.n_runs}  {avg_drop:>12}  {r['drop_epochs']}")
 
 
