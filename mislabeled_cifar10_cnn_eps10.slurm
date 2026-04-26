@@ -3,9 +3,9 @@
 #SBATCH -o status/mislabeled_cifar10_cnn_eps10_%A_%a.o
 #SBATCH -e status/mislabeled_cifar10_cnn_eps10_%A_%a.e
 #SBATCH -p gh
-#SBATCH -N 10
+#SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 8:00:00
+#SBATCH -t 15:00:00
 #SBATCH -A ASC25102
 #SBATCH --array=0-1
 
