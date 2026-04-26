@@ -265,10 +265,19 @@ def optimize_canary_trajectory(checkpoints, x_init, wrong_label, norm,
 # ---------------------------------------------------------------------------
 
 def train_with_defense(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs,
-                       lr, batch_size, init_state, out_dim, defense_k, norm, device, seed=0):
+                       lr, batch_size, init_state, out_dim, defense_k, norm, device,
+                       seed=0, return_detection_state=False, early_stop=True):
     """
     DP-SGD + top-k gradient-norm defense. Canary is the last sample (index len(X)-1).
-    Returns (drop_epoch, score_history).  drop_epoch=-1 means survived all epochs.
+
+    early_stop=True (default): stop training as soon as the canary is detected.
+      Saves ~80 epochs per run when detection typically happens at epoch 13-20.
+
+    If return_detection_state=True, also returns:
+      - state_dict at the detection epoch (for gradient computation)
+      - competitor_threshold: the k-th largest score among same-class samples at detection
+    Returns (drop_epoch, score_history) or
+            (drop_epoch, score_history, detection_state_dict, competitor_threshold).
     """
     device_ = torch.device(device)
     model = Models[model_name](X.shape, out_dim=out_dim).to(device_)
@@ -286,6 +295,7 @@ def train_with_defense(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs
 
     n = len(X)
     canary_idx = n - 1
+    canary_cls = int(y[canary_idx].item())
     scores    = np.zeros(n, dtype=np.float32)
     drop_mask = np.zeros(n, dtype=np.int8)
 
@@ -294,10 +304,15 @@ def train_with_defense(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs
                         generator=torch.Generator().manual_seed(seed),
                         num_workers=0, drop_last=False)
 
-    drop_epoch   = -1
-    score_history = []
+    drop_epoch          = -1
+    score_history       = []
+    detection_state     = None
+    competitor_threshold = None
 
     for epoch in range(n_epochs):
+        # Save state just before the defense runs (so we can use it for grad computation)
+        state_before_defense = deepcopy(model.state_dict()) if return_detection_state else None
+
         optimizer.zero_grad()
         for curr_X, curr_y, global_indices in loader:
             curr_X = curr_X.to(device_)
@@ -339,13 +354,126 @@ def train_with_defense(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs
             _, topk_local = torch.topk(cls_scores, k)
             topk_global = cls_indices[topk_local].numpy()
             drop_mask[topk_global] = 1
+
             if canary_idx in topk_global and drop_epoch == -1:
                 drop_epoch = epoch
                 print(f"    [epoch {epoch}] detected  grad_norm={scores[canary_idx]:.4f}")
+                if return_detection_state and int(cls) == canary_cls:
+                    detection_state = state_before_defense
+                    kth_score = float(torch.topk(cls_scores, k).values[-1].item())
+                    competitor_threshold = kth_score
 
         scores.fill(0)
 
+        if drop_epoch != -1 and early_stop:
+            break
+
+    if return_detection_state:
+        return drop_epoch, score_history, detection_state, competitor_threshold
     return drop_epoch, score_history
+
+
+# ---------------------------------------------------------------------------
+# Bilevel optimization
+# ---------------------------------------------------------------------------
+
+def optimize_canary_bilevel(model_name, X, y, x_init, wrong_label,
+                             epsilon, delta, max_grad_norm, n_epochs,
+                             lr, batch_size, init_state, out_dim,
+                             defense_k, norm, n_outer, n_inner, step_size, lam,
+                             device, seed=0):
+    """
+    Bilevel canary optimization.
+
+    Each outer step:
+      1. Run full DP-SGD + defense on current x  → detection epoch K, model state θ_K,
+         competitor threshold τ_K (k-th largest score in canary class at epoch K).
+      2. Compute gradient of:
+             CE(f_θ₀(x), y_wrong)  +  λ * max(0, canary_grad_norm(θ_K, x) - τ_K)
+         w.r.t. x, treating θ_K as fixed (first-order approximation).
+      3. FGSM step: x ← x - step_size * sign(∇_x).
+
+    If canary survives all epochs (K=-1) the evasion penalty is 0 and we only
+    minimize CE.  τ_K is the actual k-th score at the epoch the canary was caught,
+    not a static holdout estimate.
+    """
+    device_ = torch.device(device)
+    criterion = nn.CrossEntropyLoss()
+
+    theta0_model = Models[model_name](X.shape, out_dim=out_dim).to(device_)
+    theta0_model.load_state_dict(deepcopy(init_state))
+    theta0_model.eval()
+
+    x = x_init.clone().detach().to(device_)
+    y_t = torch.tensor([wrong_label], device=device_)
+
+    history = []  # (outer_step, K, canary_score_at_K, tau_K, loss_nn)
+
+    for outer in range(n_outer):
+        # --- inner loop: average over n_inner runs to reduce K noise ---
+        X_with = torch.cat([X[:-1], x.detach().cpu().unsqueeze(0)], dim=0)
+        y_with = torch.cat([y[:-1], torch.tensor([wrong_label], dtype=torch.long)], dim=0)
+
+        inner_results = []
+        for inner in range(n_inner):
+            K_i, score_hist_i, det_state_i, tau_K_i = train_with_defense(
+                model_name, X_with, y_with,
+                epsilon, delta, max_grad_norm, n_epochs,
+                lr, batch_size, init_state, out_dim,
+                defense_k, norm, device,
+                seed=seed + outer * n_inner + inner, return_detection_state=True,
+            )
+            inner_results.append((K_i, score_hist_i, det_state_i, tau_K_i))
+
+        # Pick the run with the median K for a robust gradient estimate
+        detected = [(i, r[0]) for i, r in enumerate(inner_results) if r[0] != -1]
+        if detected:
+            detected.sort(key=lambda t: t[1])
+            best_i, K = detected[len(detected) // 2]  # median detection epoch
+        else:
+            best_i, K = 0, -1
+        _, score_hist, detection_state, tau_K = inner_results[best_i]
+
+        canary_score_at_K = score_hist[K][1] if K != -1 else 0.0
+
+        # --- outer step: FGSM on x at fixed θ₀ and θ_K ---
+        x = x.detach().requires_grad_(True)
+        x_b = x.unsqueeze(0)
+
+        loss_nn = criterion(theta0_model(x_b), y_t)
+        total = loss_nn.clone()
+
+        if K != -1 and detection_state is not None and tau_K is not None:
+            theta_K = Models[model_name](X.shape, out_dim=out_dim).to(device_)
+            theta_K.load_state_dict(detection_state)
+            theta_K.eval()
+            canary_gn = _grad_norm(theta_K, x_b, y_t, criterion, norm)
+            penalty = torch.clamp(canary_gn - tau_K, min=0.0)
+            total = total + lam * penalty
+            theta_K.zero_grad()
+        else:
+            canary_gn = torch.tensor(0.0)
+            penalty   = torch.tensor(0.0)
+
+        grad_x = torch.autograd.grad(total, x)[0]
+        x = x.detach() - step_size * grad_x.sign()
+        theta0_model.zero_grad()
+
+        survived = K == -1
+        print(f"  outer {outer:3d}: K={K:3d}  canary_score={canary_score_at_K:.4f}  "
+              f"τ_K={tau_K if tau_K is not None else 'n/a'}  "
+              f"penalty={penalty.item():.4f}  L_nn={loss_nn.item():.4f}  "
+              f"{'SURVIVED' if survived else ''}")
+
+        history.append(dict(outer=outer, K=K, canary_score_at_K=canary_score_at_K,
+                            tau_K=tau_K, loss_nn=loss_nn.item()))
+
+    # Final eval: loss at θ₀
+    x_final = x.detach().cpu()
+    with torch.no_grad():
+        loss_nn_final = criterion(theta0_model(x_final.to(device_).unsqueeze(0)), y_t).item()
+
+    return x_final, loss_nn_final, history
 
 
 # ---------------------------------------------------------------------------
@@ -365,16 +493,21 @@ def main():
     parser.add_argument('--checkpoint_epochs', type=int, nargs='+',
                         default=[0, 5, 10, 20, 50, 100],
                         help='Epochs at which to save model checkpoints for optimization')
-    # Canary optimization
-    parser.add_argument('--lam',         type=float, nargs='+', default=[1.0],
-                        help='Penalty weight(s) on gradient-norm evasion term. '
-                             'One result per λ per source class.')
+    # Proxy optimization (static checkpoints)
+    parser.add_argument('--lam',         type=float, nargs='+', default=[1.0])
     parser.add_argument('--n_steps',     type=int,   nargs='+', default=[0, 100],
-                        help='FGSM step counts to sweep. 0 = unoptimized baseline.')
-    parser.add_argument('--step_size',   type=float, nargs='+', default=[0.01],
-                        help='FGSM step size(s) to sweep.')
+                        help='FGSM step counts. 0 = unoptimized baseline.')
+    parser.add_argument('--step_size',   type=float, nargs='+', default=[0.01])
+    # Bilevel optimization (run full training on each FGSM step)
+    parser.add_argument('--bilevel',     action='store_true', default=False,
+                        help='Use bilevel optimization instead of static checkpoint proxy.')
+    parser.add_argument('--n_outer',     type=int,   default=20,
+                        help='Number of outer FGSM steps for bilevel optimization.')
+    parser.add_argument('--n_inner',     type=int,   default=3,
+                        help='Training runs per outer step to average out K noise. '
+                             'Median K is used for the gradient.')
     # Training check
-    parser.add_argument('--n_runs',      type=int,   default=10)
+    parser.add_argument('--n_runs',      type=int,   default=3)
     parser.add_argument('--n_epochs',    type=int,   default=100)
     parser.add_argument('--lr',          type=float, default=3.0)
     parser.add_argument('--batch_size',  type=int,   default=4000)
@@ -445,48 +578,50 @@ def main():
     }
 
     results = []
+    mode = 'bilevel' if args.bilevel else 'proxy'
     print(f"\n{'='*60}")
-    print(f"Phase 2+3: canary optimization + detection check")
+    print(f"Phase 2+3: canary optimization ({mode}) + detection check")
     print(f"  source_classes={source_classes}  canary_label={args.canary_label}")
-    print(f"  λ sweep: {args.lam}  n_steps={args.n_steps}  step_size={args.step_size}")
+    if args.bilevel:
+        print(f"  n_outer={args.n_outer}  step_size={args.step_size}  λ={args.lam}")
+    else:
+        print(f"  λ={args.lam}  n_steps={args.n_steps}  step_size={args.step_size}")
     print(f"{'='*60}")
 
     for src_cls in source_classes:
         x_init = class_exemplars[src_cls].clone()
 
-        for n_steps in args.n_steps:
+        if args.bilevel:
+            # ---- Bilevel: one full training run per FGSM step ----
             for step_size in args.step_size:
-                for lam in (args.lam if n_steps > 0 else [0.0]):
-                    label = (f"src={src_cls} → {args.canary_label}  "
-                             f"n_steps={n_steps}  step_size={step_size}  λ={lam}")
-                    print(f"\n--- {label} ---")
+                for lam in args.lam:
+                    print(f"\n--- BILEVEL src={src_cls}→{args.canary_label}  "
+                          f"n_outer={args.n_outer}  step_size={step_size}  λ={lam} ---")
 
-                    x_canary, loss_nn_opt, final_norms = optimize_canary_trajectory(
-                        checkpoints_with_models, x_init, args.canary_label,
-                        args.norm, n_steps, step_size, lam, args.device,
-                        verbose=(n_steps > 0),
+                    x_canary, loss_nn_opt, opt_history = optimize_canary_bilevel(
+                        args.model_name, X, y, x_init, args.canary_label,
+                        args.epsilon, args.delta, args.max_grad_norm,
+                        args.n_epochs, args.lr, args.batch_size,
+                        init_state, out_dim, args.defense_k, args.norm,
+                        args.n_outer, args.n_inner, step_size, lam,
+                        args.device, seed=args.seed,
                     )
+                    print(f"  Optimization done: L_nn={loss_nn_opt:.4f}")
 
-                    print(f"  Final: L_nn={loss_nn_opt:.4f}")
-                    for ep, _, tau_t, _ in checkpoints_with_models:
-                        gn = final_norms[ep]
-                        status = 'ABOVE τ ✗' if gn >= tau_t else 'below τ ✓'
-                        print(f"    ep={ep:3d}: grad_norm={gn:.6f}  τ={tau_t:.6f}  {status}")
-
+                    # Final verification runs
                     X_with = torch.cat([X[:-1], x_canary.unsqueeze(0)], dim=0)
                     y_with = torch.cat([y[:-1], torch.tensor([args.canary_label],
                                         dtype=torch.long)], dim=0)
-
                     drop_epochs, all_score_histories = [], []
                     for run in range(args.n_runs):
-                        print(f"  run {run+1}/{args.n_runs}...", end=' ', flush=True)
+                        print(f"  verify run {run+1}/{args.n_runs}...", end=' ', flush=True)
                         t0 = time.time()
                         drop_ep, score_hist = train_with_defense(
                             args.model_name, X_with, y_with,
                             args.epsilon, args.delta, args.max_grad_norm,
                             args.n_epochs, args.lr, args.batch_size,
                             init_state, out_dim, args.defense_k, args.norm,
-                            args.device, seed=args.seed + run,
+                            args.device, seed=args.seed + args.n_outer + run,
                         )
                         drop_epochs.append(drop_ep)
                         all_score_histories.append(score_hist)
@@ -500,12 +635,65 @@ def main():
                           f"avg_detection_epoch={avg_drop:.1f}  drop_epochs={drop_epochs}")
 
                     results.append(dict(
-                        src_cls=src_cls, canary_label=args.canary_label,
-                        n_steps=n_steps, step_size=step_size, lam=lam,
+                        mode='bilevel', src_cls=src_cls, canary_label=args.canary_label,
+                        n_outer=args.n_outer, step_size=step_size, lam=lam,
                         canary=x_canary.cpu(), loss_nn_opt=loss_nn_opt,
-                        final_norms=final_norms, drop_epochs=drop_epochs,
+                        opt_history=opt_history, drop_epochs=drop_epochs,
                         score_histories=all_score_histories,
                     ))
+
+        else:
+            # ---- Proxy: static checkpoint optimization ----
+            for n_steps in args.n_steps:
+                for step_size in args.step_size:
+                    for lam in (args.lam if n_steps > 0 else [0.0]):
+                        label = (f"src={src_cls}→{args.canary_label}  "
+                                 f"n_steps={n_steps}  step_size={step_size}  λ={lam}")
+                        print(f"\n--- {label} ---")
+
+                        x_canary, loss_nn_opt, final_norms = optimize_canary_trajectory(
+                            checkpoints_with_models, x_init, args.canary_label,
+                            args.norm, n_steps, step_size, lam, args.device,
+                            verbose=(n_steps > 0),
+                        )
+                        print(f"  Final: L_nn={loss_nn_opt:.4f}")
+                        for ep, _, tau_t, _ in checkpoints_with_models:
+                            gn = final_norms[ep]
+                            status = 'ABOVE τ ✗' if gn >= tau_t else 'below τ ✓'
+                            print(f"    ep={ep:3d}: grad_norm={gn:.6f}  τ={tau_t:.6f}  {status}")
+
+                        X_with = torch.cat([X[:-1], x_canary.unsqueeze(0)], dim=0)
+                        y_with = torch.cat([y[:-1], torch.tensor([args.canary_label],
+                                            dtype=torch.long)], dim=0)
+                        drop_epochs, all_score_histories = [], []
+                        for run in range(args.n_runs):
+                            print(f"  run {run+1}/{args.n_runs}...", end=' ', flush=True)
+                            t0 = time.time()
+                            drop_ep, score_hist = train_with_defense(
+                                args.model_name, X_with, y_with,
+                                args.epsilon, args.delta, args.max_grad_norm,
+                                args.n_epochs, args.lr, args.batch_size,
+                                init_state, out_dim, args.defense_k, args.norm,
+                                args.device, seed=args.seed + run,
+                            )
+                            drop_epochs.append(drop_ep)
+                            all_score_histories.append(score_hist)
+                            status = f"dropped ep={drop_ep}" if drop_ep != -1 else "survived"
+                            print(f"{status}  ({time.time()-t0:.1f}s)")
+
+                        survived = sum(1 for e in drop_epochs if e == -1)
+                        detected = [e for e in drop_epochs if e != -1]
+                        avg_drop = np.mean(detected) if detected else float('nan')
+                        print(f"  Summary: survived {survived}/{args.n_runs}  "
+                              f"avg_detection_epoch={avg_drop:.1f}  drop_epochs={drop_epochs}")
+
+                        results.append(dict(
+                            mode='proxy', src_cls=src_cls, canary_label=args.canary_label,
+                            n_steps=n_steps, step_size=step_size, lam=lam,
+                            canary=x_canary.cpu(), loss_nn_opt=loss_nn_opt,
+                            final_norms=final_norms, drop_epochs=drop_epochs,
+                            score_histories=all_score_histories,
+                        ))
 
     torch.save({'results': results, 'args': vars(args),
                 'checkpoints': [(ep, sd, tau) for ep, sd, tau, _ in checkpoints_with_models]},
