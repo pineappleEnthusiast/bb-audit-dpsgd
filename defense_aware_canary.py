@@ -86,7 +86,7 @@ def collect_trajectory(model_name, X, y, epsilon, delta, max_grad_norm, n_epochs
     sample_rate = batch_size / len(X)
     noise_multiplier = get_noise_multiplier(
         target_epsilon=epsilon, target_delta=delta,
-        sample_rate=sample_rate, epochs=n_epochs, accountant='rdp',
+        sample_rate=sample_rate, epochs=max(n_epochs, 1), accountant='rdp',
     )
 
     defense_cfg = DefenseConfig(score_fn='grad_norm_unclipped', score_norm=norm)
