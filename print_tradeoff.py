@@ -57,6 +57,12 @@ def _best_threshold_from_envelope(raw_pts, envelope, delta):
     return best_t, best_reflected, best_eps, best_a, best_b
 
 
+def _eps_from_ab(a, b, delta):
+    if a > 0 and (1.0 - delta - b) > 0:
+        return max(0.0, float(np.log((1.0 - delta - b) / a)))
+    return 0.0
+
+
 def _eval_on_holdout_no_cp(hold_si, hold_so, t, reflected, delta):
     if reflected:
         a = float(np.mean(hold_si <  t))
@@ -64,9 +70,7 @@ def _eval_on_holdout_no_cp(hold_si, hold_so, t, reflected, delta):
     else:
         a = float(np.mean(hold_so >= t))
         b = float(np.mean(hold_si <  t))
-    if a > 0 and (1.0 - delta - b) > 0:
-        return float(np.log((1.0 - delta - b) / a)), a, b
-    return 0.0, a, b
+    return _eps_from_ab(a, b, delta), a, b
 
 
 def _eval_on_holdout_cp(hold_si, hold_so, t, reflected, delta, gamma):
@@ -81,9 +85,7 @@ def _eval_on_holdout_cp(hold_si, hold_so, t, reflected, delta, gamma):
         fn = int(np.sum(hold_si <  t))
         a  = _cp_upper(fp, n_out, gamma / 2)
         b  = _cp_upper(fn, n_in,  gamma / 2)
-    if a > 0 and (1.0 - delta - b) > 0:
-        return float(np.log((1.0 - delta - b) / a)), a, b
-    return 0.0, a, b
+    return _eps_from_ab(a, b, delta), a, b
 
 
 def compute_eps_tradeoff_with_cp(fit_si, fit_so, hold_si, hold_so, delta, gamma):
@@ -193,15 +195,15 @@ print(f"{'Method':30s}  {'emp_eps':>8}  {'threshold':>10}  {'alpha(FPR)':>10}  {
 print('-' * 75)
 
 # GDP and Clopper-Pearson (with holdout)
+from scipy.stats import binomtest as _binomtest
 for method, label in [('GDP', 'GDP'), ('cp', 'Clopper-Pearson')]:
     t_fit, _ = compute_eps_lower_from_mia(fit_scores, fit_labels, alpha, delta, method, n_procs=4)
     emp_eps  = compute_eps_lower_from_mia_given_t(hold_scores, hold_labels, alpha, delta, t_fit, method)
-    # Recover (alpha, beta) on holdout at the chosen threshold
-    h_fpr = float(np.mean(so[hold_idx] >= t_fit))
-    h_fnr = float(np.mean(si[hold_idx] <  t_fit))
-    if h_fpr == 0:   # try reflected direction
-        h_fpr = float(np.mean(si[hold_idx] <  t_fit))
-        h_fnr = float(np.mean(so[hold_idx] >= t_fit))
+    # Corrected FPR/FNR on holdout using same CI as the method
+    h_fp = int(np.sum(so[hold_idx] >= t_fit));  h_n  = len(hold_idx)
+    h_fn = int(np.sum(si[hold_idx] <  t_fit));  h_p  = len(hold_idx)
+    _, h_fpr = _binomtest(h_fp, h_n).proportion_ci(confidence_level=1 - 2*alpha)
+    _, h_fnr = _binomtest(h_fn, h_p).proportion_ci(confidence_level=1 - 2*alpha)
     print(f"{label:30s}  {emp_eps:8.4f}  {t_fit:10.4f}  {h_fpr:10.4f}  {h_fnr:10.4f}")
 
 # Algorithm 5 without CP correction
