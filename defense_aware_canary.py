@@ -457,6 +457,7 @@ def optimize_canary_bilevel(model_name, X, y, x_init, wrong_label,
 
         grad_x = torch.autograd.grad(total, x)[0]
         x = x.detach() - step_size * grad_x.sign()
+        x = x.clamp(0.0, 1.0)
         theta0_model.zero_grad()
 
         survived = K == -1
