@@ -37,63 +37,82 @@ def _cp_upper(x, n, gamma):
     return float(beta_dist.ppf(1.0 - gamma, x + 1, n - x))
 
 
-def compute_eps_tradeoff_with_cp(fit_si, fit_so, hold_si, hold_so, delta, gamma):
+def _best_threshold_from_envelope(raw_pts, envelope, delta):
     """
-    Algorithm 5 (EmpiricalDPLB) with Clopper-Pearson correction.
-
-    For each threshold t on the fit set:
-      alpha_hat_i = CP upper bound on FPR at level gamma
-      beta_hat_i  = CP upper bound on FNR at level gamma
-
-    Selects t* on the fit set, evaluates at t* on the holdout using
-    CP-corrected (alpha_hat, beta_hat).
-
-    gamma corresponds to the significance level in the algorithm (= alpha in
-    our argparse, not to be confused with the FPR alpha_i).
+    Find the threshold t* and reflected flag that achieves max eps_lb on the envelope.
+    raw_pts: list of (a, b, t, reflected) from fit set (original + symmetrized).
+    Returns (best_t, reflected, best_eps).
     """
-    thresholds = np.sort(np.unique(np.concatenate([fit_si, fit_so])))
-    n_in_fit  = len(fit_si)
-    n_out_fit = len(fit_so)
-
-    # Fit set: compute CP-corrected (alpha_hat, beta_hat) per threshold
-    raw_pts = []
-    for t in thresholds:
-        fp = int(np.sum(fit_so >= t))
-        fn = int(np.sum(fit_si <  t))
-        a_hat = _cp_upper(fp, n_out_fit, gamma)   # upper bound on FPR
-        b_hat = _cp_upper(fn, n_in_fit,  gamma)   # upper bound on FNR
-        raw_pts.append((a_hat, b_hat, t))
-
-    sym_pts = [(1.0 - b, 1.0 - a, t) for a, b, t in raw_pts]
-    all_pts  = raw_pts + sym_pts
-
-    alphas = np.array([p[0] for p in all_pts])
-    betas  = np.array([p[1] for p in all_pts])
-    envelope_fit = _lower_convex_envelope(alphas, betas)
-
-    best_eps, best_t = 0.0, None
-    for a, b in envelope_fit:
+    best_eps, best_t, best_reflected = 0.0, None, False
+    for a, b in envelope:
         if a > 0 and (1.0 - delta - b) > 0:
             eps = np.log((1.0 - delta - b) / a)
             if eps > best_eps:
                 best_eps = eps
                 dists = [abs(p[0] - a) + abs(p[1] - b) for p in raw_pts]
-                best_t = raw_pts[int(np.argmin(dists))][2]
+                best_i = int(np.argmin(dists))
+                best_t, best_reflected = raw_pts[best_i][2], raw_pts[best_i][3]
+    return best_t, best_reflected, best_eps
 
+
+def _eval_on_holdout_no_cp(hold_si, hold_so, t, reflected, delta):
+    if reflected:
+        a = float(np.mean(hold_si <  t))   # swapped: treat in as out
+        b = float(np.mean(hold_so >= t))
+    else:
+        a = float(np.mean(hold_so >= t))   # FPR
+        b = float(np.mean(hold_si <  t))   # FNR
+    if a > 0 and (1.0 - delta - b) > 0:
+        return float(np.log((1.0 - delta - b) / a))
+    return 0.0
+
+
+def _eval_on_holdout_cp(hold_si, hold_so, t, reflected, delta, gamma):
+    n_in, n_out = len(hold_si), len(hold_so)
+    if reflected:
+        fp = int(np.sum(hold_si <  t))
+        fn = int(np.sum(hold_so >= t))
+        a  = _cp_upper(fp, n_in,  gamma)
+        b  = _cp_upper(fn, n_out, gamma)
+    else:
+        fp = int(np.sum(hold_so >= t))
+        fn = int(np.sum(hold_si <  t))
+        a  = _cp_upper(fp, n_out, gamma)
+        b  = _cp_upper(fn, n_in,  gamma)
+    if a > 0 and (1.0 - delta - b) > 0:
+        return float(np.log((1.0 - delta - b) / a))
+    return 0.0
+
+
+def compute_eps_tradeoff_with_cp(fit_si, fit_so, hold_si, hold_so, delta, gamma):
+    """
+    Algorithm 5 (EmpiricalDPLB) with Clopper-Pearson correction.
+
+    For each threshold t: compute CP upper bounds on FPR and FNR.
+    Symmetrize by adding reflected points (1-beta_hat, 1-alpha_hat) and tracking
+    which direction each point came from.
+    Selects t* + direction on fit set, evaluates using the same direction on holdout.
+    """
+    thresholds = np.sort(np.unique(np.concatenate([fit_si, fit_so])))
+    n_in_fit, n_out_fit = len(fit_si), len(fit_so)
+
+    raw_pts = []
+    for t in thresholds:
+        fp = int(np.sum(fit_so >= t))
+        fn = int(np.sum(fit_si <  t))
+        a  = _cp_upper(fp, n_out_fit, gamma)
+        b  = _cp_upper(fn, n_in_fit,  gamma)
+        raw_pts.append((a,       b,       t, False))   # original
+        raw_pts.append((1.0 - b, 1.0 - a, t, True))   # symmetrized
+
+    alphas = np.array([p[0] for p in raw_pts])
+    betas  = np.array([p[1] for p in raw_pts])
+    envelope = _lower_convex_envelope(alphas, betas)
+
+    best_t, reflected, _ = _best_threshold_from_envelope(raw_pts, envelope, delta)
     if best_t is None:
         return 0.0
-
-    # Holdout set: evaluate at fixed t* with CP correction
-    n_in_hold  = len(hold_si)
-    n_out_hold = len(hold_so)
-    fp_hold = int(np.sum(hold_so >= best_t))
-    fn_hold = int(np.sum(hold_si <  best_t))
-    a_hold = _cp_upper(fp_hold, n_out_hold, gamma)
-    b_hold = _cp_upper(fn_hold, n_in_hold,  gamma)
-
-    if a_hold > 0 and (1.0 - delta - b_hold) > 0:
-        return float(np.log((1.0 - delta - b_hold) / a_hold))
-    return 0.0
+    return _eval_on_holdout_cp(hold_si, hold_so, best_t, reflected, delta, gamma)
 
 
 def compute_eps_tradeoff_no_cp(fit_si, fit_so, hold_si, hold_so, delta):
@@ -111,40 +130,24 @@ def compute_eps_tradeoff_no_cp(fit_si, fit_so, hold_si, hold_so, delta):
     """
     thresholds = np.sort(np.unique(np.concatenate([fit_si, fit_so])))
 
-    # Step 1: select t* on fit set
+    # Step 1: select t* on fit set (track reflected flag per point)
     raw_pts = []
     for t in thresholds:
         a = float(np.mean(fit_so >= t))   # FPR
         b = float(np.mean(fit_si <  t))   # FNR
-        raw_pts.append((a, b, t))
+        raw_pts.append((a,       b,       t, False))   # original
+        raw_pts.append((1.0 - b, 1.0 - a, t, True))   # symmetrized
 
-    sym_pts = [(1.0 - b, 1.0 - a, t) for a, b, t in raw_pts]
-    all_fit_pts = raw_pts + sym_pts
-
-    alphas = np.array([p[0] for p in all_fit_pts])
-    betas  = np.array([p[1] for p in all_fit_pts])
+    alphas = np.array([p[0] for p in raw_pts])
+    betas  = np.array([p[1] for p in raw_pts])
     envelope_fit = _lower_convex_envelope(alphas, betas)
 
-    best_eps, best_t = 0.0, None
-    for a, b in envelope_fit:
-        if a > 0 and (1.0 - delta - b) > 0:
-            eps = np.log((1.0 - delta - b) / a)
-            if eps > best_eps:
-                best_eps = eps
-                # find closest threshold giving this (alpha, beta) on fit set
-                dists = [abs(p[0] - a) + abs(p[1] - b) for p in raw_pts]
-                best_t = raw_pts[int(np.argmin(dists))][2]
-
+    best_t, reflected, _ = _best_threshold_from_envelope(raw_pts, envelope_fit, delta)
     if best_t is None:
         return 0.0
 
-    # Step 2: evaluate at fixed t* on holdout set (no selection bias)
-    a_hold = float(np.mean(hold_so >= best_t))
-    b_hold = float(np.mean(hold_si <  best_t))
-
-    if a_hold > 0 and (1.0 - delta - b_hold) > 0:
-        return float(np.log((1.0 - delta - b_hold) / a_hold))
-    return 0.0
+    # Step 2: evaluate at fixed t* on holdout using same direction
+    return _eval_on_holdout_no_cp(hold_si, hold_so, best_t, reflected, delta)
 
 
 # ---------------------------------------------------------------------------
