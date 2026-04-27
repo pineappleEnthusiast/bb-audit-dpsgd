@@ -72,13 +72,13 @@ def _eval_on_holdout_cp(hold_si, hold_so, t, reflected, delta, gamma):
     if reflected:
         fp = int(np.sum(hold_si <  t))
         fn = int(np.sum(hold_so >= t))
-        a  = _cp_upper(fp, n_in,  gamma)
-        b  = _cp_upper(fn, n_out, gamma)
+        a  = _cp_upper(fp, n_in,  gamma / 2)
+        b  = _cp_upper(fn, n_out, gamma / 2)
     else:
         fp = int(np.sum(hold_so >= t))
         fn = int(np.sum(hold_si <  t))
-        a  = _cp_upper(fp, n_out, gamma)
-        b  = _cp_upper(fn, n_in,  gamma)
+        a  = _cp_upper(fp, n_out, gamma / 2)
+        b  = _cp_upper(fn, n_in,  gamma / 2)
     if a > 0 and (1.0 - delta - b) > 0:
         return float(np.log((1.0 - delta - b) / a))
     return 0.0
@@ -100,8 +100,9 @@ def compute_eps_tradeoff_with_cp(fit_si, fit_so, hold_si, hold_so, delta, gamma)
     for t in thresholds:
         fp = int(np.sum(fit_so >= t))
         fn = int(np.sum(fit_si <  t))
-        a  = _cp_upper(fp, n_out_fit, gamma)
-        b  = _cp_upper(fn, n_in_fit,  gamma)
+        # Use gamma/2 per bound so both hold jointly with significance <= gamma
+        a  = _cp_upper(fp, n_out_fit, gamma / 2)
+        b  = _cp_upper(fn, n_in_fit,  gamma / 2)
         raw_pts.append((a,       b,       t, False))   # original
         raw_pts.append((1.0 - b, 1.0 - a, t, True))   # symmetrized
 
