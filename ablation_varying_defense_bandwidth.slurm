@@ -3,9 +3,9 @@
 #SBATCH -o status/ablation_defense_k_%A_%a.o
 #SBATCH -e status/ablation_defense_k_%A_%a.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 5
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 4:00:00
+#SBATCH -t 5:00:00
 #SBATCH -A ASC25102
 #SBATCH --array=0-4
 
