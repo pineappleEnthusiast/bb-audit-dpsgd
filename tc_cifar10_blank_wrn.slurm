@@ -3,7 +3,7 @@
 #SBATCH -o status/tc_cifar10_blank_wrn_%A_%a.o
 #SBATCH -e status/tc_cifar10_blank_wrn_%A_%a.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 5
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 30:00:00
 #SBATCH -A ASC25102
