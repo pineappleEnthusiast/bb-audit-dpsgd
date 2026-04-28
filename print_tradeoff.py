@@ -449,6 +449,9 @@ def main():
     parser.add_argument('--n-folds', type=int, default=1,
                         help='K-fold CV: select threshold on k-1 folds, evaluate on kth with gamma/k (Bonferroni). '
                              'Takes max eps over folds. Default 1 = disabled.')
+    parser.add_argument('--no-holdout', action='store_true',
+                        help='Also show no-holdout results (fit and evaluate on all data). '
+                             'Not a valid lower bound — useful as a ceiling comparison.')
     parser.add_argument('--print-grid', action='store_true', help='Print the per-threshold alpha/beta grid')
     args = parser.parse_args()
 
@@ -505,13 +508,21 @@ def main():
                 fold_eps[m].append(holdout_results[m]['eps'])
         return {m: float(np.max(fold_eps[m])) for m in method_order}
 
+    def _run_no_holdout(use_lr):
+        scores_in, scores_out = (si, so)
+        if use_lr:
+            scores_in, scores_out, _, _ = apply_gaussian_lr_transform(si, so, si, so)
+        _, holdout_results = _run_combo(scores_in, scores_out, scores_in, scores_out)
+        return {m: holdout_results[m]['eps'] for m in method_order}
+
     if args.all_combos:
         score_variants = [('raw', False), ('LR', True)]
-        cols = [(sname, frac) for sname, _ in score_variants for frac in args.holdout_fracs]
+        col_labels = [f'{s}/h={f}' for s, _ in score_variants for f in args.holdout_fracs]
         if args.n_folds > 1:
-            cols += [(f'kfold(k={args.n_folds})', sname) for sname, _ in score_variants]
-        col_header = '  '.join(f"{str(c):>12}" for c in [f'{s}/h={f}' if isinstance(f, float) else f'{f}/{s}'
-                                                          for s, f in cols])
+            col_labels += [f'{s}/k={args.n_folds}' for s, _ in score_variants]
+        if args.no_holdout:
+            col_labels += [f'{s}/no-hold' for s, _ in score_variants]
+        col_header = '  '.join(f"{c:>12}" for c in col_labels)
         print(f"\n{'Method':32s}  {col_header}")
         print('-' * (32 + 2 + len(col_header) + 2))
 
@@ -527,8 +538,10 @@ def main():
                     row_vals.append(holdout_results[method]['eps'])
             if args.n_folds > 1:
                 for _, use_lr in score_variants:
-                    kfold_eps = _run_kfold(si, so, use_lr)
-                    row_vals.append(kfold_eps[method])
+                    row_vals.append(_run_kfold(si, so, use_lr)[method])
+            if args.no_holdout:
+                for _, use_lr in score_variants:
+                    row_vals.append(_run_no_holdout(use_lr)[method])
             vals_str = '  '.join(f"{v:12.4f}" for v in row_vals)
             print(f"{method:32s}  {vals_str}")
 
@@ -566,6 +579,14 @@ def main():
             kfold_eps = _run_kfold(si, so, args.use_lr)
             for label in method_order:
                 print(f"{label:30s}  {kfold_eps[label]:12.4f}")
+
+        if args.no_holdout:
+            print(f"\n--- no-holdout  n={len(si)}/side  (NOT a valid lower bound) ---")
+            print(f"{'Method':30s}  {'eps':>12}")
+            print('-' * 46)
+            nh_eps = _run_no_holdout(args.use_lr)
+            for label in method_order:
+                print(f"{label:30s}  {nh_eps[label]:12.4f}")
 
     if args.print_grid:
         fit_si, fit_so, _, _ = _split_scores_for_holdout(si, so, args.holdout_fracs[0], args.seed)
