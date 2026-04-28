@@ -418,22 +418,10 @@ def compute_pointwise_eps_from_grid(scores_in, scores_out, delta, gamma, m, appl
 
 
 def _select_fit_thresholds(fit_si, fit_so, delta, gamma, m):
-    pointwise_cp = compute_pointwise_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize=False)
-    pointwise_cp_sym = compute_pointwise_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize=True)
-    no_cp = compute_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=False, symmetrize_fit=True)
-    with_cp = compute_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize_fit=True)
-    gdp = compute_gdp_eps_from_grid(fit_si, fit_so, delta, gamma, m)
-    results = {
-        'Pointwise CP': pointwise_cp,
-        'Pointwise CP + symmetry': pointwise_cp_sym,
-        'Hull (no CP) [Alg5 no CP]': no_cp,
-        'Hull (with CP) [CP/Alg5]': with_cp,
-        'GDP': gdp,
-    }
-    if HAS_LIB:
-        for lib_method, label in [('GDP', 'GDP (lib)'), ('cp', 'CP (lib)')]:
-            t = _fit_threshold_lib(fit_si, fit_so, gamma, delta, lib_method)
-            results[label] = {'threshold': t, 'eps': None, 'alpha': None, 'beta': None}
+    results = {}
+    for lib_method, label in [('GDP', 'GDP (lib)'), ('cp', 'CP (lib)')]:
+        t = _fit_threshold_lib(fit_si, fit_so, gamma, delta, lib_method)
+        results[label] = {'threshold': t, 'eps': None, 'alpha': None, 'beta': None}
     return results
 
 
@@ -502,15 +490,10 @@ def main():
     if si.mean() < so.mean():
         si, so = -si, -so
 
-    method_order = [
-        'Pointwise CP', 'Pointwise CP + symmetry',
-        'Hull (no CP) [Alg5 no CP]', 'Hull (with CP) [CP/Alg5]',
-        'GDP',
-    ]
-    if HAS_LIB:
-        method_order += ['GDP (lib)', 'CP (lib)']
-    else:
-        print("Note: utils.audit not found — skipping GDP (lib) and CP (lib).")
+    if not HAS_LIB:
+        raise ImportError('utils.audit not found — cannot compute GDP (lib) / CP (lib).')
+
+    method_order = ['GDP (lib)', 'CP (lib)']
 
     def _run_combo(fit_si, fit_so, hold_si, hold_so, gamma_hold=None):
         if gamma_hold is None:
@@ -518,21 +501,10 @@ def main():
         fit_results = _select_fit_thresholds(fit_si, fit_so, args.delta, args.gamma, args.m)
         holdout_results = {}
         for label, fit_result in fit_results.items():
-            if label == 'GDP':
-                holdout_results[label] = _evaluate_threshold_gdp(
-                    hold_si, hold_so, fit_result['threshold'], delta=args.delta, gamma=gamma_hold,
-                )
-            elif label in ('GDP (lib)', 'CP (lib)'):
-                lib_method = 'GDP' if label == 'GDP (lib)' else 'cp'
-                holdout_results[label] = _eval_threshold_lib(
-                    hold_si, hold_so, fit_result['threshold'], gamma_hold, args.delta, lib_method,
-                )
-            else:
-                holdout_apply_cp = label != 'Hull (no CP) [Alg5 no CP]'
-                holdout_results[label] = _evaluate_threshold(
-                    hold_si, hold_so, fit_result['threshold'],
-                    delta=args.delta, gamma=gamma_hold, apply_cp=holdout_apply_cp,
-                )
+            lib_method = 'GDP' if label == 'GDP (lib)' else 'cp'
+            holdout_results[label] = _eval_threshold_lib(
+                hold_si, hold_so, fit_result['threshold'], gamma_hold, args.delta, lib_method,
+            )
         return fit_results, holdout_results
 
     def _run_kfold(scores_in, scores_out, use_lr):
