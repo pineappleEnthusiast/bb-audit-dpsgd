@@ -70,6 +70,48 @@ def find_hot_input_dim(model, X, y, device, n_samples=500):
     return hot
 
 
+def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_size=256):
+    """Measure per-sample gradient L2 and L∞ norm distribution on regular training data.
+
+    Prints percentiles to help calibrate β for the input-cancelling canary attack:
+      - No-clip condition:  β * ||δ||_2  <  max_grad_norm
+      - Detectable by defence:  β * ||δ||_∞  >  p90 of regular L∞ grad norms
+    """
+    model.train()
+    l2_norms, linf_norms = [], []
+
+    n = min(n_samples, len(X))
+    loader = DataLoader(
+        TensorDataset(X[:n], y[:n]),
+        batch_size=batch_size, shuffle=False,
+    )
+
+    for X_b, y_b in loader:
+        X_b, y_b = X_b.to(device), y_b.to(device)
+        # Compute per-sample gradients via grad on individual losses
+        for i in range(len(X_b)):
+            model.zero_grad()
+            loss = F.cross_entropy(model(X_b[i:i+1]), y_b[i:i+1])
+            loss.backward()
+            flat = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+            l2_norms.append(float(flat.norm(2).item()))
+            linf_norms.append(float(flat.abs().max().item()))
+
+    l2 = np.array(l2_norms)
+    linf = np.array(linf_norms)
+
+    print(f"\n=== Per-sample gradient norm distribution (n={n}) ===")
+    for p in [50, 75, 90, 95, 99]:
+        print(f"  p{p:2d}:  L2={np.percentile(l2, p):.4f}  L∞={np.percentile(linf, p):.4f}")
+    print(f"  max:  L2={l2.max():.4f}  L∞={linf.max():.4f}")
+    print(f"\nFor max_grad_norm=1.0, no-clip requires β < 1 / (per-sample L2 norm).")
+    print(f"  Suggested safe β upper bound (p90 L2): β < {1.0 / np.percentile(l2, 90):.4f}")
+    print(f"  For defence detection (beat p90 L∞ of regular data): β * ||δ_B||_∞ > {np.percentile(linf, 90):.4f}")
+    print(f"  Since ||δ_B||_∞ ≈ ||δ||_∞ (same model), need β > {np.percentile(linf, 90) / np.percentile(linf, 90):.4f} (i.e. β > 1 relative to regular data L∞)")
+    print(f"===================================================\n")
+    return l2, linf
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_name', default='mlp', choices=list(Models.keys()))
@@ -115,6 +157,7 @@ def main():
     train_briefly(model, X, y, device, args.n_epochs, args.lr, args.batch_size)
 
     hot_dim = find_hot_input_dim(model, X, y, device)
+    measure_grad_norm_distribution(model, X, y, device)
 
     beta = args.beta if args.beta is not None else (args.n_group_a * args.alpha / args.n_group_b)
     print(f"\nGroup A: {args.n_group_a} canaries, input[{hot_dim}] = +{args.alpha:.4f}, label={args.label}")
