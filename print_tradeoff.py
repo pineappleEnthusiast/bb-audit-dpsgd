@@ -1,21 +1,20 @@
-import sys
+import argparse
 import os
 import numpy as np
-from scipy.stats import beta as beta_dist
-sys.path.insert(0, '.')
-from utils.audit import compute_eps_lower_single, compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t, AttackResults
+from scipy.stats import beta as beta_dist, norm
+from scipy.optimize import root_scalar
 
 
 def _lower_convex_envelope(alphas, betas):
     """
-    Given points (alpha_i, beta_i) return the lower convex envelope as sorted
-    (alpha, beta) pairs. Adds boundary points (0,1) and (1,0).
-    Uses the lower-left convex hull: for each alpha, the minimum achievable beta.
+    Return the lower convex envelope of the provided (alpha, beta) points.
+
+    Boundary points (0, 1) and (1, 0) are added so epsilon search can safely
+    traverse the full tradeoff frontier.
     """
     pts = list(zip(alphas, betas)) + [(0.0, 1.0), (1.0, 0.0)]
-    pts = sorted(set(pts))
+    pts = sorted(set((float(a), float(b)) for a, b in pts))
 
-    # Lower convex hull (monotone chain on lower side)
     hull = []
     for p in pts:
         while len(hull) >= 2 and (
@@ -27,210 +26,505 @@ def _lower_convex_envelope(alphas, betas):
     return hull
 
 
-def _cp_upper(x, n, gamma):
-    """One-sided Clopper-Pearson upper bound at level gamma.
-    x successes out of n trials → upper bound on true proportion."""
-    if n == 0:
-        return 1.0
-    if x == n:
-        return 1.0
-    return float(beta_dist.ppf(1.0 - gamma, x + 1, n - x))
-
-
-def _best_threshold_from_envelope(raw_pts, envelope, delta):
+def _symmetrize_and_dedup(points):
     """
-    Find the threshold t* and reflected flag that achieves max eps_lb on the envelope.
-    raw_pts: list of (a, b, t, reflected) from fit set (original + symmetrized).
-    Returns (best_t, reflected, best_eps, best_a, best_b).
+    Add reflected error-pair points (beta, alpha) and deduplicate by alpha,
+    keeping the smallest beta for each alpha.
     """
-    best_eps, best_t, best_reflected = 0.0, None, False
-    best_a, best_b = None, None
-    for a, b in envelope:
-        if a > 0 and (1.0 - delta - b) > 0:
-            eps = np.log((1.0 - delta - b) / a)
-            if eps > best_eps:
-                best_eps = eps
-                best_a, best_b = a, b
-                dists = [abs(p[0] - a) + abs(p[1] - b) for p in raw_pts]
-                best_i = int(np.argmin(dists))
-                best_t, best_reflected = raw_pts[best_i][2], raw_pts[best_i][3]
-    return best_t, best_reflected, best_eps, best_a, best_b
+    best_beta_by_alpha = {}
+
+    for alpha, beta, threshold, fp, fn in points:
+        candidates = [
+            (float(alpha), float(beta), float(threshold), fp, fn),
+            (float(beta), float(alpha), float(threshold), fp, fn),
+        ]
+        for a, b, t, fp_val, fn_val in candidates:
+            key = round(float(a), 12)
+            prev = best_beta_by_alpha.get(key)
+            if prev is None or b < prev[0]:
+                best_beta_by_alpha[key] = (float(b), float(t), fp_val, fn_val)
+
+    deduped = []
+    for key in sorted(best_beta_by_alpha.keys()):
+        beta, threshold, fp, fn = best_beta_by_alpha[key]
+        deduped.append((float(key), float(beta), float(threshold), fp, fn))
+    return deduped
 
 
-def _eps_from_ab(a, b, delta):
-    if a > 0 and (1.0 - delta - b) > 0:
-        return max(0.0, float(np.log((1.0 - delta - b) / a)))
+def _dedup_by_alpha(points):
+    """Deduplicate points by alpha, keeping the smallest beta for each alpha."""
+    best_beta_by_alpha = {}
+    for alpha, beta, threshold, fp, fn in points:
+        key = round(float(alpha), 12)
+        prev = best_beta_by_alpha.get(key)
+        if prev is None or beta < prev[0]:
+            best_beta_by_alpha[key] = (float(beta), float(threshold), fp, fn)
+
+    deduped = []
+    for key in sorted(best_beta_by_alpha.keys()):
+        beta, threshold, fp, fn = best_beta_by_alpha[key]
+        deduped.append((float(key), float(beta), float(threshold), fp, fn))
+    return deduped
+
+
+def _symmetrize_only(points):
+    """Add reflected error-pair points (beta, alpha) without hull or alpha-dedup."""
+    sym_points = []
+    for alpha, beta, threshold, fp, fn in points:
+        sym_points.append((float(alpha), float(beta), float(threshold), fp, fn))
+        sym_points.append((float(beta), float(alpha), float(threshold), fp, fn))
+    return sym_points
+
+
+def _cp_upper(x, n, failure_prob):
+    """One-sided Clopper-Pearson upper bound with per-interval failure_prob."""
+    if n == 0 or x == n:
+        return 1.0
+    return float(beta_dist.ppf(1.0 - failure_prob, x + 1, n - x))
+
+
+def _eps_from_ab(alpha, beta, delta):
+    if alpha > 0.0 and (1.0 - delta - beta) > 0.0:
+        return max(0.0, float(np.log((1.0 - delta - beta) / alpha)))
     return 0.0
 
 
-def _eval_on_holdout_no_cp(hold_si, hold_so, t, reflected, delta):
-    if reflected:
-        a = float(np.mean(hold_si <  t))
-        b = float(np.mean(hold_so >= t))
-    else:
-        a = float(np.mean(hold_so >= t))
-        b = float(np.mean(hold_si <  t))
-    return _eps_from_ab(a, b, delta), a, b
+def _gdp_eps(fpr_ub, fnr_ub, delta):
+    """Convert CP upper bounds on FPR/FNR to (eps, delta)-DP lower bound via mu-GDP.
 
-
-def _eval_on_holdout_cp(hold_si, hold_so, t, reflected, delta, gamma):
-    n_in, n_out = len(hold_si), len(hold_so)
-    if reflected:
-        fp = int(np.sum(hold_si <  t))
-        fn = int(np.sum(hold_so >= t))
-        a  = _cp_upper(fp, n_in,  gamma / 2)
-        b  = _cp_upper(fn, n_out, gamma / 2)
-    else:
-        fp = int(np.sum(hold_so >= t))
-        fn = int(np.sum(hold_si <  t))
-        a  = _cp_upper(fp, n_out, gamma / 2)
-        b  = _cp_upper(fn, n_in,  gamma / 2)
-    return _eps_from_ab(a, b, delta), a, b
-
-
-def compute_eps_tradeoff_with_cp(fit_si, fit_so, hold_si, hold_so, delta, gamma):
-    thresholds = np.sort(np.unique(np.concatenate([fit_si, fit_so])))
-    n_in_fit, n_out_fit = len(fit_si), len(fit_so)
-
-    raw_pts = []
-    for t in thresholds:
-        fp = int(np.sum(fit_so >= t))
-        fn = int(np.sum(fit_si <  t))
-        a  = _cp_upper(fp, n_out_fit, gamma / 2)
-        b  = _cp_upper(fn, n_in_fit,  gamma / 2)
-        raw_pts.append((a,       b,       t, False))
-        raw_pts.append((1.0 - b, 1.0 - a, t, True))
-
-    alphas = np.array([p[0] for p in raw_pts])
-    betas  = np.array([p[1] for p in raw_pts])
-    envelope = _lower_convex_envelope(alphas, betas)
-
-    best_t, reflected, _, fit_a, fit_b = _best_threshold_from_envelope(raw_pts, envelope, delta)
-    if best_t is None:
-        return 0.0, None, None, None, None
-    eps, hold_a, hold_b = _eval_on_holdout_cp(hold_si, hold_so, best_t, reflected, delta, gamma)
-    return eps, best_t, reflected, fit_a, fit_b, hold_a, hold_b
-
-
-def compute_eps_tradeoff_no_cp(fit_si, fit_so, hold_si, hold_so, delta):
+    mu lower bound: mu_l = Phi^{-1}(1 - fpr_ub) - Phi^{-1}(fnr_ub)
+    Then invert eq. (6) from the tight auditing paper (Steinke et al. 2023):
+      delta = Phi(-eps/mu + mu/2) - exp(eps) * Phi(-eps/mu - mu/2)
     """
-    Algorithm 5 (EmpiricalDPLB) without Clopper-Pearson correction, with holdout.
+    mu = norm.ppf(1.0 - fpr_ub) - norm.ppf(fnr_ub)
+    if mu <= 0.0:
+        return 0.0
+    def eq6(epsilon):
+        return norm.cdf(-epsilon / mu + mu / 2) - np.exp(epsilon) * norm.cdf(-epsilon / mu - mu / 2) - delta
+    try:
+        sol = root_scalar(eq6, bracket=[0.0, 50.0], method='brentq')
+        return float(sol.root)
+    except Exception:
+        return 0.0
 
-    Fit set: select threshold t* = argmax eps_lb over raw (FPR, FNR) pairs.
-    Holdout set: evaluate at fixed t* using raw frequencies (no CP correction).
 
-    Symmetry enforced by adding reflected points (1-beta_i, 1-alpha_i).
-    Convex lower envelope computed over all points.
+def compute_gdp_eps_from_grid(scores_in, scores_out, delta, gamma, m):
+    """Select best threshold on fit set using the GDP formula, return fit result dict."""
+    thresholds = _build_threshold_grid(scores_in, scores_out, m)
+    n_in, n_out = len(scores_in), len(scores_out)
 
-    eps_lb(delta) = max_{(alpha, beta) on convex envelope, alpha > 0, 1-delta-beta > 0}
-                    log((1 - delta - beta) / alpha)
-    """
-    thresholds = np.sort(np.unique(np.concatenate([fit_si, fit_so])))
+    best_eps = 0.0
+    best_threshold = None
+    best_alpha = None
+    best_beta = None
 
-    # Step 1: select t* on fit set (track reflected flag per point)
-    raw_pts = []
     for t in thresholds:
-        a = float(np.mean(fit_so >= t))   # FPR
-        b = float(np.mean(fit_si <  t))   # FNR
-        raw_pts.append((a,       b,       t, False))   # original
-        raw_pts.append((1.0 - b, 1.0 - a, t, True))   # symmetrized
+        _, _, fp, fn = _compute_alpha_beta(scores_in, scores_out, t)
+        fpr_ub = _cp_upper(fp, n_out, float(gamma))
+        fnr_ub = _cp_upper(fn, n_in, float(gamma))
+        for a, b in [(fpr_ub, fnr_ub), (fnr_ub, fpr_ub)]:
+            eps = _gdp_eps(a, b, delta)
+            if eps > best_eps:
+                best_eps = eps
+                best_threshold = float(t)
+                best_alpha = float(a)
+                best_beta = float(b)
 
-    alphas = np.array([p[0] for p in raw_pts])
-    betas  = np.array([p[1] for p in raw_pts])
-    envelope_fit = _lower_convex_envelope(alphas, betas)
-
-    best_t, reflected, _, fit_a, fit_b = _best_threshold_from_envelope(raw_pts, envelope_fit, delta)
-    if best_t is None:
-        return 0.0, None, None, None, None
-
-    # Step 2: evaluate at fixed t* on holdout using same direction
-    eps, hold_a, hold_b = _eval_on_holdout_no_cp(hold_si, hold_so, best_t, reflected, delta)
-    return eps, best_t, reflected, fit_a, fit_b, hold_a, hold_b
+    return {'eps': best_eps, 'threshold': best_threshold, 'alpha': best_alpha, 'beta': best_beta}
 
 
-# ---------------------------------------------------------------------------
+def _evaluate_threshold_gdp(scores_in, scores_out, threshold, delta, gamma):
+    """Evaluate a fixed threshold on holdout using the GDP formula."""
+    if threshold is None:
+        return {'threshold': None, 'eps': 0.0, 'alpha': None, 'beta': None, 'winner': 'n/a'}
 
-d        = sys.argv[1] if len(sys.argv) > 1 else 'tradeoff_curves/mnist_no_defense_eps10/mnist_cnn_eps10.0'
-alpha    = float(sys.argv[2]) if len(sys.argv) > 2 else 0.05
-delta    = float(sys.argv[3]) if len(sys.argv) > 3 else 1e-5
-holdout  = '--no-holdout' not in sys.argv
+    _, _, fp, fn = _compute_alpha_beta(scores_in, scores_out, threshold)
+    n_in, n_out = len(scores_in), len(scores_out)
+    fpr_ub = _cp_upper(fp, n_out, float(gamma))
+    fnr_ub = _cp_upper(fn, n_in, float(gamma))
 
-holdout_frac = 0.5
-for arg in sys.argv:
-    if arg.startswith('--holdout-frac='):
-        holdout_frac = float(arg.split('=')[1])
+    eps_orig = _gdp_eps(fpr_ub, fnr_ub, delta)
+    eps_sym = _gdp_eps(fnr_ub, fpr_ub, delta)
 
-scores_in  = np.load(f'{d}/losses_in.npy')  if os.path.exists(f'{d}/losses_in.npy')  else np.load(f'{d}/scores_in.npy')
-scores_out = np.load(f'{d}/losses_out.npy') if os.path.exists(f'{d}/losses_out.npy') else np.load(f'{d}/scores_out.npy')
+    if eps_sym > eps_orig:
+        return {'threshold': float(threshold), 'eps': eps_sym, 'alpha': fnr_ub, 'beta': fpr_ub, 'winner': 'sym'}
+    return {'threshold': float(threshold), 'eps': eps_orig, 'alpha': fpr_ub, 'beta': fnr_ub, 'winner': 'orig'}
 
-print(f"scores_in:  n={len(scores_in)}  mean={scores_in.mean():.4f}  std={scores_in.std():.4f}")
-print(f"scores_out: n={len(scores_out)}  mean={scores_out.mean():.4f}  std={scores_out.std():.4f}")
-print(f"holdout={holdout}  holdout_frac={holdout_frac}")
 
-# sign-flip so higher score = member
-si, so = scores_in.copy(), scores_out.copy()
-if si.mean() < so.mean():
-    si, so = -si, -so
+def _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed):
+    n = len(scores_in)
+    if n != len(scores_out):
+        raise ValueError(f'Expected equal in/out sample sizes, got {n} and {len(scores_out)}')
+    if not (0.0 < float(holdout_frac) < 1.0):
+        raise ValueError(f'holdout_frac must be in (0, 1), got {holdout_frac}')
+    if n < 2:
+        raise ValueError('Need at least 2 scores per side for fit/holdout split')
 
-n = len(si)
-np.random.seed(0)
-idx = np.random.permutation(n)
+    rng = np.random.default_rng(int(seed))
+    indices = rng.permutation(n)
+    n_holdout = max(1, int(round(n * float(holdout_frac))))
+    n_holdout = min(n_holdout, n - 1)
+    hold_idx = indices[:n_holdout]
+    fit_idx = indices[n_holdout:]
+    return (
+        scores_in[fit_idx],
+        scores_out[fit_idx],
+        scores_in[hold_idx],
+        scores_out[hold_idx],
+    )
 
-if not holdout:
-    fit_idx = hold_idx = idx
-elif holdout_frac == 0.5:
-    fit_idx, hold_idx = idx[:n//2], idx[n//2:]
-else:
-    n_hold = max(1, int(n * holdout_frac))
-    fit_idx, hold_idx = idx[n_hold:], idx[:n_hold]
 
-fit_scores  = np.concatenate([si[fit_idx],  so[fit_idx]]).astype(np.float32)
-fit_labels  = np.concatenate([np.ones(len(fit_idx)), np.zeros(len(fit_idx))]).astype(np.int64)
-hold_scores = np.concatenate([si[hold_idx], so[hold_idx]]).astype(np.float32)
-hold_labels = np.concatenate([np.ones(len(hold_idx)), np.zeros(len(hold_idx))]).astype(np.int64)
+def _build_threshold_grid(scores_in, scores_out, m):
+    all_scores = np.concatenate([scores_in, scores_out]).astype(np.float64)
+    percentiles = np.linspace(0.0, 100.0, num=int(m), endpoint=True)
+    return np.percentile(all_scores, percentiles)
 
-print(f"  fit={len(fit_idx)} reps  hold={len(hold_idx)} reps\n")
 
-print(f"{'Method':30s}  {'emp_eps':>8}  {'threshold':>10}  {'alpha(FPR)':>10}  {'beta(FNR)':>10}")
-print('-' * 75)
+def _gaussian_lr_scores(scores, mu_in, sigma_in, mu_out, sigma_out):
+    """Transform raw scores to log-likelihood-ratio log p(x|in) - log p(x|out) under Gaussian fit."""
+    scores = np.asarray(scores, dtype=np.float64)
+    log_p_in = -0.5 * ((scores - mu_in) / sigma_in) ** 2 - np.log(sigma_in)
+    log_p_out = -0.5 * ((scores - mu_out) / sigma_out) ** 2 - np.log(sigma_out)
+    return log_p_in - log_p_out
 
-# GDP and Clopper-Pearson (with holdout)
-from scipy.stats import binomtest as _binomtest
-for method, label in [('GDP', 'GDP'), ('cp', 'Clopper-Pearson')]:
-    t_fit, _ = compute_eps_lower_from_mia(fit_scores, fit_labels, alpha, delta, method, n_procs=4)
-    emp_eps  = compute_eps_lower_from_mia_given_t(hold_scores, hold_labels, alpha, delta, t_fit, method)
-    # Corrected FPR/FNR on holdout using same CI as the method
-    h_fp = int(np.sum(so[hold_idx] >= t_fit));  h_n  = len(hold_idx)
-    h_fn = int(np.sum(si[hold_idx] <  t_fit));  h_p  = len(hold_idx)
-    _, h_fpr = _binomtest(h_fp, h_n).proportion_ci(confidence_level=1 - 2*alpha)
-    _, h_fnr = _binomtest(h_fn, h_p).proportion_ci(confidence_level=1 - 2*alpha)
-    print(f"{label:30s}  {emp_eps:8.4f}  {t_fit:10.4f}  {h_fpr:10.4f}  {h_fnr:10.4f}")
 
-# Algorithm 5 without CP correction
-eps_no_cp, t_no_cp, ref_no_cp, fa, fb, ha, hb = compute_eps_tradeoff_no_cp(
-    si[fit_idx], so[fit_idx], si[hold_idx], so[hold_idx], delta)
-t_str = f"{t_no_cp:.4f}" if t_no_cp is not None else "n/a"
-print(f"{'Alg5 (no CP)':30s}  {eps_no_cp:8.4f}  {t_str:>10}  {ha if ha is not None else float('nan'):10.4f}  {hb if hb is not None else float('nan'):10.4f}")
+def apply_gaussian_lr_transform(fit_si, fit_so, hold_si, hold_so):
+    """Fit Gaussians on fit set, transform all four arrays to LR scores."""
+    mu_in = fit_si.mean()
+    sigma_in = max(fit_si.std(), 1e-8)
+    mu_out = fit_so.mean()
+    sigma_out = max(fit_so.std(), 1e-8)
+    return (
+        _gaussian_lr_scores(fit_si, mu_in, sigma_in, mu_out, sigma_out),
+        _gaussian_lr_scores(fit_so, mu_in, sigma_in, mu_out, sigma_out),
+        _gaussian_lr_scores(hold_si, mu_in, sigma_in, mu_out, sigma_out),
+        _gaussian_lr_scores(hold_so, mu_in, sigma_in, mu_out, sigma_out),
+    )
 
-# Algorithm 5 with CP correction
-eps_with_cp, t_cp, ref_cp, fa2, fb2, ha2, hb2 = compute_eps_tradeoff_with_cp(
-    si[fit_idx], so[fit_idx], si[hold_idx], so[hold_idx], delta, gamma=alpha)
-t_str2 = f"{t_cp:.4f}" if t_cp is not None else "n/a"
-print(f"{'Alg5 (with CP)':30s}  {eps_with_cp:8.4f}  {t_str2:>10}  {ha2 if ha2 is not None else float('nan'):10.4f}  {hb2 if hb2 is not None else float('nan'):10.4f}")
 
-# Per-decile table
-print(f"\nPer-decile (Clopper-Pearson):")
-print(f"{'t':>10}  {'TP':>6}  {'FP':>6}  {'TN':>6}  {'FN':>6}  {'TPR':>6}  {'FPR':>6}  {'eps_lb':>8}")
-print('-' * 70)
-all_scores = np.concatenate([si, so]).astype(np.float32)
-all_labels = np.concatenate([np.ones(len(si)), np.zeros(len(so))]).astype(np.int64)
-threshs = np.percentile(all_scores, np.arange(0, 101, 10))
-n_in, n_out = len(si), len(so)
-for t in threshs:
-    tp = int(np.sum(all_scores[all_labels == 1] >= t))
-    fp = int(np.sum(all_scores[all_labels == 0] >= t))
-    fn = n_in - tp
-    tn = n_out - fp
-    r  = AttackResults(FN=fn, FP=fp, TN=tn, TP=tp)
-    eps = compute_eps_lower_single(r, alpha, delta, 'cp')
-    print(f"{t:10.4f}  {tp:6d}  {fp:6d}  {tn:6d}  {fn:6d}  {tp/n_in:6.3f}  {fp/n_out:6.3f}  {eps:8.4f}")
+def _compute_alpha_beta(scores_in, scores_out, threshold):
+    n_in = len(scores_in)
+    n_out = len(scores_out)
+
+    fp = int(np.sum(scores_out >= threshold))
+    fn = int(np.sum(scores_in < threshold))
+
+    alpha = float(fp / n_out) if n_out > 0 else 0.0
+    beta = float(fn / n_in) if n_in > 0 else 0.0
+    return alpha, beta, fp, fn
+
+
+def _compute_grid_points(scores_in, scores_out, thresholds, gamma, apply_cp):
+    n_in = len(scores_in)
+    n_out = len(scores_out)
+    cp_failure_prob = float(gamma) if apply_cp else None
+
+    pts = []
+    for threshold in thresholds:
+        alpha, beta, fp, fn = _compute_alpha_beta(scores_in, scores_out, threshold)
+        if apply_cp:
+            alpha = _cp_upper(fp, n_out, cp_failure_prob)
+            beta = _cp_upper(fn, n_in, cp_failure_prob)
+        pts.append((float(alpha), float(beta), float(threshold), fp, fn))
+    return pts
+
+
+def _best_point_from_envelope(raw_pts, envelope, delta):
+    best_eps = 0.0
+    best_threshold = None
+    best_alpha = None
+    best_beta = None
+
+    for alpha, beta in envelope:
+        eps = _eps_from_ab(alpha, beta, delta)
+        if eps > best_eps:
+            best_eps = eps
+            best_alpha = float(alpha)
+            best_beta = float(beta)
+
+            dists = [abs(p[0] - alpha) + abs(p[1] - beta) for p in raw_pts]
+            best_idx = int(np.argmin(dists))
+            best_threshold = float(raw_pts[best_idx][2])
+
+    return best_eps, best_threshold, best_alpha, best_beta
+
+
+def _best_pointwise_eps(points, delta):
+    best_eps = 0.0
+    best_threshold = None
+    best_alpha = None
+    best_beta = None
+
+    for alpha, beta, threshold, fp, fn in points:
+        eps = _eps_from_ab(alpha, beta, delta)
+        if eps > best_eps:
+            best_eps = eps
+            best_threshold = float(threshold)
+            best_alpha = float(alpha)
+            best_beta = float(beta)
+
+    return {
+        'eps': float(best_eps),
+        'threshold': best_threshold,
+        'alpha': best_alpha,
+        'beta': best_beta,
+        'points': points,
+    }
+
+
+def _evaluate_threshold(scores_in, scores_out, threshold, delta, gamma, apply_cp):
+    if threshold is None:
+        return {
+            'threshold': None,
+            'raw_alpha': None,
+            'raw_beta': None,
+            'cp_alpha': None,
+            'cp_beta': None,
+            'eps_orig': 0.0,
+            'eps_sym': 0.0,
+            'eps': 0.0,
+            'alpha': None,
+            'beta': None,
+            'winner': 'n/a',
+            'fp': None,
+            'fn': None,
+        }
+
+    alpha_raw, beta_raw, fp, fn = _compute_alpha_beta(scores_in, scores_out, threshold)
+    alpha_eval = float(alpha_raw)
+    beta_eval = float(beta_raw)
+    if apply_cp:
+        alpha_eval = _cp_upper(fp, len(scores_out), float(gamma))
+        beta_eval = _cp_upper(fn, len(scores_in), float(gamma))
+
+    eps_orig = _eps_from_ab(alpha_eval, beta_eval, delta)
+    alpha_sym = float(beta_eval)
+    beta_sym = float(alpha_eval)
+    eps_sym = _eps_from_ab(alpha_sym, beta_sym, delta)
+
+    if eps_sym > eps_orig:
+        chosen_alpha = alpha_sym
+        chosen_beta = beta_sym
+        chosen_eps = eps_sym
+        chosen_side = 'sym'
+    else:
+        chosen_alpha = alpha_eval
+        chosen_beta = beta_eval
+        chosen_eps = eps_orig
+        chosen_side = 'orig'
+
+    return {
+        'threshold': float(threshold),
+        'raw_alpha': float(alpha_raw),
+        'raw_beta': float(beta_raw),
+        'cp_alpha': float(alpha_eval),
+        'cp_beta': float(beta_eval),
+        'eps_orig': float(eps_orig),
+        'eps_sym': float(eps_sym),
+        'eps': float(chosen_eps),
+        'alpha': float(chosen_alpha),
+        'beta': float(chosen_beta),
+        'winner': chosen_side,
+        'fp': int(fp),
+        'fn': int(fn),
+    }
+
+
+def compute_eps_from_grid(scores_in, scores_out, delta, gamma, m, apply_cp, symmetrize_fit=True):
+    thresholds = _build_threshold_grid(scores_in, scores_out, m)
+    grid_pts = _compute_grid_points(scores_in, scores_out, thresholds, gamma, apply_cp)
+    raw_pts = _symmetrize_and_dedup(grid_pts) if symmetrize_fit else _dedup_by_alpha(grid_pts)
+    envelope = _lower_convex_envelope(
+        np.array([p[0] for p in raw_pts], dtype=np.float64),
+        np.array([p[1] for p in raw_pts], dtype=np.float64),
+    )
+    best_eps, best_threshold, best_alpha, best_beta = _best_point_from_envelope(raw_pts, envelope, delta)
+
+    return {
+        'eps': float(best_eps),
+        'threshold': best_threshold,
+        'alpha': best_alpha,
+        'beta': best_beta,
+        'grid_points': grid_pts,
+        'raw_points': raw_pts,
+        'envelope': envelope,
+        'thresholds': thresholds,
+        'apply_cp': bool(apply_cp),
+        'symmetrize_fit': bool(symmetrize_fit),
+    }
+
+
+def compute_pointwise_eps_from_grid(scores_in, scores_out, delta, gamma, m, apply_cp, symmetrize=False):
+    thresholds = _build_threshold_grid(scores_in, scores_out, m)
+    grid_pts = _compute_grid_points(scores_in, scores_out, thresholds, gamma, apply_cp)
+    points = _symmetrize_only(grid_pts) if symmetrize else grid_pts
+    result = _best_pointwise_eps(points, delta)
+    result.update({
+        'grid_points': grid_pts,
+        'symmetrized': bool(symmetrize),
+        'apply_cp': bool(apply_cp),
+    })
+    return result
+
+
+def _select_fit_thresholds(fit_si, fit_so, delta, gamma, m):
+    pointwise_cp = compute_pointwise_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize=False)
+    pointwise_cp_sym = compute_pointwise_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize=True)
+    no_cp = compute_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=False, symmetrize_fit=True)
+    with_cp = compute_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize_fit=True)
+    gdp = compute_gdp_eps_from_grid(fit_si, fit_so, delta, gamma, m)
+    return {
+        'Pointwise CP': pointwise_cp,
+        'Pointwise CP + symmetry': pointwise_cp_sym,
+        'Hull (no CP) [Alg5 no CP]': no_cp,
+        'Hull (with CP) [CP/Alg5]': with_cp,
+        'GDP': gdp,
+    }
+
+
+def _load_scores(data_dir):
+    in_path = os.path.join(data_dir, 'losses_in.npy')
+    out_path = os.path.join(data_dir, 'losses_out.npy')
+    if not os.path.exists(in_path):
+        in_path = os.path.join(data_dir, 'scores_in.npy')
+    if not os.path.exists(out_path):
+        out_path = os.path.join(data_dir, 'scores_out.npy')
+
+    scores_in = np.load(in_path)
+    scores_out = np.load(out_path)
+    return scores_in.astype(np.float64), scores_out.astype(np.float64)
+
+
+def _print_result(label, result):
+    threshold = f"{result['threshold']:.4f}" if result['threshold'] is not None else "n/a"
+    alpha = result['alpha'] if result['alpha'] is not None else float('nan')
+    beta = result['beta'] if result['beta'] is not None else float('nan')
+    print(f"{label:30s}  {result['eps']:8.4f}  {threshold:>10}  {alpha:10.4f}  {beta:10.4f}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Unified epsilon lower-bound comparison on a fixed threshold grid.'
+    )
+    parser.add_argument(
+        'data_dir',
+        nargs='?',
+        default='tradeoff_curves/mnist_no_defense_eps10/mnist_cnn_eps10.0',
+        help='Directory containing losses_in.npy/losses_out.npy or scores_in.npy/scores_out.npy',
+    )
+    parser.add_argument('--gamma', type=float, default=0.05, help='Global CI failure probability gamma')
+    parser.add_argument('--delta', type=float, default=1e-5, help='Target delta')
+    parser.add_argument('--m', type=int, default=200, help='Number of threshold grid points')
+    parser.add_argument(
+        '--holdout-fracs', type=float, nargs='+', default=[0.1, 0.25, 0.5],
+        help='One or more holdout fractions to sweep (default: 0.1 0.25 0.5)',
+    )
+    parser.add_argument('--seed', type=int, default=0, help='Random seed for fit/holdout split')
+    parser.add_argument('--use-lr', action='store_true',
+                        help='Transform scores to Gaussian log-likelihood-ratio before threshold sweep')
+    parser.add_argument('--all-combos', action='store_true',
+                        help='Run all (raw vs LR) x holdout_frac combinations and show a pivot table')
+    parser.add_argument('--print-grid', action='store_true', help='Print the per-threshold alpha/beta grid')
+    args = parser.parse_args()
+
+    if int(args.m) <= 0:
+        raise ValueError(f'--m must be > 0, got {args.m}')
+
+    scores_in, scores_out = _load_scores(args.data_dir)
+
+    print(f"scores_in:  n={len(scores_in)}  mean={scores_in.mean():.4f}  std={scores_in.std():.4f}")
+    print(f"scores_out: n={len(scores_out)}  mean={scores_out.mean():.4f}  std={scores_out.std():.4f}")
+    print(f"grid_points(m)={args.m}  gamma={args.gamma}  delta={args.delta}")
+
+    # Sign-flip so larger scores always mean "more likely to be IN".
+    si, so = scores_in.copy(), scores_out.copy()
+    if si.mean() < so.mean():
+        si, so = -si, -so
+
+    method_order = [
+        'Pointwise CP', 'Pointwise CP + symmetry',
+        'Hull (no CP) [Alg5 no CP]', 'Hull (with CP) [CP/Alg5]',
+        'GDP',
+    ]
+
+    def _run_combo(fit_si, fit_so, hold_si, hold_so):
+        fit_results = _select_fit_thresholds(fit_si, fit_so, args.delta, args.gamma, args.m)
+        holdout_results = {}
+        for label, fit_result in fit_results.items():
+            if label == 'GDP':
+                holdout_results[label] = _evaluate_threshold_gdp(
+                    hold_si, hold_so, fit_result['threshold'], delta=args.delta, gamma=args.gamma,
+                )
+            else:
+                holdout_apply_cp = label != 'Hull (no CP) [Alg5 no CP]'
+                holdout_results[label] = _evaluate_threshold(
+                    hold_si, hold_so, fit_result['threshold'],
+                    delta=args.delta, gamma=args.gamma, apply_cp=holdout_apply_cp,
+                )
+        return fit_results, holdout_results
+
+    if args.all_combos:
+        score_variants = [('raw', False), ('LR', True)]
+        # cols: one per (score_type, holdout_frac) combo
+        cols = [(sname, frac) for sname, _ in score_variants for frac in args.holdout_fracs]
+        col_width = 8
+        col_header = '  '.join(f"{sname}/h={frac:<4}".rjust(col_width) for sname, frac in cols)
+        print(f"\n{'Method':32s}  {col_header}")
+        print('-' * (32 + 2 + len(col_header) + 2))
+
+        for method in method_order:
+            row_vals = []
+            for sname, use_lr in score_variants:
+                for frac in args.holdout_fracs:
+                    fit_si, fit_so, hold_si, hold_so = _split_scores_for_holdout(si, so, frac, args.seed)
+                    if use_lr:
+                        fit_si, fit_so, hold_si, hold_so = apply_gaussian_lr_transform(
+                            fit_si, fit_so, hold_si, hold_so)
+                    _, holdout_results = _run_combo(fit_si, fit_so, hold_si, hold_so)
+                    row_vals.append(holdout_results[method]['eps'])
+            vals_str = '  '.join(f"{v:8.4f}" for v in row_vals)
+            print(f"{method:32s}  {vals_str}")
+
+    else:
+        score_label = 'Gaussian LR score' if args.use_lr else 'raw score'
+        print(f"threshold sweep on: {score_label}")
+
+        for holdout_frac in args.holdout_fracs:
+            fit_si, fit_so, hold_si, hold_so = _split_scores_for_holdout(si, so, holdout_frac, args.seed)
+            if args.use_lr:
+                fit_si, fit_so, hold_si, hold_so = apply_gaussian_lr_transform(fit_si, fit_so, hold_si, hold_so)
+
+            print(f"\n--- holdout_frac={holdout_frac}  fit={len(fit_si)}/side  holdout={len(hold_si)}/side ---")
+            print(f"{'Method':30s}  {'fit_t':>10}  {'hold_eps':>8}  {'hold_a':>10}  {'hold_b':>10}  {'side':>6}")
+            print('-' * 92)
+
+            fit_results, holdout_results = _run_combo(fit_si, fit_so, hold_si, hold_so)
+            for label in method_order:
+                fit_t = fit_results[label]['threshold']
+                hold = holdout_results[label]
+                fit_t_str = f"{fit_t:.4f}" if fit_t is not None else "n/a"
+                hold_a_str = f"{hold['alpha']:.4f}" if hold['alpha'] is not None else "n/a"
+                hold_b_str = f"{hold['beta']:.4f}" if hold['beta'] is not None else "n/a"
+                print(
+                    f"{label:30s}  {fit_t_str:>10}  {hold['eps']:8.4f}  "
+                    f"{hold_a_str:>10}  {hold_b_str:>10}  {hold['winner']:>6}"
+                )
+
+    if args.print_grid:
+        fit_si, fit_so, _, _ = _split_scores_for_holdout(si, so, args.holdout_fracs[0], args.seed)
+        if args.use_lr or args.all_combos:
+            fit_si, fit_so, _, _ = apply_gaussian_lr_transform(fit_si, fit_so, fit_si, fit_so)
+        no_cp_grid = compute_eps_from_grid(fit_si, fit_so, args.delta, args.gamma, args.m, apply_cp=False)
+        with_cp_grid = compute_eps_from_grid(fit_si, fit_so, args.delta, args.gamma, args.m, apply_cp=True)
+        print(f"\nPer-grid points on fit split (holdout_frac={args.holdout_fracs[0]}):")
+        print(f"{'idx':>5}  {'t':>10}  {'alpha_raw':>10}  {'beta_raw':>10}  {'alpha_cp':>10}  {'beta_cp':>10}")
+        print('-' * 72)
+        for idx, (raw_pt, cp_pt) in enumerate(zip(no_cp_grid['grid_points'], with_cp_grid['grid_points'])):
+            print(
+                f"{idx:5d}  {raw_pt[2]:10.4f}  {raw_pt[0]:10.4f}  {raw_pt[1]:10.4f}  "
+                f"{cp_pt[0]:10.4f}  {cp_pt[1]:10.4f}"
+            )
+
+
+if __name__ == '__main__':
+    main()
