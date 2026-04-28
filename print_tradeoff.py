@@ -1,8 +1,16 @@
 import argparse
 import os
+import sys
 import numpy as np
 from scipy.stats import beta as beta_dist, norm
 from scipy.optimize import root_scalar
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
+    HAS_LIB = True
+except ImportError:
+    HAS_LIB = False
 
 
 def _lower_convex_envelope(alphas, betas):
@@ -149,6 +157,26 @@ def _evaluate_threshold_gdp(scores_in, scores_out, threshold, delta, gamma):
     if eps_sym > eps_orig:
         return {'threshold': float(threshold), 'eps': eps_sym, 'alpha': fnr_ub, 'beta': fpr_ub, 'winner': 'sym'}
     return {'threshold': float(threshold), 'eps': eps_orig, 'alpha': fpr_ub, 'beta': fnr_ub, 'winner': 'orig'}
+
+
+def _make_scores_labels(scores_in, scores_out):
+    scores = np.concatenate([scores_in, scores_out]).astype(np.float32)
+    labels = np.concatenate([np.ones(len(scores_in)), np.zeros(len(scores_out))]).astype(np.int64)
+    return scores, labels
+
+
+def _fit_threshold_lib(fit_si, fit_so, alpha, delta, method, n_procs=4):
+    scores, labels = _make_scores_labels(fit_si, fit_so)
+    t_fit, _ = compute_eps_lower_from_mia(scores, labels, alpha, delta, method, n_procs=n_procs)
+    return t_fit
+
+
+def _eval_threshold_lib(hold_si, hold_so, t, alpha, delta, method):
+    if t is None:
+        return {'threshold': None, 'eps': 0.0, 'alpha': None, 'beta': None, 'winner': 'n/a'}
+    scores, labels = _make_scores_labels(hold_si, hold_so)
+    eps = float(compute_eps_lower_from_mia_given_t(scores, labels, alpha, delta, t, method))
+    return {'threshold': float(t), 'eps': eps, 'alpha': None, 'beta': None, 'winner': 'lib'}
 
 
 def _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed):
@@ -395,13 +423,18 @@ def _select_fit_thresholds(fit_si, fit_so, delta, gamma, m):
     no_cp = compute_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=False, symmetrize_fit=True)
     with_cp = compute_eps_from_grid(fit_si, fit_so, delta, gamma, m, apply_cp=True, symmetrize_fit=True)
     gdp = compute_gdp_eps_from_grid(fit_si, fit_so, delta, gamma, m)
-    return {
+    results = {
         'Pointwise CP': pointwise_cp,
         'Pointwise CP + symmetry': pointwise_cp_sym,
         'Hull (no CP) [Alg5 no CP]': no_cp,
         'Hull (with CP) [CP/Alg5]': with_cp,
         'GDP': gdp,
     }
+    if HAS_LIB:
+        for lib_method, label in [('GDP', 'GDP (lib)'), ('cp', 'CP (lib)')]:
+            t = _fit_threshold_lib(fit_si, fit_so, gamma, delta, lib_method)
+            results[label] = {'threshold': t, 'eps': None, 'alpha': None, 'beta': None}
+    return results
 
 
 def _load_scores(data_dir):
@@ -474,6 +507,10 @@ def main():
         'Hull (no CP) [Alg5 no CP]', 'Hull (with CP) [CP/Alg5]',
         'GDP',
     ]
+    if HAS_LIB:
+        method_order += ['GDP (lib)', 'CP (lib)']
+    else:
+        print("Note: utils.audit not found — skipping GDP (lib) and CP (lib).")
 
     def _run_combo(fit_si, fit_so, hold_si, hold_so, gamma_hold=None):
         if gamma_hold is None:
@@ -484,6 +521,11 @@ def main():
             if label == 'GDP':
                 holdout_results[label] = _evaluate_threshold_gdp(
                     hold_si, hold_so, fit_result['threshold'], delta=args.delta, gamma=gamma_hold,
+                )
+            elif label in ('GDP (lib)', 'CP (lib)'):
+                lib_method = 'GDP' if label == 'GDP (lib)' else 'cp'
+                holdout_results[label] = _eval_threshold_lib(
+                    hold_si, hold_so, fit_result['threshold'], gamma_hold, args.delta, lib_method,
                 )
             else:
                 holdout_apply_cp = label != 'Hull (no CP) [Alg5 no CP]'
