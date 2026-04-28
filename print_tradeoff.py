@@ -174,6 +174,28 @@ def _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed):
     )
 
 
+def _kfold_splits(scores_in, scores_out, n_folds, seed):
+    n = len(scores_in)
+    if n != len(scores_out):
+        raise ValueError(f'Expected equal in/out sample sizes, got {n} and {len(scores_out)}')
+    if n_folds < 2 or n_folds > n:
+        raise ValueError(f'n_folds must be in [2, n], got {n_folds}')
+
+    rng = np.random.default_rng(int(seed))
+    indices = rng.permutation(n)
+    fold_boundaries = np.array_split(indices, n_folds)
+
+    splits = []
+    for i in range(n_folds):
+        hold_idx = fold_boundaries[i]
+        fit_idx = np.concatenate([fold_boundaries[j] for j in range(n_folds) if j != i])
+        splits.append((
+            scores_in[fit_idx], scores_out[fit_idx],
+            scores_in[hold_idx], scores_out[hold_idx],
+        ))
+    return splits
+
+
 def _build_threshold_grid(scores_in, scores_out, m):
     all_scores = np.concatenate([scores_in, scores_out]).astype(np.float64)
     percentiles = np.linspace(0.0, 100.0, num=int(m), endpoint=True)
@@ -424,6 +446,9 @@ def main():
                         help='Transform scores to Gaussian log-likelihood-ratio before threshold sweep')
     parser.add_argument('--all-combos', action='store_true',
                         help='Run all (raw vs LR) x holdout_frac combinations and show a pivot table')
+    parser.add_argument('--n-folds', type=int, default=1,
+                        help='K-fold CV: select threshold on k-1 folds, evaluate on kth with gamma/k (Bonferroni). '
+                             'Takes max eps over folds. Default 1 = disabled.')
     parser.add_argument('--print-grid', action='store_true', help='Print the per-threshold alpha/beta grid')
     args = parser.parse_args()
 
@@ -447,28 +472,46 @@ def main():
         'GDP',
     ]
 
-    def _run_combo(fit_si, fit_so, hold_si, hold_so):
+    def _run_combo(fit_si, fit_so, hold_si, hold_so, gamma_hold=None):
+        if gamma_hold is None:
+            gamma_hold = args.gamma
         fit_results = _select_fit_thresholds(fit_si, fit_so, args.delta, args.gamma, args.m)
         holdout_results = {}
         for label, fit_result in fit_results.items():
             if label == 'GDP':
                 holdout_results[label] = _evaluate_threshold_gdp(
-                    hold_si, hold_so, fit_result['threshold'], delta=args.delta, gamma=args.gamma,
+                    hold_si, hold_so, fit_result['threshold'], delta=args.delta, gamma=gamma_hold,
                 )
             else:
                 holdout_apply_cp = label != 'Hull (no CP) [Alg5 no CP]'
                 holdout_results[label] = _evaluate_threshold(
                     hold_si, hold_so, fit_result['threshold'],
-                    delta=args.delta, gamma=args.gamma, apply_cp=holdout_apply_cp,
+                    delta=args.delta, gamma=gamma_hold, apply_cp=holdout_apply_cp,
                 )
         return fit_results, holdout_results
 
+    def _run_kfold(scores_in, scores_out, use_lr):
+        """K-fold CV: select threshold on k-1 folds, evaluate on kth with gamma/k (Bonferroni)."""
+        k = args.n_folds
+        gamma_hold = args.gamma / k
+        splits = _kfold_splits(scores_in, scores_out, k, args.seed)
+        fold_eps = {m: [] for m in method_order}
+        for fit_si, fit_so, hold_si, hold_so in splits:
+            if use_lr:
+                fit_si, fit_so, hold_si, hold_so = apply_gaussian_lr_transform(
+                    fit_si, fit_so, hold_si, hold_so)
+            _, holdout_results = _run_combo(fit_si, fit_so, hold_si, hold_so, gamma_hold=gamma_hold)
+            for m in method_order:
+                fold_eps[m].append(holdout_results[m]['eps'])
+        return {m: float(np.max(fold_eps[m])) for m in method_order}
+
     if args.all_combos:
         score_variants = [('raw', False), ('LR', True)]
-        # cols: one per (score_type, holdout_frac) combo
         cols = [(sname, frac) for sname, _ in score_variants for frac in args.holdout_fracs]
-        col_width = 8
-        col_header = '  '.join(f"{sname}/h={frac:<4}".rjust(col_width) for sname, frac in cols)
+        if args.n_folds > 1:
+            cols += [(f'kfold(k={args.n_folds})', sname) for sname, _ in score_variants]
+        col_header = '  '.join(f"{str(c):>12}" for c in [f'{s}/h={f}' if isinstance(f, float) else f'{f}/{s}'
+                                                          for s, f in cols])
         print(f"\n{'Method':32s}  {col_header}")
         print('-' * (32 + 2 + len(col_header) + 2))
 
@@ -482,7 +525,11 @@ def main():
                             fit_si, fit_so, hold_si, hold_so)
                     _, holdout_results = _run_combo(fit_si, fit_so, hold_si, hold_so)
                     row_vals.append(holdout_results[method]['eps'])
-            vals_str = '  '.join(f"{v:8.4f}" for v in row_vals)
+            if args.n_folds > 1:
+                for _, use_lr in score_variants:
+                    kfold_eps = _run_kfold(si, so, use_lr)
+                    row_vals.append(kfold_eps[method])
+            vals_str = '  '.join(f"{v:12.4f}" for v in row_vals)
             print(f"{method:32s}  {vals_str}")
 
     else:
@@ -509,6 +556,16 @@ def main():
                     f"{label:30s}  {fit_t_str:>10}  {hold['eps']:8.4f}  "
                     f"{hold_a_str:>10}  {hold_b_str:>10}  {hold['winner']:>6}"
                 )
+
+        if args.n_folds > 1:
+            k = args.n_folds
+            gamma_hold = args.gamma / k
+            print(f"\n--- k-fold  k={k}  gamma/k={gamma_hold:.4f}  fit={(len(si) * (k-1)) // k}/side  holdout=~{len(si) // k}/side ---")
+            print(f"{'Method':30s}  {'max_fold_eps':>12}")
+            print('-' * 46)
+            kfold_eps = _run_kfold(si, so, args.use_lr)
+            for label in method_order:
+                print(f"{label:30s}  {kfold_eps[label]:12.4f}")
 
     if args.print_grid:
         fit_si, fit_so, _, _ = _split_scores_for_holdout(si, so, args.holdout_fracs[0], args.seed)
