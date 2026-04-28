@@ -329,6 +329,14 @@ def _flatten_param_diff_like_grads(param_diff_dict, ps_grads):
 def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseConfig, ps_losses=None, ps_logits=None):
     score_fn = defense_cfg.score_fn
 
+    # Any gradient-based score function accepts an _unclipped suffix to use raw
+    # (pre-clip) per-sample gradients instead of the clipped ones.
+    # Loss- and logit-based functions are unaffected by this suffix.
+    use_unclipped = score_fn.endswith('_unclipped')
+    if use_unclipped:
+        score_fn = score_fn[:-len('_unclipped')]
+    ps_grads_used = ps_grads if use_unclipped else ps_grads_clipped
+
     if score_fn == 'loss':
         if ps_losses is None:
             raise RuntimeError("defense_score_fn='loss' requires per-sample losses")
@@ -347,7 +355,7 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
     if score_fn == 'grad_norm_x_loss':
         if ps_losses is None:
             raise RuntimeError("defense_score_fn='grad_norm_x_loss' requires per-sample losses")
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         grad_norms = per_sample_flat_grads.norm(2, dim=1)
         return (grad_norms * ps_losses).to(dtype=torch.float32)
 
@@ -367,13 +375,13 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return compute_per_sample_prediction_entropy_from_logits(ps_logits).to(dtype=torch.float32)
 
     if score_fn == 'cos_update':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         delta_theta_dict = defense_cfg.delta_theta
         if delta_theta_dict is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
         # Flatten delta_theta in the same way as gradients
-        delta_theta = _flatten_param_diff_like_grads(delta_theta_dict, ps_grads_clipped)
+        delta_theta = _flatten_param_diff_like_grads(delta_theta_dict, ps_grads_used)
         delta_theta = delta_theta.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         delta_norm = delta_theta.norm(2)
         if float(delta_norm) < 1e-8:
@@ -384,13 +392,13 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return cos_sims.abs().to(dtype=torch.float32)
 
     if score_fn == 'cos_theta0':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         theta_t_minus_theta0_dict = defense_cfg.theta_t_minus_theta0
         if theta_t_minus_theta0_dict is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
 
         # Flatten theta_t_minus_theta0 in the same way as gradients
-        theta_t_minus_theta0 = _flatten_param_diff_like_grads(theta_t_minus_theta0_dict, ps_grads_clipped)
+        theta_t_minus_theta0 = _flatten_param_diff_like_grads(theta_t_minus_theta0_dict, ps_grads_used)
         theta_t_minus_theta0 = theta_t_minus_theta0.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         delta_norm = theta_t_minus_theta0.norm(2)
         if float(delta_norm) < 1e-8:
@@ -401,12 +409,12 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return cos_sims.abs().to(dtype=torch.float32)
 
     if score_fn == 'fisher':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         return (per_sample_flat_grads ** 2).sum(dim=1).to(dtype=torch.float32)
 
     if score_fn == 'rand_proj_var':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
-        
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
+
         # Create projection matrix lazily based on actual gradient dimensions
         if defense_cfg.rand_proj_mat is None:
             flat_dim = per_sample_flat_grads.shape[1]
@@ -415,7 +423,7 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             gen.manual_seed(0)
             defense_cfg.rand_proj_mat = torch.randn((flat_dim, m), generator=gen, dtype=torch.float32)
             defense_cfg.rand_proj_mat = defense_cfg.rand_proj_mat / (defense_cfg.rand_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
-        
+
         proj_mat = defense_cfg.rand_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         projections = per_sample_flat_grads @ proj_mat
         mean_abs = projections.abs().mean(dim=1)
@@ -423,8 +431,8 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return (mean_abs * std).to(dtype=torch.float32)
 
     if score_fn == 'maxmin_proj_ratio':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
-        
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
+
         # Create projection matrix lazily based on actual gradient dimensions
         if defense_cfg.maxmin_proj_mat is None:
             flat_dim = per_sample_flat_grads.shape[1]
@@ -433,7 +441,7 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             gen.manual_seed(0)
             defense_cfg.maxmin_proj_mat = torch.randn((flat_dim, k), generator=gen, dtype=torch.float32)
             defense_cfg.maxmin_proj_mat = defense_cfg.maxmin_proj_mat / (defense_cfg.maxmin_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
-        
+
         proj_mat = defense_cfg.maxmin_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         projections = (per_sample_flat_grads @ proj_mat).abs()
         max_proj = projections.max(dim=1).values
@@ -446,7 +454,7 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         return ratio.to(dtype=torch.float32)
 
     if score_fn == 'gradient_rank':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         d = float(per_sample_flat_grads.shape[1])
         eps = float(defense_cfg.grad_rank_eps)
 
@@ -471,8 +479,8 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         raise ValueError(f"Unsupported grad_rank_mode: {mode}")
 
     if score_fn == 'alignment_with_rand_proj':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
-        
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
+
         # Create projection matrix lazily based on actual gradient dimensions
         if defense_cfg.alignment_proj_mat is None:
             flat_dim = per_sample_flat_grads.shape[1]
@@ -481,27 +489,27 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             gen.manual_seed(0)
             defense_cfg.alignment_proj_mat = torch.randn((flat_dim, k), generator=gen, dtype=torch.float32)
             defense_cfg.alignment_proj_mat = defense_cfg.alignment_proj_mat / (defense_cfg.alignment_proj_mat.norm(2, dim=0, keepdim=True) + 1e-12)
-        
+
         proj_mat = defense_cfg.alignment_proj_mat.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
-        
+
         grad_norms = per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12
         normalized_grads = per_sample_flat_grads / grad_norms
-        
+
         cos_sims = normalized_grads @ proj_mat
         alignment_std = cos_sims.std(dim=1, unbiased=False)
         return alignment_std.to(dtype=torch.float32)
 
     if score_fn == 'gradient_sparsity':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         l1_norm = per_sample_flat_grads.abs().sum(dim=1)
         l2_norm = per_sample_flat_grads.norm(2, dim=1)
         return (l1_norm / (l2_norm + 1e-12)).to(dtype=torch.float32)
 
     if score_fn == 'gradient_kurtosis':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         mean_g = per_sample_flat_grads.mean(dim=1, keepdim=True)
         std_g = per_sample_flat_grads.std(dim=1, keepdim=True, unbiased=False)
-        
+
         # Avoid overflow for near-constant gradients by using a larger epsilon and clamping
         std_threshold = 1e-6
         normalized = (per_sample_flat_grads - mean_g) / torch.clamp(std_g, min=std_threshold)
@@ -516,26 +524,26 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
         )
 
     if score_fn == 'norm_x_trajectory_orth':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
         theta_t_minus_theta0_dict = defense_cfg.theta_t_minus_theta0
         if theta_t_minus_theta0_dict is None:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
-        
+
         # Flatten theta_t_minus_theta0 in the same way as gradients
-        theta_t_minus_theta0 = _flatten_param_diff_like_grads(theta_t_minus_theta0_dict, ps_grads_clipped)
+        theta_t_minus_theta0 = _flatten_param_diff_like_grads(theta_t_minus_theta0_dict, ps_grads_used)
         theta_t_minus_theta0 = theta_t_minus_theta0.to(device=per_sample_flat_grads.device, dtype=per_sample_flat_grads.dtype)
         trajectory_norm = theta_t_minus_theta0.norm(2)
         # Use threshold instead of exact zero check to catch near-zero trajectories
         if float(trajectory_norm) < 1e-8:
             return torch.zeros((per_sample_flat_grads.shape[0],), device=per_sample_flat_grads.device, dtype=torch.float32)
-        
+
         overall_direction = theta_t_minus_theta0 / trajectory_norm
         grad_norms = per_sample_flat_grads.norm(2, dim=1)
         normalized_grads = per_sample_flat_grads / (grad_norms[:, None] + 1e-12)
-        
+
         cos_sims = (normalized_grads @ overall_direction).abs()
         orthogonality = 1.0 - cos_sims
-        
+
         return (grad_norms * orthogonality).to(dtype=torch.float32)
 
     if score_fn == 'gradient_scatter':
@@ -543,13 +551,8 @@ def compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg: DefenseCo
             "defense_score_fn='gradient_scatter' is history-based and must be computed in clip_and_accum_grads(...), keyed by global_indices"
         )
 
-    if score_fn == 'grad_norm_unclipped':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads)
-        p = _norm_p_from_name(defense_cfg.score_norm)
-        return per_sample_flat_grads.norm(p, dim=1).to(dtype=torch.float32)
-
-    # Default: grad_norm (clipped)
-    per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+    # Default: grad_norm — uses clipped or unclipped depending on ps_grads_used
+    per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_used)
     p = _norm_p_from_name(defense_cfg.score_norm)
     return per_sample_flat_grads.norm(p, dim=1).to(dtype=torch.float32)
 
@@ -768,18 +771,24 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         scores_block = ps_margin.to(dtype=torch.float32)
     elif defense_cfg.score_fn == 'pred_entropy':
         scores_block = ps_entropy.to(dtype=torch.float32)
-    elif defense_cfg.score_fn == 'norm_x_dir_uniqueness':
+    elif defense_cfg.score_fn in {'norm_x_dir_uniqueness', 'norm_x_dir_uniqueness_unclipped'}:
+        use_unclipped = defense_cfg.score_fn.endswith('_unclipped')
         p = _norm_p_from_name(defense_cfg.score_norm)
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads if use_unclipped else ps_grads_clipped)
         scores_block = per_sample_flat_grads.norm(p=p, dim=1).to(dtype=torch.float32)
-    elif defense_cfg.score_fn in {'grad_dir_change_rate', 'gradient_scatter'}:
+    elif defense_cfg.score_fn in {'grad_dir_change_rate', 'grad_dir_change_rate_unclipped',
+                                   'gradient_scatter', 'gradient_scatter_unclipped'}:
         scores_block = torch.zeros((len(X),), device=device, dtype=torch.float32)
     else:
         scores_block = compute_defense_scores(ps_grads, ps_grads_clipped, y, defense_cfg, ps_losses=ps_losses, ps_logits=ps_logits)
 
     aux_embeds_block = None
-    if defense_cfg is not None and defense_cfg.score_fn in {'grad_dir_volatility', 'norm_x_dir_uniqueness'}:
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+    if defense_cfg is not None and defense_cfg.score_fn in {
+        'grad_dir_volatility', 'grad_dir_volatility_unclipped',
+        'norm_x_dir_uniqueness', 'norm_x_dir_uniqueness_unclipped',
+    }:
+        use_unclipped = defense_cfg.score_fn.endswith('_unclipped')
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads if use_unclipped else ps_grads_clipped)
         per_sample_flat_grads = per_sample_flat_grads / (per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12)
 
         # Create projection matrix lazily based on actual gradient dimensions
@@ -796,17 +805,20 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         embeds = embeds / (embeds.norm(2, dim=1, keepdim=True) + 1e-12)
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)
 
-    if defense_cfg is not None and defense_cfg.score_fn == 'grad_dir_change_rate':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+    if defense_cfg is not None and defense_cfg.score_fn in {'grad_dir_change_rate', 'grad_dir_change_rate_unclipped'}:
+        use_unclipped = defense_cfg.score_fn.endswith('_unclipped')
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads if use_unclipped else ps_grads_clipped)
         per_sample_flat_grads = per_sample_flat_grads / (per_sample_flat_grads.norm(2, dim=1, keepdim=True) + 1e-12)
         aux_embeds_block = per_sample_flat_grads.detach().cpu().numpy().astype(np.float32, copy=False)
 
-    if defense_cfg is not None and defense_cfg.score_fn == 'gradient_scatter':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+    if defense_cfg is not None and defense_cfg.score_fn in {'gradient_scatter', 'gradient_scatter_unclipped'}:
+        use_unclipped = defense_cfg.score_fn.endswith('_unclipped')
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads if use_unclipped else ps_grads_clipped)
         aux_embeds_block = per_sample_flat_grads.detach().cpu().numpy().astype(np.float32, copy=False)
 
-    if defense_cfg is not None and defense_cfg.score_fn == 'grad_accel':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+    if defense_cfg is not None and defense_cfg.score_fn in {'grad_accel', 'grad_accel_unclipped'}:
+        use_unclipped = defense_cfg.score_fn.endswith('_unclipped')
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads if use_unclipped else ps_grads_clipped)
         
         # Create projection matrix lazily based on actual gradient dimensions
         if defense_cfg.grad_accel_proj is None:
@@ -821,8 +833,9 @@ def clip_and_accum_grads_block(model, X, y, optimizer, criterion, max_grad_norm,
         embeds = per_sample_flat_grads @ proj
         aux_embeds_block = embeds.detach().cpu().numpy().astype(np.float32, copy=False)
 
-    if defense_cfg is not None and defense_cfg.score_fn == 'grad_jerk':
-        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads_clipped)
+    if defense_cfg is not None and defense_cfg.score_fn in {'grad_jerk', 'grad_jerk_unclipped'}:
+        use_unclipped = defense_cfg.score_fn.endswith('_unclipped')
+        per_sample_flat_grads = _flatten_per_sample_grads(ps_grads if use_unclipped else ps_grads_clipped)
         
         # Create projection matrix lazily based on actual gradient dimensions
         if defense_cfg.grad_jerk_proj is None:

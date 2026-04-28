@@ -210,7 +210,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 grad_norm_hist = np.full((len(dataset), k), np.nan, dtype=np.float32)
                 grad_norm_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'grad_dir_volatility' and grad_dir_hist is None:
+            if defense_score_fn in ('grad_dir_volatility', 'grad_dir_volatility_unclipped') and grad_dir_hist is None:
                 k = int(grad_dir_volatility_k)
                 if k <= 0:
                     raise ValueError(f"grad_dir_volatility_k must be > 0, got {k}")
@@ -219,7 +219,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
                 grad_dir_hist = np.full((len(dataset), k, int(grad_dir_proj_dim)), np.nan, dtype=np.float32)
                 grad_dir_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'norm_x_dir_uniqueness' and dir_unique_hist is None:
+            if defense_score_fn in ('norm_x_dir_uniqueness', 'norm_x_dir_uniqueness_unclipped') and dir_unique_hist is None:
                 k = int(dir_unique_k)
                 if k <= 0:
                     raise ValueError(f"dir_unique_k must be > 0, got {k}")
@@ -237,13 +237,13 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             if defense_score_fn == 'alignment_with_rand_proj' and alignment_proj_mat is None:
                 pass  # Will be created in dpsgd.py
 
-            if defense_score_fn == 'grad_accel' and grad_accel_hist is None:
+            if defense_score_fn in ('grad_accel', 'grad_accel_unclipped') and grad_accel_hist is None:
                 # Keep a 3-step history for discrete second difference.
                 # Note: grad_accel_proj will be created lazily on first batch
                 grad_accel_hist = np.full((len(dataset), 3, int(grad_accel_proj_dim)), np.nan, dtype=np.float32)
                 grad_accel_hist_pos = np.zeros((len(dataset),), dtype=np.int64)
 
-            if defense_score_fn == 'grad_jerk' and grad_jerk_hist is None:
+            if defense_score_fn in ('grad_jerk', 'grad_jerk_unclipped') and grad_jerk_hist is None:
                 # Keep a 4-step history for discrete third difference.
                 # Note: grad_jerk_proj will be created lazily on first batch
                 grad_jerk_hist = np.full((len(dataset), 4, int(grad_jerk_proj_dim)), np.nan, dtype=np.float32)
