@@ -3,14 +3,23 @@ Generate input-space cancelling canaries for Purchase/MLP.
 
 For an MLP the per-sample gradient at the first layer is  δ₁ ⊗ x,  so the input
 vector x directly determines the gradient direction in that layer.  Cancellation
-can therefore be designed purely in input space:
+can therefore be designed in input space:
 
-  Group A : n_group_a canaries with input[hot_dim] = +alpha   (low  L∞ gradient → evades defence)
-  Group B : n_group_b canaries with input[hot_dim] = -beta    (high L∞ gradient → removed by defence)
-  Constraint: n_group_a * alpha = n_group_b * beta            (gradients cancel when both are in)
+  Group A : n_group_a canaries, input[hot_dim] = +alpha, label = label_a  (low  L∞ gradient → evades defence)
+  Group B : n_group_b canaries, input[hot_dim] = +beta,  label = label_b  (high L∞ gradient → removed by defence)
+  Constraint: n_group_a * alpha = n_group_b * beta                          (approximate gradient cancellation)
 
-Without defence:  A + B in training → net first-layer gradient ≈ 0 → no MIA gap.
-With defence:     Group B (large |input[hot_dim]|) is removed → A alone memorised → gap appears.
+WHY POSITIVE BETA: using −beta at hot_dim kills ReLU neurons (negative pre-activation → zero gradient),
+so the full-gradient L∞ seen by the defence is comparable to regular data and group B goes undetected.
+Using +beta keeps all neurons alive; gradient magnitude at column hot_dim scales with beta, making
+group B clearly anomalous to the L∞ defence.
+
+WHY DIFFERENT LABELS: same input direction with same label produces additive (not cancelling) gradients.
+Different labels give approximately opposite error signals δ_A ≈ −δ_B (exact at K=2, approximate at K=100),
+so the net first-layer gradient contribution is ≈ 0 when n_A·alpha = n_B·beta.
+
+Without defence:  A + B in training → net gradient ≈ 0 → no MIA gap.
+With defence:     Group B (large L∞) removed → A alone memorised → gap appears.
 
 hot_dim is found by training briefly, then picking the input feature j with the
 largest average |∂L/∂x_j| across a sample of training data.
@@ -78,7 +87,9 @@ def main():
     parser.add_argument('--beta', type=float, default=None,
                         help='input magnitude for group B (default: n_group_a*alpha/n_group_b)')
     parser.add_argument('--label', type=int, default=0,
-                        help='audit label assigned to all canaries')
+                        help='audit label for group A canaries')
+    parser.add_argument('--label_b', type=int, default=1,
+                        help='audit label for group B canaries (should differ from --label to get opposing error signal)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--device', type=str, default='cuda:0')
@@ -106,10 +117,11 @@ def main():
     hot_dim = find_hot_input_dim(model, X, y, device)
 
     beta = args.beta if args.beta is not None else (args.n_group_a * args.alpha / args.n_group_b)
-    print(f"\nGroup A: {args.n_group_a} canaries, input[{hot_dim}] = +{args.alpha:.4f}")
-    print(f"Group B: {args.n_group_b} canaries, input[{hot_dim}] = -{beta:.4f}")
+    print(f"\nGroup A: {args.n_group_a} canaries, input[{hot_dim}] = +{args.alpha:.4f}, label={args.label}")
+    print(f"Group B: {args.n_group_b} canaries, input[{hot_dim}] = +{beta:.4f},  label={args.label_b}  ← positive keeps ReLU alive")
     print(f"Cancellation check: {args.n_group_a} * {args.alpha} = {args.n_group_b} * {beta:.4f}  "
           f"→ {args.n_group_a * args.alpha:.4f} vs {args.n_group_b * beta:.4f}")
+    print(f"Note: cancellation is approximate (δ_A ≈ −δ_B for different labels, exact only at K=2)")
 
     # Build group A: 1-hot in input space at hot_dim with value +alpha
     x_a = torch.zeros(input_dim)
@@ -117,11 +129,12 @@ def main():
     X_a = x_a.unsqueeze(0).expand(args.n_group_a, -1).clone()
     y_a = torch.full((args.n_group_a,), args.label, dtype=torch.long)
 
-    # Build group B: 1-hot in input space at hot_dim with value -beta
+    # Build group B: 1-hot in input space at hot_dim with value +beta (positive — keeps ReLU neurons alive
+    # so the first-layer gradient magnitude ∝ beta and the L∞ defence can detect it)
     x_b = torch.zeros(input_dim)
-    x_b[hot_dim] = -beta
+    x_b[hot_dim] = beta
     X_b = x_b.unsqueeze(0).expand(args.n_group_b, -1).clone()
-    y_b = torch.full((args.n_group_b,), args.label, dtype=torch.long)
+    y_b = torch.full((args.n_group_b,), args.label_b, dtype=torch.long)
 
     X_canary = torch.vstack([X_a, X_b])
     y_canary = torch.cat([y_a, y_b])
@@ -135,6 +148,8 @@ def main():
         'beta': beta,
         'n_group_a': args.n_group_a,
         'n_group_b': args.n_group_b,
+        'label_a': args.label,
+        'label_b': args.label_b,
         'input_dim': input_dim,
     }, out_path)
     print(f"\nSaved {len(X_canary)} canaries to {out_path}")
