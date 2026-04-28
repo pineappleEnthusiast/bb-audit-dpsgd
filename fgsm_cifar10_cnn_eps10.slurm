@@ -36,7 +36,7 @@ DELTA=1e-5
 SEED=0
 TARGET_TYPE="fgsm"
 DEFENSE_K=5
-DEFENSE_SCORE_FN="norm_x_dir_uniqueness"
+DEFENSE_SCORE_FN="grad_norm_unclipped"
 DEFENSE_SCORE_NORM="linf"
 PARENT_OUT="fgsm_cifar10_cnn_eps10"
 

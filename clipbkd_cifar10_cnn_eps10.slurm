@@ -37,6 +37,8 @@ SEED=0
 TARGET_TYPE="clipbkd"           # canary crafted on-the-fly via ClipBKD
 DEFENSE_K=5
 PARENT_OUT="clipbkd_cifar10_cnn_eps10"
+DEFENSE_SCORE_FN="grad_norm_unclipped"
+DEFENSE_SCORE_NORM="linf"
 
 mkdir -p ${PARENT_OUT}
 
