@@ -55,6 +55,7 @@ def train_briefly(model, X, y, device, n_epochs, lr, batch_size):
         for X_b, y_b in loader:
             opt.zero_grad()
             F.cross_entropy(model(X_b.to(device)), y_b.to(device)).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
 
 
@@ -153,11 +154,12 @@ def main():
     model = Models[args.model_name](X.shape, out_dim=out_dim).to(device)
     xavier_init_model(model)
 
+    measure_grad_norm_distribution(model, X, y, device)
+
     print(f"Training briefly ({args.n_epochs} epochs) to identify hot input dimension …")
     train_briefly(model, X, y, device, args.n_epochs, args.lr, args.batch_size)
 
     hot_dim = find_hot_input_dim(model, X, y, device)
-    measure_grad_norm_distribution(model, X, y, device)
 
     beta = args.beta if args.beta is not None else (args.n_group_a * args.alpha / args.n_group_b)
     print(f"\nGroup A: {args.n_group_a} canaries, input[{hot_dim}] = +{args.alpha:.4f}, label={args.label}")
