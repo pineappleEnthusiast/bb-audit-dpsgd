@@ -72,12 +72,7 @@ def find_hot_input_dim(model, X, y, device, n_samples=500):
 
 
 def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_size=256):
-    """Measure per-sample gradient L2 and L∞ norm distribution on regular training data.
-
-    Prints percentiles to help calibrate β for the input-cancelling canary attack:
-      - No-clip condition:  β * ||δ||_2  <  max_grad_norm
-      - Detectable by defence:  β * ||δ||_∞  >  p90 of regular L∞ grad norms
-    """
+    """Measure per-sample gradient L2 and L∞ norm distribution on regular training data."""
     model.train()
     l2_norms, linf_norms = [], []
 
@@ -89,7 +84,6 @@ def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_si
 
     for X_b, y_b in loader:
         X_b, y_b = X_b.to(device), y_b.to(device)
-        # Compute per-sample gradients via grad on individual losses
         for i in range(len(X_b)):
             model.zero_grad()
             loss = F.cross_entropy(model(X_b[i:i+1]), y_b[i:i+1])
@@ -105,12 +99,67 @@ def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_si
     for p in [50, 75, 90, 95, 99]:
         print(f"  p{p:2d}:  L2={np.percentile(l2, p):.4f}  L∞={np.percentile(linf, p):.4f}")
     print(f"  max:  L2={l2.max():.4f}  L∞={linf.max():.4f}")
-    print(f"\nFor max_grad_norm=1.0, no-clip requires β < 1 / (per-sample L2 norm).")
-    print(f"  Suggested safe β upper bound (p90 L2): β < {1.0 / np.percentile(l2, 90):.4f}")
-    print(f"  For defence detection (beat p90 L∞ of regular data): β * ||δ_B||_∞ > {np.percentile(linf, 90):.4f}")
-    print(f"  Since ||δ_B||_∞ ≈ ||δ||_∞ (same model), need β > {np.percentile(linf, 90) / np.percentile(linf, 90):.4f} (i.e. β > 1 relative to regular data L∞)")
     print(f"===================================================\n")
     return l2, linf
+
+
+def check_canary_calibration(model, hot_dim, beta, label_b, X_ref, y_ref, device,
+                              n_group_a, alpha, defense_k=5, n_regular=500):
+    """Measure group B's actual gradient L∞ vs regular class-{label_b} data.
+
+    For a multi-layer MLP, group B's gradient L∞ is dominated by the first layer
+    (sparse 1-hot input), while regular data's L∞ is dominated by later layers
+    (dense activations). This function measures the true relationship so you can
+    calibrate beta correctly.
+
+    Prints: group B's actual L∞, comparison to class-label_b regular data, and
+    suggested n_group_b if current beta is insufficient.
+    """
+    input_dim = X_ref.shape[1]
+    model.train()
+
+    # Group B unit canary: x = e_hot_dim (value 1.0 at hot_dim, zero elsewhere)
+    x_unit = torch.zeros(1, input_dim, device=device)
+    x_unit[0, hot_dim] = 1.0
+    y_b = torch.tensor([label_b], device=device)
+    model.zero_grad()
+    F.cross_entropy(model(x_unit), y_b).backward()
+    flat_unit = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+    linf_unit = float(flat_unit.abs().max().item())
+    l2_unit = float(flat_unit.norm(2).item())
+    linf_b = beta * linf_unit
+    model.zero_grad()
+
+    # Regular class-{label_b} data
+    cls_idx = (y_ref == label_b).nonzero(as_tuple=True)[0]
+    n_samp = min(n_regular, len(cls_idx))
+    X_cls = X_ref[cls_idx[:n_samp]].to(device)
+    y_cls = y_ref[cls_idx[:n_samp]].to(device)
+    linf_reg = []
+    for i in range(n_samp):
+        model.zero_grad()
+        F.cross_entropy(model(X_cls[i:i+1]), y_cls[i:i+1]).backward()
+        flat = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+        linf_reg.append(float(flat.abs().max().item()))
+    model.zero_grad()
+    linf_reg = np.array(linf_reg)
+
+    p90 = np.percentile(linf_reg, 90)
+    rank = int(np.sum(linf_reg > linf_b))  # how many regular samples beat group B
+
+    print(f"\n=== Group B canary calibration (hot_dim={hot_dim}, β={beta:.2f}) ===")
+    print(f"  Unit-input gradient:  L∞={linf_unit:.6f}  L2={l2_unit:.6f}")
+    print(f"  Group B L∞ (β×unit): {linf_b:.6f}")
+    print(f"  Class-{label_b} regular:  p50={np.percentile(linf_reg,50):.6f}  p90={p90:.6f}  max={linf_reg.max():.6f}")
+    print(f"  Group B beats {n_samp - rank}/{n_samp} regular class-{label_b} samples")
+    if rank < defense_k:
+        print(f"  ✓  β={beta:.2f} is sufficient — group B will be in top-{defense_k} and filtered")
+    else:
+        needed_beta = p90 / linf_unit if linf_unit > 0 else float('inf')
+        needed_n_b = max(1, int(n_group_a * alpha / needed_beta) + 1)
+        print(f"  ✗  β={beta:.2f} insufficient — group B is NOT in top-{defense_k}")
+        print(f"     Need β > {needed_beta:.1f}  →  set n_group_b ≤ {needed_n_b}  (= {n_group_a}×{alpha}/{needed_beta:.0f})")
+    print(f"=================================================================\n")
 
 
 def main():
@@ -167,6 +216,12 @@ def main():
     print(f"Cancellation check: {args.n_group_a} * {args.alpha} = {args.n_group_b} * {beta:.4f}  "
           f"→ {args.n_group_a * args.alpha:.4f} vs {args.n_group_b * beta:.4f}")
     print(f"Note: cancellation is approximate (δ_A ≈ −δ_B for different labels, exact only at K=2)")
+
+    check_canary_calibration(
+        model, hot_dim, beta, args.label_b, X, y, device,
+        n_group_a=args.n_group_a, alpha=args.alpha,
+        defense_k=5,
+    )
 
     # Build group A: 1-hot in input space at hot_dim with value +alpha
     x_a = torch.zeros(input_dim)
