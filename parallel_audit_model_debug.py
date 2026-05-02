@@ -102,6 +102,8 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
     else:
         noise_multiplier = 0
 
+    if block_size is None:
+        block_size = batch_size
     block_size = min(block_size, batch_size)
 
     if len(X.shape) > 2:
