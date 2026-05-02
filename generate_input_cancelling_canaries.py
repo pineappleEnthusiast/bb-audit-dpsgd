@@ -334,7 +334,6 @@ def main():
         is_gradient_space_canary=False,
         global_idx_to_grad=None,
         rank=0,
-        canary_group_meta={'n_group_a': args.n_group_a, 'n_group_b': args.n_group_b},
     )
 
     print(f"\nCalibration complete. Canary drop stats: {defense_stats}")
