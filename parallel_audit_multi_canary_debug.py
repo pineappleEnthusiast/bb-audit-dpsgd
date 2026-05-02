@@ -720,14 +720,14 @@ def train_model_multi_canary(
             k = int(defense_k)
             active_mask = torch.from_numpy(drop_mask == 0)
 
-            # DEBUG: Log gradient norms
-            if epoch == 0 or epoch % 10 == 0:
+            # DEBUG: Log gradient norms (only on epoch 0 and last epoch)
+            if epoch == 0:
                 print(f"\n[DEBUG] Epoch {epoch} - Gradient norm statistics:")
                 print(f"  All scores: min={scores.min():.6f}, p50={np.percentile(scores, 50):.6f}, p90={np.percentile(scores, 90):.6f}, max={scores.max():.6f}")
                 if canary_indices_np is not None and len(canary_indices_np) > 0:
                     canary_scores = scores[canary_indices_np]
                     print(f"  Canary scores: min={canary_scores.min():.6f}, p50={np.percentile(canary_scores, 50):.6f}, p90={np.percentile(canary_scores, 90):.6f}, max={canary_scores.max():.6f}")
-                    print(f"  Canary indices: {canary_indices_np}")
+                    print(f"  Canary indices: {canary_indices_np.tolist()}")
                 print(f"  Active samples: {active_mask.sum()}/{len(scores)}")
 
             # Snapshot the set of already-marked samples before this epoch's filtering
@@ -752,17 +752,18 @@ def train_model_multi_canary(
                     _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
                     topk_global_indices = cls_indices[topk_indices]
 
-                    # DEBUG: Show which canaries are in top-k for this class
-                    if (epoch == 0 or epoch % 10 == 0) and canary_indices_np is not None:
-                        topk_vals = cls_scores[topk_indices].cpu().numpy()
+                    # DEBUG: Show ONLY if canaries are in top-k for this class
+                    if canary_indices_np is not None:
                         canary_in_class = np.isin(canary_indices_np, cls_indices.numpy())
                         if canary_in_class.any():
                             canary_cls_idx = canary_indices_np[canary_in_class]
                             canary_cls_scores = scores[canary_cls_idx]
                             canary_in_topk = np.isin(canary_cls_idx, topk_global_indices.numpy())
-                            print(f"  Class {cls.item()}: canary indices={canary_cls_idx.tolist()}, scores={canary_cls_scores.tolist()}, in_topk={canary_in_topk.tolist()}")
                             if canary_in_topk.any():
-                                print(f"    ⚠️  CANARIES WOULD BE DROPPED from class {cls.item()}")
+                                topk_vals = cls_scores[topk_indices].cpu().numpy()
+                                print(f"[DEBUG] Epoch {epoch}, Class {cls.item()}: Canaries {canary_cls_idx.tolist()} in top-{k}!")
+                                print(f"        Canary scores: {canary_cls_scores.tolist()}")
+                                print(f"        Top-{k} scores in class: {topk_vals.tolist()}")
 
                     drop_mask[topk_global_indices.cpu().numpy()] = 1
 
