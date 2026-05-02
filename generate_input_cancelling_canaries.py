@@ -105,13 +105,13 @@ def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_si
     return l2, linf
 
 
-def _check_canary_grads_at_epoch(model, mean_normalized, alpha, beta, label_a, label_b, X_ref, y_ref, device):
+def _check_canary_grads_at_epoch(model, random_dense, alpha, beta, label_a, label_b, X_ref, y_ref, device):
     """Quick check of Group A and B gradient norms at current epoch (dense canary version)."""
     input_dim = X_ref.shape[1]
     model.eval()
 
-    # Group A: dense vector scaled by alpha
-    x_a = (mean_normalized * alpha).unsqueeze(0).to(device)
+    # Group A: +random_dense * alpha
+    x_a = (random_dense * alpha).unsqueeze(0).to(device)
     y_a = torch.tensor([label_a], device=device)
     model.zero_grad()
     F.cross_entropy(model(x_a), y_a).backward()
@@ -119,8 +119,8 @@ def _check_canary_grads_at_epoch(model, mean_normalized, alpha, beta, label_a, l
     linf_a = float(flat_a.abs().max().item())
     model.zero_grad()
 
-    # Group B: dense vector scaled by beta
-    x_b = (mean_normalized * beta).unsqueeze(0).to(device)
+    # Group B: -random_dense * beta (opposite direction for cancellation)
+    x_b = (-random_dense * beta).unsqueeze(0).to(device)
     y_b = torch.tensor([label_b], device=device)
     model.zero_grad()
     F.cross_entropy(model(x_b), y_b).backward()
@@ -128,8 +128,8 @@ def _check_canary_grads_at_epoch(model, mean_normalized, alpha, beta, label_a, l
     linf_b = float(flat_b.abs().max().item())
     model.zero_grad()
 
-    print(f"  GroupA (α={alpha:.2f}): L∞={linf_a:.6f}")
-    print(f"  GroupB (β={beta:.2f}): L∞={linf_b:.6f}  (ratio B/A: {linf_b/linf_a if linf_a > 0 else float('inf'):.2f}x)")
+    print(f"  GroupA (+α={alpha:.2f}): L∞={linf_a:.6f}")
+    print(f"  GroupB (-β={beta:.2f}): L∞={linf_b:.6f}  (ratio B/A: {linf_b/linf_a if linf_a > 0 else float('inf'):.2f}x)")
 
 
 def check_canary_calibration(model, hot_dim, beta, label_b, X_ref, y_ref, device,
@@ -262,29 +262,36 @@ def main():
     hot_dim = find_hot_input_dim(model, X, y, device)
 
     beta = args.beta if args.beta is not None else (args.n_group_a * args.alpha / args.n_group_b)
-    print(f"\nDense Canary Design (using normalized mean sample):")
-    print(f"Group A: {args.n_group_a} canaries, x = mean_normalized * {args.alpha:.4f}, label={args.label}")
-    print(f"Group B: {args.n_group_b} canaries, x = mean_normalized * {beta:.4f},  label={args.label_b}")
-    print(f"Cancellation check: {args.n_group_a} * {args.alpha:.4f} ≈ {args.n_group_b} * {beta:.4f}  "
-          f"→ {args.n_group_a * args.alpha:.4f} vs {args.n_group_b * beta:.4f}")
-    print(f"Note: cancellation is approximate (δ_A ≈ −δ_B for different labels, exact only at K=2)")
+    print(f"\nInput-Space Cancelling Canary Design:")
+    print(f"  Random unit vector seed={args.seed}, input_dim={input_dim}")
+    print(f"  Group A: {args.n_group_a} × (+random_dense × {args.alpha:.4f}), label={args.label}  ← filtered by defense (larger per-sample norm α)")
+    print(f"  Group B: {args.n_group_b} × (-random_dense × {beta:.4f}),  label={args.label_b}  ← survives defense (smaller per-sample norm β)")
+    print(f"  Cancellation: {args.n_group_a}×{args.alpha:.4f} = {args.n_group_b}×{beta:.4f}  ({args.n_group_a*args.alpha:.4f} vs {args.n_group_b*beta:.4f})")
+    print(f"  α/β = {args.alpha/beta:.1f}x  (both >> regular data norms ~1.6)")
 
-    # Build dense canaries: use mean of training data as base, scaled by alpha/beta
-    # This creates dense vectors that interact with all model parameters
-    mean_sample = X.mean(dim=0)
-    mean_norm = mean_sample.norm(p=2).item()
-    if mean_norm > 0:
-        mean_normalized = mean_sample / mean_norm
-    else:
-        mean_normalized = torch.ones(input_dim) / np.sqrt(input_dim)
+    # Dense input-space cancelling canaries.
+    #
+    # Both groups use the same random unit vector but with opposite sign,
+    # so their total input contribution sums to zero:
+    #   n_group_a * (+random_dense * alpha) + n_group_b * (-random_dense * beta) = 0
+    #   => n_group_a * alpha = n_group_b * beta  (cancellation constraint)
+    #   => beta = n_group_a * alpha / n_group_b  (default if not passed)
+    #
+    # alpha > beta (since n_group_b > n_group_a), so Group A has larger per-sample norm
+    # and gets filtered by the defense. Group B (smaller norm) survives and provides audit signal.
+    # Both alpha and beta >> normal sample norms.
 
-    # Group A: scaled mean sample with label_a
-    x_a = mean_normalized * args.alpha
+    torch.manual_seed(args.seed)
+    random_dense = torch.randn(input_dim)
+    random_dense = random_dense / random_dense.norm(p=2)
+
+    # Group A: +direction, larger per-sample norm, gets filtered by defense
+    x_a = random_dense * args.alpha
     X_a = x_a.unsqueeze(0).expand(args.n_group_a, -1).clone()
     y_a = torch.full((args.n_group_a,), args.label, dtype=torch.long)
 
-    # Group B: scaled mean sample with label_b (different label for opposing gradient)
-    x_b = mean_normalized * beta
+    # Group B: -direction, smaller per-sample norm (beta = n_a*alpha/n_b < alpha), survives defense
+    x_b = -random_dense * beta
     X_b = x_b.unsqueeze(0).expand(args.n_group_b, -1).clone()
     y_b = torch.full((args.n_group_b,), args.label_b, dtype=torch.long)
 
@@ -340,7 +347,7 @@ def main():
 
     # Check final gradient norms on trained model
     print(f"\nFinal canary gradient norms on trained model:")
-    _check_canary_grads_at_epoch(model_calibrate, mean_normalized, args.alpha, beta,
+    _check_canary_grads_at_epoch(model_calibrate, random_dense, args.alpha, beta,
                                 args.label, args.label_b,
                                 X, y, device)
 
