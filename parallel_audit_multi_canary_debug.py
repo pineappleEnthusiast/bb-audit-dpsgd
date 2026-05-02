@@ -203,8 +203,6 @@ def _load_canaries_from_pt_dict(pt_path: str, ref_X: torch.Tensor):
         'n_canaries_loaded': int(X_canary.shape[0]),
         'has_init_model_state': init_model_state is not None,
         'init_model_state': init_model_state,
-        'n_group_a': d.get('n_group_a', None),
-        'n_group_b': d.get('n_group_b', None),
     }
     return X_canary, y_canary, meta
 
@@ -395,7 +393,6 @@ def train_model_multi_canary(
     alignment_proj_seed: int = 0,
     grad_scatter_k: int = 5,
     rank: int = 0,
-    canary_group_meta: dict | None = None,
 ):
     """Train a model with the same core logic as parallel_audit_model.train_model,
     but extended to track multiple canaries.
@@ -515,7 +512,6 @@ def train_model_multi_canary(
         epoch_start = time.time()
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
-
 
         if sampling == 'poisson':
             def _poisson_iter():
@@ -670,14 +666,6 @@ def train_model_multi_canary(
                 defense_apply_ascent=bool(defense_apply_ascent),
             )
 
-            # DEBUG: Log canary scores at every batch in early epochs
-            if epoch < 3 and canary_indices_np is not None and len(canary_indices_np) > 0:
-                batch_indices = global_indices.cpu().numpy()
-                canary_in_batch = np.isin(canary_indices_np, batch_indices)
-                if canary_in_batch.any():
-                    canary_scores = scores[canary_indices_np[canary_in_batch]]
-                    print(f"[DEBUG] Epoch {epoch}: {canary_in_batch.sum()} canaries in batch, scores: min={canary_scores.min():.6f} p50={np.percentile(canary_scores, 50):.6f} max={canary_scores.max():.6f} | Batch p90={np.percentile(scores, 90):.6f}")
-
             # Update projection matrices if they were lazily created in dpsgd.py
             if defense_cfg.grad_dir_proj is not None:
                 grad_dir_proj = defense_cfg.grad_dir_proj
@@ -732,27 +720,16 @@ def train_model_multi_canary(
             k = int(defense_k)
             active_mask = torch.from_numpy(drop_mask == 0)
 
-            # DEBUG: Log canary scores from accumulated scores array
-            if epoch < 3 and canary_indices_np is not None and canary_group_meta is not None:
-                n_group_a = canary_group_meta.get('n_group_a')
-                rep_a_idx = canary_indices_np[0]
-                rep_b_idx = canary_indices_np[n_group_a] if n_group_a is not None and n_group_a < len(canary_indices_np) else None
-                score_a = float(scores[rep_a_idx])
-                score_b = float(scores[rep_b_idx]) if rep_b_idx is not None else float('nan')
-                nonzero = int((scores > 0).sum())
-                print(f"\n[DEBUG] Epoch {epoch} scores: GroupA={score_a:.6f}  GroupB={score_b:.6f}  "
-                      f"overall p90={np.percentile(scores[scores > 0], 90) if nonzero > 0 else 0:.6f}  "
-                      f"max={scores.max():.6f}  nonzero={nonzero}/{len(scores)}")
-
-            # DEBUG: Log gradient norms (only on epoch 0 and last epoch)
-            if epoch == 0:
-                print(f"\n[DEBUG] Epoch {epoch} - Gradient norm statistics:")
-                print(f"  All scores: min={scores.min():.6f}, p50={np.percentile(scores, 50):.6f}, p90={np.percentile(scores, 90):.6f}, max={scores.max():.6f}")
-                if canary_indices_np is not None and len(canary_indices_np) > 0:
-                    canary_scores = scores[canary_indices_np]
-                    print(f"  Canary scores: min={canary_scores.min():.6f}, p50={np.percentile(canary_scores, 50):.6f}, p90={np.percentile(canary_scores, 90):.6f}, max={canary_scores.max():.6f}")
-                    print(f"  Canary indices: {canary_indices_np.tolist()}")
-                print(f"  Active samples: {active_mask.sum()}/{len(scores)}")
+            # DEBUG: log scores for one rep from each canary group
+            if canary_indices_np is not None and epoch < 5:
+                rep_a = canary_indices_np[0]   # first canary = Group A representative
+                rep_b = canary_indices_np[-1]  # last canary = Group B representative
+                s_a = float(scores[rep_a])
+                s_b = float(scores[rep_b])
+                nz = scores > 0
+                print(f"  [DEBUG] scores: GroupA[{rep_a}]={s_a:.6f}  GroupB[{rep_b}]={s_b:.6f}  "
+                      f"p90(nonzero)={float(np.percentile(scores[nz], 90)) if nz.any() else 0:.6f}  "
+                      f"max={float(scores.max()):.6f}", flush=True)
 
             # Snapshot the set of already-marked samples before this epoch's filtering
             marked_before = set(np.where(drop_mask == 1)[0].tolist())
@@ -775,20 +752,6 @@ def train_model_multi_canary(
                     cls_scores = torch.tensor(scores[cls_indices.cpu().numpy()], device=y.device)
                     _, topk_indices = torch.topk(cls_scores, min(k, len(cls_scores)))
                     topk_global_indices = cls_indices[topk_indices]
-
-                    # DEBUG: Show ONLY if canaries are in top-k for this class
-                    if canary_indices_np is not None:
-                        canary_in_class = np.isin(canary_indices_np, cls_indices.numpy())
-                        if canary_in_class.any():
-                            canary_cls_idx = canary_indices_np[canary_in_class]
-                            canary_cls_scores = scores[canary_cls_idx]
-                            canary_in_topk = np.isin(canary_cls_idx, topk_global_indices.numpy())
-                            if canary_in_topk.any():
-                                topk_vals = cls_scores[topk_indices].cpu().numpy()
-                                print(f"[DEBUG] Epoch {epoch}, Class {cls.item()}: Canaries {canary_cls_idx.tolist()} in top-{k}!")
-                                print(f"        Canary scores: {canary_cls_scores.tolist()}")
-                                print(f"        Top-{k} scores in class: {topk_vals.tolist()}")
-
                     drop_mask[topk_global_indices.cpu().numpy()] = 1
 
             # Compute newly marked = marked after - marked before (exact diff, no stale entries)
@@ -1262,7 +1225,6 @@ def main():
                 global_idx_to_grad=global_idx_to_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
                 sampling=args.sampling,
                 rank=rank,
-                canary_group_meta=canary_meta if (world == 'in') else None,
             )
 
             if args.target_type == 'gradient_space_canary':
