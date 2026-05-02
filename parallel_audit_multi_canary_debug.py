@@ -669,29 +669,13 @@ def train_model_multi_canary(
                 defense_apply_ascent=bool(defense_apply_ascent),
             )
 
-            # DEBUG: Log representative canary scores at each batch
-            if canary_indices_np is not None and len(canary_indices_np) > 0 and canary_group_meta is not None:
+            # DEBUG: Log canary scores at every batch in early epochs
+            if epoch < 3 and canary_indices_np is not None and len(canary_indices_np) > 0:
                 batch_indices = global_indices.cpu().numpy()
-                n_group_a = canary_group_meta.get('n_group_a')
-                n_group_b = canary_group_meta.get('n_group_b')
-
-                # Identify representative canaries (first from each group)
-                rep_a_idx = canary_indices_np[0] if n_group_a is None else canary_indices_np[0]
-                rep_b_idx = canary_indices_np[n_group_a] if n_group_a is not None and n_group_a < len(canary_indices_np) else None
-
-                # Check if representatives are in this batch
-                rep_a_in_batch = rep_a_idx in batch_indices
-                rep_b_in_batch = rep_b_idx in batch_indices if rep_b_idx is not None else False
-
-                if rep_a_in_batch or rep_b_in_batch:
-                    print(f"[DEBUG] Epoch {epoch}:", end=" ")
-                    if rep_a_in_batch:
-                        score_a = float(scores[rep_a_idx])
-                        print(f"GroupA(idx={rep_a_idx})={score_a:.6f}", end=" | ")
-                    if rep_b_in_batch:
-                        score_b = float(scores[rep_b_idx])
-                        print(f"GroupB(idx={rep_b_idx})={score_b:.6f}", end=" | ")
-                    print(f"Batch p90={np.percentile(scores, 90):.6f}")
+                canary_in_batch = np.isin(canary_indices_np, batch_indices)
+                if canary_in_batch.any():
+                    canary_scores = scores[canary_indices_np[canary_in_batch]]
+                    print(f"[DEBUG] Epoch {epoch}: {canary_in_batch.sum()} canaries in batch, scores: min={canary_scores.min():.6f} p50={np.percentile(canary_scores, 50):.6f} max={canary_scores.max():.6f} | Batch p90={np.percentile(scores, 90):.6f}")
 
             # Update projection matrices if they were lazily created in dpsgd.py
             if defense_cfg.grad_dir_proj is not None:

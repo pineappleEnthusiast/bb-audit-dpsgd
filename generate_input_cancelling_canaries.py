@@ -35,6 +35,7 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from models import Models
 from utils.data import load_data
+from parallel_audit_multi_canary import train_model_multi_canary
 
 
 def xavier_init_model(model):
@@ -290,50 +291,59 @@ def main():
     X_canary = torch.vstack([X_a, X_b])
     y_canary = torch.cat([y_a, y_b])
 
-    # Calibrate on model trained WITH canaries, matching actual training scenario
-    print(f"\nCalibrating with canaries in training data ({args.n_epochs} epochs, lr={args.lr}, batch_size={args.batch_size}, sampling={args.sampling}) …")
-    model_calibrate = Models[args.model_name](X.shape, out_dim=out_dim).to(device)
-    xavier_init_model(model_calibrate)
+    # Calibrate using the exact same training code as the actual audit
+    print(f"\nCalibrating with canaries using train_model_multi_canary (exact audit setup) …")
     X_with_canaries = torch.cat([X, X_canary], dim=0)
     y_with_canaries = torch.cat([y, y_canary], dim=0)
 
-    # Train with Poisson sampling to match actual training
-    if args.sampling == 'poisson':
-        _q = float(args.batch_size) / float(len(X_with_canaries))
-        _poisson_n_batches = max(1, int(len(X_with_canaries) / float(args.batch_size)))
-        print(f"  Poisson sampling: q={_q:.4f}, expected batches per epoch={_poisson_n_batches}")
+    # Canary indices: last len(X_canary) samples
+    canary_indices = np.arange(len(X), len(X_with_canaries), dtype=np.int64)
 
-        dataset = TensorDataset(X_with_canaries, y_with_canaries)
-        loader = DataLoader(dataset, batch_size=len(X_with_canaries), shuffle=False)
+    model_calibrate = Models[args.model_name](X_with_canaries.shape, out_dim=out_dim).to(device)
+    xavier_init_model(model_calibrate)
 
-        optimizer = torch.optim.SGD(model_calibrate.parameters(), lr=float(args.lr))
-        criterion = torch.nn.CrossEntropyLoss()
+    # Call the exact same training function used in the audit
+    model_calibrate, drop_mask, defense_stats = train_model_multi_canary(
+        model_name=args.model_name,
+        X=X_with_canaries,
+        y=y_with_canaries,
+        epsilon=None,  # non-private
+        delta=None,
+        max_grad_norm=None,  # non-private
+        n_epochs=int(args.n_epochs),
+        lr=float(args.lr),
+        block_size=int(args.batch_size),
+        batch_size=int(args.batch_size),
+        init_model=model_calibrate,
+        out_dim=out_dim,
+        aug_mult=1,
+        defense=bool(args.defense),
+        defense_k=int(args.defense_k),
+        defense_apply_ascent=False,
+        defense_filter_every=1,
+        defense_score_fn=str(args.defense_score_fn),
+        defense_score_norm=str(args.defense_score_norm),
+        defense_global_filter=False,
+        device=str(device),
+        generator=None,
+        dl_generator=None,
+        num_workers=0,
+        persistent_workers=False,
+        canary_indices=canary_indices,
+        sampling=args.sampling,
+        is_gradient_space_canary=False,
+        global_idx_to_grad=None,
+        rank=0,
+        canary_group_meta={'n_group_a': args.n_group_a, 'n_group_b': args.n_group_b},
+    )
 
-        for epoch in range(int(args.n_epochs)):
-            model_calibrate.train()
-            for _ in range(_poisson_n_batches):
-                mask = torch.rand(len(X_with_canaries)) < _q
-                idx = torch.where(mask)[0]
-                if len(idx) == 0:
-                    continue
-                X_batch = X_with_canaries[idx].to(device)
-                y_batch = y_with_canaries[idx].to(device)
-                optimizer.zero_grad()
-                loss = criterion(model_calibrate(X_batch), y_batch)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model_calibrate.parameters(), 1.0)
-                optimizer.step()
+    print(f"\nCalibration complete. Canary drop stats: {defense_stats}")
 
-            # Check canary gradients at each epoch
-            if epoch < 5 or epoch % 20 == 0 or epoch == args.n_epochs - 1:
-                print(f"\n[Epoch {epoch}] Checking canary gradient norms …")
-                _check_canary_grads_at_epoch(model_calibrate, mean_normalized, args.alpha, beta,
-                                            args.label, args.label_b,
-                                            X_with_canaries[:-len(X_canary)],
-                                            y_with_canaries[:-len(X_canary)],
-                                            device)
-    else:
-        train_briefly(model_calibrate, X_with_canaries, y_with_canaries, device, args.n_epochs, args.lr, args.batch_size)
+    # Check final gradient norms on trained model
+    print(f"\nFinal canary gradient norms on trained model:")
+    _check_canary_grads_at_epoch(model_calibrate, mean_normalized, args.alpha, beta,
+                                args.label, args.label_b,
+                                X, y, device)
 
     out_path = output_dir / 'input_cancelling_canaries.pt'
     torch.save({
