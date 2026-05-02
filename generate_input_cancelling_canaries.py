@@ -104,24 +104,22 @@ def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_si
     return l2, linf
 
 
-def _check_canary_grads_at_epoch(model, hot_dim, beta, label_b, X_ref, y_ref, device, n_group_a):
-    """Quick check of Group A and B gradient norms at current epoch."""
+def _check_canary_grads_at_epoch(model, mean_normalized, alpha, beta, label_a, label_b, X_ref, y_ref, device):
+    """Quick check of Group A and B gradient norms at current epoch (dense canary version)."""
     input_dim = X_ref.shape[1]
     model.eval()
 
-    # Group A: x = alpha * e_hot_dim
-    x_a = torch.zeros(1, input_dim, device=device)
-    x_a[0, hot_dim] = 0.9  # matching default alpha
-    y_a = torch.tensor([0], device=device)  # matching default label
+    # Group A: dense vector scaled by alpha
+    x_a = (mean_normalized * alpha).unsqueeze(0).to(device)
+    y_a = torch.tensor([label_a], device=device)
     model.zero_grad()
     F.cross_entropy(model(x_a), y_a).backward()
     flat_a = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
     linf_a = float(flat_a.abs().max().item())
     model.zero_grad()
 
-    # Group B: x = beta * e_hot_dim
-    x_b = torch.zeros(1, input_dim, device=device)
-    x_b[0, hot_dim] = beta
+    # Group B: dense vector scaled by beta
+    x_b = (mean_normalized * beta).unsqueeze(0).to(device)
     y_b = torch.tensor([label_b], device=device)
     model.zero_grad()
     F.cross_entropy(model(x_b), y_b).backward()
@@ -129,7 +127,7 @@ def _check_canary_grads_at_epoch(model, hot_dim, beta, label_b, X_ref, y_ref, de
     linf_b = float(flat_b.abs().max().item())
     model.zero_grad()
 
-    print(f"  GroupA (α=0.9): L∞={linf_a:.6f}")
+    print(f"  GroupA (α={alpha:.2f}): L∞={linf_a:.6f}")
     print(f"  GroupB (β={beta:.2f}): L∞={linf_b:.6f}  (ratio B/A: {linf_b/linf_a if linf_a > 0 else float('inf'):.2f}x)")
 
 
@@ -263,22 +261,29 @@ def main():
     hot_dim = find_hot_input_dim(model, X, y, device)
 
     beta = args.beta if args.beta is not None else (args.n_group_a * args.alpha / args.n_group_b)
-    print(f"\nGroup A: {args.n_group_a} canaries, input[{hot_dim}] = +{args.alpha:.4f}, label={args.label}")
-    print(f"Group B: {args.n_group_b} canaries, input[{hot_dim}] = +{beta:.4f},  label={args.label_b}  ← positive keeps ReLU alive")
-    print(f"Cancellation check: {args.n_group_a} * {args.alpha} = {args.n_group_b} * {beta:.4f}  "
+    print(f"\nDense Canary Design (using normalized mean sample):")
+    print(f"Group A: {args.n_group_a} canaries, x = mean_normalized * {args.alpha:.4f}, label={args.label}")
+    print(f"Group B: {args.n_group_b} canaries, x = mean_normalized * {beta:.4f},  label={args.label_b}")
+    print(f"Cancellation check: {args.n_group_a} * {args.alpha:.4f} ≈ {args.n_group_b} * {beta:.4f}  "
           f"→ {args.n_group_a * args.alpha:.4f} vs {args.n_group_b * beta:.4f}")
     print(f"Note: cancellation is approximate (δ_A ≈ −δ_B for different labels, exact only at K=2)")
 
-    # Build group A: 1-hot in input space at hot_dim with value +alpha
-    x_a = torch.zeros(input_dim)
-    x_a[hot_dim] = args.alpha
+    # Build dense canaries: use mean of training data as base, scaled by alpha/beta
+    # This creates dense vectors that interact with all model parameters
+    mean_sample = X.mean(dim=0)
+    mean_norm = mean_sample.norm(p=2).item()
+    if mean_norm > 0:
+        mean_normalized = mean_sample / mean_norm
+    else:
+        mean_normalized = torch.ones(input_dim) / np.sqrt(input_dim)
+
+    # Group A: scaled mean sample with label_a
+    x_a = mean_normalized * args.alpha
     X_a = x_a.unsqueeze(0).expand(args.n_group_a, -1).clone()
     y_a = torch.full((args.n_group_a,), args.label, dtype=torch.long)
 
-    # Build group B: 1-hot in input space at hot_dim with value +beta (positive — keeps ReLU neurons alive
-    # so the first-layer gradient magnitude ∝ beta and the L∞ defence can detect it)
-    x_b = torch.zeros(input_dim)
-    x_b[hot_dim] = beta
+    # Group B: scaled mean sample with label_b (different label for opposing gradient)
+    x_b = mean_normalized * beta
     X_b = x_b.unsqueeze(0).expand(args.n_group_b, -1).clone()
     y_b = torch.full((args.n_group_b,), args.label_b, dtype=torch.long)
 
@@ -322,10 +327,11 @@ def main():
             # Check canary gradients at each epoch
             if epoch < 5 or epoch % 20 == 0 or epoch == args.n_epochs - 1:
                 print(f"\n[Epoch {epoch}] Checking canary gradient norms …")
-                _check_canary_grads_at_epoch(model_calibrate, hot_dim, beta, args.label_b,
+                _check_canary_grads_at_epoch(model_calibrate, mean_normalized, args.alpha, beta,
+                                            args.label, args.label_b,
                                             X_with_canaries[:-len(X_canary)],
                                             y_with_canaries[:-len(X_canary)],
-                                            device, args.n_group_a)
+                                            device)
     else:
         train_briefly(model_calibrate, X_with_canaries, y_with_canaries, device, args.n_epochs, args.lr, args.batch_size)
 
