@@ -118,16 +118,25 @@ def check_canary_calibration(model, hot_dim, beta, label_b, X_ref, y_ref, device
     input_dim = X_ref.shape[1]
     model.train()
 
-    # Group B unit canary: x = e_hot_dim (value 1.0 at hot_dim, zero elsewhere)
+    # Group B canary: x = beta * e_hot_dim (the actual canary input, not scaled unit)
+    x_b = torch.zeros(1, input_dim, device=device)
+    x_b[0, hot_dim] = beta
+    y_b = torch.tensor([label_b], device=device)
+    model.zero_grad()
+    F.cross_entropy(model(x_b), y_b).backward()
+    flat_b_actual = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+    linf_b = float(flat_b_actual.abs().max().item())
+    l2_b = float(flat_b_actual.norm(2).item())
+    model.zero_grad()
+
+    # Also measure unit input to expose how much scaling actually helps
     x_unit = torch.zeros(1, input_dim, device=device)
     x_unit[0, hot_dim] = 1.0
-    y_b = torch.tensor([label_b], device=device)
     model.zero_grad()
     F.cross_entropy(model(x_unit), y_b).backward()
     flat_unit = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
     linf_unit = float(flat_unit.abs().max().item())
     l2_unit = float(flat_unit.norm(2).item())
-    linf_b = beta * linf_unit
     model.zero_grad()
 
     # Regular class-{label_b} data
@@ -149,7 +158,7 @@ def check_canary_calibration(model, hot_dim, beta, label_b, X_ref, y_ref, device
 
     print(f"\n=== Group B canary calibration (hot_dim={hot_dim}, β={beta:.2f}) ===")
     print(f"  Unit-input gradient:  L∞={linf_unit:.6f}  L2={l2_unit:.6f}")
-    print(f"  Group B L∞ (β×unit): {linf_b:.6f}")
+    print(f"  Group B L∞ (β×unit): {linf_b:.6f}  L2={l2_b:.6f}")
     print(f"  Class-{label_b} regular:  p50={np.percentile(linf_reg,50):.6f}  p90={p90:.6f}  max={linf_reg.max():.6f}")
     print(f"  Group B beats {n_samp - rank}/{n_samp} regular class-{label_b} samples")
     if rank < defense_k:
