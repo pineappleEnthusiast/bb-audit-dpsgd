@@ -28,6 +28,7 @@ largest average |∂L/∂x_j| across a sample of training data.
 import argparse
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 import numpy as np
 from pathlib import Path
 from torch.utils.data import TensorDataset, DataLoader
@@ -103,6 +104,35 @@ def measure_grad_norm_distribution(model, X, y, device, n_samples=2000, batch_si
     return l2, linf
 
 
+def _check_canary_grads_at_epoch(model, hot_dim, beta, label_b, X_ref, y_ref, device, n_group_a):
+    """Quick check of Group A and B gradient norms at current epoch."""
+    input_dim = X_ref.shape[1]
+    model.eval()
+
+    # Group A: x = alpha * e_hot_dim
+    x_a = torch.zeros(1, input_dim, device=device)
+    x_a[0, hot_dim] = 0.9  # matching default alpha
+    y_a = torch.tensor([0], device=device)  # matching default label
+    model.zero_grad()
+    F.cross_entropy(model(x_a), y_a).backward()
+    flat_a = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+    linf_a = float(flat_a.abs().max().item())
+    model.zero_grad()
+
+    # Group B: x = beta * e_hot_dim
+    x_b = torch.zeros(1, input_dim, device=device)
+    x_b[0, hot_dim] = beta
+    y_b = torch.tensor([label_b], device=device)
+    model.zero_grad()
+    F.cross_entropy(model(x_b), y_b).backward()
+    flat_b = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+    linf_b = float(flat_b.abs().max().item())
+    model.zero_grad()
+
+    print(f"  GroupA (α=0.9): L∞={linf_a:.6f}")
+    print(f"  GroupB (β={beta:.2f}): L∞={linf_b:.6f}  (ratio B/A: {linf_b/linf_a if linf_a > 0 else float('inf'):.2f}x)")
+
+
 def check_canary_calibration(model, hot_dim, beta, label_b, X_ref, y_ref, device,
                               n_group_a, alpha, defense_k=5, n_regular=500):
     """Measure group B's actual gradient L∞ vs regular class-{label_b} data.
@@ -176,9 +206,22 @@ def main():
     parser.add_argument('--model_name', default='mlp', choices=list(Models.keys()))
     parser.add_argument('--data_name', default='purchase')
     parser.add_argument('--out_dim', type=int, default=None)
-    parser.add_argument('--n_epochs', type=int, default=5)
-    parser.add_argument('--lr', type=float, default=10.0)
-    parser.add_argument('--batch_size', type=int, default=12143)
+    parser.add_argument('--n_epochs', type=int, default=100,
+                        help='epochs of training WITH canaries for calibration (match actual training)')
+    parser.add_argument('--lr', type=float, default=0.5,
+                        help='learning rate')
+    parser.add_argument('--batch_size', type=int, default=12143,
+                        help='batch size for Poisson sampling')
+    parser.add_argument('--defense', action='store_true', default=True,
+                        help='enable gradient filtering defense during calibration')
+    parser.add_argument('--defense_k', type=int, default=5,
+                        help='number of top samples to filter per epoch')
+    parser.add_argument('--defense_score_fn', type=str, default='grad_norm_unclipped',
+                        help='defense scoring function')
+    parser.add_argument('--defense_score_norm', type=str, default='linf',
+                        help='defense score norm type')
+    parser.add_argument('--sampling', type=str, default='poisson',
+                        help='sampling strategy (poisson or full)')
     parser.add_argument('--n_group_a', type=int, default=2000,
                         help='canaries in group A (+alpha, evades defence)')
     parser.add_argument('--n_group_b', type=int, default=200,
@@ -214,8 +257,8 @@ def main():
 
     measure_grad_norm_distribution(model, X, y, device)
 
-    print(f"Training briefly ({args.n_epochs} epochs) to identify hot input dimension …")
-    train_briefly(model, X, y, device, args.n_epochs, args.lr, args.batch_size)
+    print(f"Training briefly (1 epoch) to identify hot input dimension …")
+    train_briefly(model, X, y, device, 1, args.lr, min(args.batch_size, len(X)))
 
     hot_dim = find_hot_input_dim(model, X, y, device)
 
@@ -225,12 +268,6 @@ def main():
     print(f"Cancellation check: {args.n_group_a} * {args.alpha} = {args.n_group_b} * {beta:.4f}  "
           f"→ {args.n_group_a * args.alpha:.4f} vs {args.n_group_b * beta:.4f}")
     print(f"Note: cancellation is approximate (δ_A ≈ −δ_B for different labels, exact only at K=2)")
-
-    check_canary_calibration(
-        model, hot_dim, beta, args.label_b, X, y, device,
-        n_group_a=args.n_group_a, alpha=args.alpha,
-        defense_k=5,
-    )
 
     # Build group A: 1-hot in input space at hot_dim with value +alpha
     x_a = torch.zeros(input_dim)
@@ -247,6 +284,50 @@ def main():
 
     X_canary = torch.vstack([X_a, X_b])
     y_canary = torch.cat([y_a, y_b])
+
+    # Calibrate on model trained WITH canaries, matching actual training scenario
+    print(f"\nCalibrating with canaries in training data ({args.n_epochs} epochs, lr={args.lr}, batch_size={args.batch_size}, sampling={args.sampling}) …")
+    model_calibrate = Models[args.model_name](X.shape, out_dim=out_dim).to(device)
+    xavier_init_model(model_calibrate)
+    X_with_canaries = torch.cat([X, X_canary], dim=0)
+    y_with_canaries = torch.cat([y, y_canary], dim=0)
+
+    # Train with Poisson sampling to match actual training
+    if args.sampling == 'poisson':
+        _q = float(args.batch_size) / float(len(X_with_canaries))
+        _poisson_n_batches = max(1, int(len(X_with_canaries) / float(args.batch_size)))
+        print(f"  Poisson sampling: q={_q:.4f}, expected batches per epoch={_poisson_n_batches}")
+
+        dataset = TensorDataset(X_with_canaries, y_with_canaries)
+        loader = DataLoader(dataset, batch_size=len(X_with_canaries), shuffle=False)
+
+        optimizer = torch.optim.SGD(model_calibrate.parameters(), lr=float(args.lr))
+        criterion = torch.nn.CrossEntropyLoss()
+
+        for epoch in range(int(args.n_epochs)):
+            model_calibrate.train()
+            for _ in range(_poisson_n_batches):
+                mask = torch.rand(len(X_with_canaries)) < _q
+                idx = torch.where(mask)[0]
+                if len(idx) == 0:
+                    continue
+                X_batch = X_with_canaries[idx].to(device)
+                y_batch = y_with_canaries[idx].to(device)
+                optimizer.zero_grad()
+                loss = criterion(model_calibrate(X_batch), y_batch)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model_calibrate.parameters(), 1.0)
+                optimizer.step()
+
+            # Check canary gradients at each epoch
+            if epoch < 5 or epoch % 20 == 0 or epoch == args.n_epochs - 1:
+                print(f"\n[Epoch {epoch}] Checking canary gradient norms …")
+                _check_canary_grads_at_epoch(model_calibrate, hot_dim, beta, args.label_b,
+                                            X_with_canaries[:-len(X_canary)],
+                                            y_with_canaries[:-len(X_canary)],
+                                            device, args.n_group_a)
+    else:
+        train_briefly(model_calibrate, X_with_canaries, y_with_canaries, device, args.n_epochs, args.lr, args.batch_size)
 
     out_path = output_dir / 'input_cancelling_canaries.pt'
     torch.save({
