@@ -1,0 +1,59 @@
+Validate whatever epsilon you get for GDP by checking the corresponding .o file in the status folder. Some scripts may not have a .o file and that's okay.
+
+
+
+1. Tradeoff Curves
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/tradeoff_curves/
+    - purchase audits are in /scratch/09717/saloni/bb-audit-dpsgd/purchase_audit/
+2. Non-private tradeoff curves
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/non_private_audits/
+    - purchase audits are in /scratch/09717/saloni/bb-audit-dpsgd/purchase_audit/
+3. Purchase with random vector input
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/purchase_random_input_eps10/
+4. Different scoring functions
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/cifar10_scoring_functions_unclipped/
+5. 1000 Reps
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/mnist_1000_reps/
+6. Shuffled Sampling
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/mnist_400_reps_shuffle/
+9. Mislabeled Multi-Canary Attack
+    - /scratch/09717/saloni/bb-audit-dpsgd/cifar10_mislabeled_multi_defense_eps10
+    - /scratch/09717/saloni/bb-audit-dpsgd/cifar10_mislabeled_multi_no_defense_eps10
+10. Mislabeled O(1) Audit MNIST
+    - scratch/09717/saloni/bb-audit-dpsgd/o1_audit
+11. Mislabeled O(1) Audit CIFAR10
+    - scratch/09717/saloni/bb-audit-dpsgd/o1_audit
+14. Fairness Audit
+    - /scratch/09717/saloni/bb-audit-dpsgd/fairness_audits
+    - /scratch/09717/saloni/bb-audit-dpsgd/majority_canary_colored_mnist_eps10
+    - /scratch/09717/saloni/bb-audit-dpsgd/minority_canary_colored_mnist_eps10
+15. Do we expose anyone else? (using the all_losses.npy files)
+    - /scratch/09717/saloni/bb-audit-dpsgd/tradeoff_curves/mnist_defense_eps10/
+    - /scratch/09717/saloni/bb-audit-dpsgd/tradeoff_curves/mnist_no_defense_eps10/
+    - /scratch/09717/saloni/bb-audit-dpsgd/tradeoff_curves/cifar10_cnn_defense_eps10/
+    - /scratch/09717/saloni/bb-audit-dpsgd/tradeoff_curves/cifar10_cnn_no_defense_eps10/
+16. ClipBKD MNIST
+    - /scratch/09717/saloni/bb-audit-dpsgd/clipbkd_mnist_eps10
+17. FGSM MNIST
+    - /scratch/09717/saloni/bb-audit-dpsgd/fgsm_mnist_eps10
+18. Mislabeled MNIST
+    - /scratch/09717/saloni/bb-audit-dpsgd/mislabeled_mnist_eps10
+
+
+PENDING:
+1. Fixed Point Attack Audit
+2. HAMP Audit
+3. Gradient Cancelling Attack
+    - all subfolders are in /scratch/09717/saloni/bb-audit-dpsgd/gradient_cancelling_canaries/
+4. Gradient Bandwidth Attack
+5. Input Space Cancelling with Purchase
+
+
+Things you will NOT find in my folder, but in your own because you ran them. You can find the file paths by looking at the slurm scripts you launched:
+1. Global filter ablations
+2. Varying Defense bandwidth
+3. Varying filter epochs
+4. Blank alpha ablations
+5. FGSM CIFAR10
+6. Mislabeled CIFAR10
+7. ClipBKD CIFAR10
