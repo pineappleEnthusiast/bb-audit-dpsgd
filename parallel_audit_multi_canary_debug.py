@@ -516,6 +516,30 @@ def train_model_multi_canary(
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
+        # DEBUG: at epoch 1, manually compute gradient norms for one rep from each group
+        if epoch == 1 and canary_indices_np is not None and canary_group_meta is not None:
+            n_group_a = canary_group_meta.get('n_group_a')
+            rep_a_idx = canary_indices_np[0]
+            rep_b_idx = canary_indices_np[n_group_a] if n_group_a is not None and n_group_a < len(canary_indices_np) else None
+
+            def _manual_grad_linf(idx):
+                model.eval()
+                x = X[idx].unsqueeze(0).to(dev)
+                lbl = y[idx].unsqueeze(0).to(dev)
+                model.zero_grad()
+                F.cross_entropy(model(x), lbl).backward()
+                flat = torch.cat([p.grad.view(-1) for p in model.parameters() if p.grad is not None])
+                model.zero_grad()
+                model.train()
+                return float(flat.abs().max().item())
+
+            linf_a = _manual_grad_linf(rep_a_idx)
+            print(f"\n[DEBUG epoch {epoch}] Manual grad L∞: GroupA(idx={rep_a_idx})={linf_a:.6f}", end="")
+            if rep_b_idx is not None:
+                linf_b = _manual_grad_linf(rep_b_idx)
+                print(f"  GroupB(idx={rep_b_idx})={linf_b:.6f}", end="")
+            print()
+
         if sampling == 'poisson':
             def _poisson_iter():
                 for _ in range(_poisson_n_batches):
