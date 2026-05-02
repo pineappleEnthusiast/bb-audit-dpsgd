@@ -203,6 +203,8 @@ def _load_canaries_from_pt_dict(pt_path: str, ref_X: torch.Tensor):
         'n_canaries_loaded': int(X_canary.shape[0]),
         'has_init_model_state': init_model_state is not None,
         'init_model_state': init_model_state,
+        'n_group_a': d.get('n_group_a', None),
+        'n_group_b': d.get('n_group_b', None),
     }
     return X_canary, y_canary, meta
 
@@ -393,6 +395,7 @@ def train_model_multi_canary(
     alignment_proj_seed: int = 0,
     grad_scatter_k: int = 5,
     rank: int = 0,
+    canary_group_meta: dict | None = None,
 ):
     """Train a model with the same core logic as parallel_audit_model.train_model,
     but extended to track multiple canaries.
@@ -665,6 +668,30 @@ def train_model_multi_canary(
                 defense_cfg=defense_cfg,
                 defense_apply_ascent=bool(defense_apply_ascent),
             )
+
+            # DEBUG: Log representative canary scores at each batch
+            if canary_indices_np is not None and len(canary_indices_np) > 0 and canary_group_meta is not None:
+                batch_indices = global_indices.cpu().numpy()
+                n_group_a = canary_group_meta.get('n_group_a')
+                n_group_b = canary_group_meta.get('n_group_b')
+
+                # Identify representative canaries (first from each group)
+                rep_a_idx = canary_indices_np[0] if n_group_a is None else canary_indices_np[0]
+                rep_b_idx = canary_indices_np[n_group_a] if n_group_a is not None and n_group_a < len(canary_indices_np) else None
+
+                # Check if representatives are in this batch
+                rep_a_in_batch = rep_a_idx in batch_indices
+                rep_b_in_batch = rep_b_idx in batch_indices if rep_b_idx is not None else False
+
+                if rep_a_in_batch or rep_b_in_batch:
+                    print(f"[DEBUG] Epoch {epoch}:", end=" ")
+                    if rep_a_in_batch:
+                        score_a = float(scores[rep_a_idx])
+                        print(f"GroupA(idx={rep_a_idx})={score_a:.6f}", end=" | ")
+                    if rep_b_in_batch:
+                        score_b = float(scores[rep_b_idx])
+                        print(f"GroupB(idx={rep_b_idx})={score_b:.6f}", end=" | ")
+                    print(f"Batch p90={np.percentile(scores, 90):.6f}")
 
             # Update projection matrices if they were lazily created in dpsgd.py
             if defense_cfg.grad_dir_proj is not None:
@@ -1238,6 +1265,7 @@ def main():
                 global_idx_to_grad=global_idx_to_grad if (args.target_type == 'gradient_space_canary' and world == 'in') else None,
                 sampling=args.sampling,
                 rank=rank,
+                canary_group_meta=canary_meta if (world == 'in') else None,
             )
 
             if args.target_type == 'gradient_space_canary':
