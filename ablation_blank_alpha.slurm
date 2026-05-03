@@ -12,7 +12,7 @@
 module load cuda/12.4
 
 set -e
-cd $SCRATCH
+cd $WORK
 eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
@@ -26,7 +26,7 @@ MAX_GRAD_NORM=1
 EPSILON=10.0
 DELTA=1e-5
 SEED=0
-TARGET_TYPE="mislabeled_alpha"
+TARGET_TYPE="mislabeled"
 MISLABELED_TARGET_CLASS=1     # wrong label always assigned to the canary
 DEFENSE_SCORE_FN="grad_norm_unclipped"
 DEFENSE_SCORE_NORM="linf"

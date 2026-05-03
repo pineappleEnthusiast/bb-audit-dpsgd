@@ -6,13 +6,13 @@
 #SBATCH -N 5
 #SBATCH --ntasks-per-node=1
 #SBATCH -t 5:00:00
-#SBATCH -A ASC25102
+#SBATCH -A ASC25081
 #SBATCH --array=0-4
 
 module load cuda/12.4
 
 set -e
-cd $SCRATCH
+cd $WORK
 eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
