@@ -1,11 +1,12 @@
 """
-Compute empirical epsilon bounds for a single experiment folder.
+Compute per-sample empirical epsilon using all_losses_in/out.npy.
 
-Given a results folder with all_losses_in.npy and all_losses_out.npy,
-compute empirical epsilon via GDP and CP methods with and without holdout splits.
+Given a results folder with all_losses_in.npy and all_losses_out.npy of shape
+(n_reps, n_samples), compute per-sample empirical epsilon via GDP or CP and
+report the maximum (worst-case exposed sample).
 
-Holdout: 25%, 50%, 75% (threshold selected on fit set, evaluated on holdout).
-No holdout: fit and eval on full data (not a valid lower bound, but useful as upper bound).
+No holdout: fit and eval on full data (upper bound).
+Holdout 50%: threshold fit on 50% of reps, evaluated on remaining 50%.
 """
 
 import argparse
@@ -22,7 +23,7 @@ M = 200  # number of threshold grid points
 
 
 def _load_scores(data_dir):
-    """Load all_losses_in and all_losses_out from directory."""
+    """Load all_losses_in and all_losses_out, return as float64 arrays of shape (n_reps, n_samples)."""
     in_path = os.path.join(data_dir, 'all_losses_in.npy')
     out_path = os.path.join(data_dir, 'all_losses_out.npy')
 
@@ -50,173 +51,97 @@ def _make_scores_labels(scores_in, scores_out):
     return scores, labels
 
 
-def _fit_best_threshold_lib(fit_si, fit_so, alpha, delta, method, m=M):
-    """Find best threshold on fit set by searching over grid."""
-    thresholds = _build_threshold_grid(fit_si, fit_so, m)
-    scores, labels = _make_scores_labels(fit_si, fit_so)
-
+def _compute_eps_no_holdout_1d(si, so, method='GDP'):
+    """Compute no-holdout epsilon for a single sample's in/out score vectors."""
+    thresholds = _build_threshold_grid(si, so, M)
+    scores, labels = _make_scores_labels(si, so)
     best_eps = 0.0
-    best_threshold = None
     for t in thresholds:
-        eps = compute_eps_lower_from_mia_given_t(scores, labels, alpha, delta, t, method)
-        if not np.isnan(float(eps)) and float(eps) > best_eps:
-            best_eps = float(eps)
-            best_threshold = float(t)
-
-    return best_threshold, best_eps
-
-
-def _eval_threshold_lib(hold_si, hold_so, t, alpha, delta, method):
-    """Evaluate a fixed threshold on holdout using library method."""
-    if t is None:
-        return 0.0
-    scores, labels = _make_scores_labels(hold_si, hold_so)
-    eps = compute_eps_lower_from_mia_given_t(scores, labels, alpha, delta, t, method)
-    return float(eps) if not np.isnan(float(eps)) else 0.0
-
-
-def _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed):
-    """Split scores into fit and holdout sets."""
-    n = len(scores_in)
-    if n != len(scores_out):
-        raise ValueError(f'Expected equal in/out sample sizes, got {n} and {len(scores_out)}')
-    if not (0.0 < float(holdout_frac) < 1.0):
-        raise ValueError(f'holdout_frac must be in (0, 1), got {holdout_frac}')
-    if n < 2:
-        raise ValueError('Need at least 2 scores per side for fit/holdout split')
-
-    rng = np.random.default_rng(int(seed))
-    indices = rng.permutation(n)
-    n_holdout = max(1, int(round(n * float(holdout_frac))))
-    n_holdout = min(n_holdout, n - 1)
-    hold_idx = indices[:n_holdout]
-    fit_idx = indices[n_holdout:]
-    return (
-        scores_in[fit_idx],
-        scores_out[fit_idx],
-        scores_in[hold_idx],
-        scores_out[hold_idx],
-    )
-
-
-def compute_eps_with_holdout(scores_in, scores_out, holdout_frac, method='GDP', seed=0):
-    """
-    Compute eps by fitting threshold on fit set, evaluating on holdout.
-
-    method: 'GDP' or 'cp'
-    """
-    fit_si, fit_so, hold_si, hold_so = _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed)
-
-    # Find best threshold on fit set
-    best_threshold, _ = _fit_best_threshold_lib(fit_si, fit_so, GAMMA, DELTA, method, m=M)
-
-    # Evaluate on holdout
-    holdout_eps = _eval_threshold_lib(hold_si, hold_so, best_threshold, GAMMA, DELTA, method)
-    return holdout_eps
-
-
-def compute_eps_no_holdout(scores_in, scores_out, method='GDP'):
-    """
-    Compute eps by fitting and evaluating on full data (not a valid lower bound).
-    """
-    # Find best threshold on full data
-    best_threshold, best_eps = _fit_best_threshold_lib(scores_in, scores_out, GAMMA, DELTA, method, m=M)
+        eps = compute_eps_lower_from_mia_given_t(scores, labels, GAMMA, DELTA, t, method)
+        v = float(eps)
+        if not np.isnan(v) and v > best_eps:
+            best_eps = v
     return best_eps
 
 
-def _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method='GDP'):
-    """Find top-k thresholds ranked by eps on fit set."""
+def _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=0, method='GDP'):
+    """Compute holdout epsilon for a single sample's in/out score vectors."""
+    n = len(si)
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(n)
+    n_hold = max(1, min(int(round(n * holdout_frac)), n - 1))
+    hold_idx, fit_idx = idx[:n_hold], idx[n_hold:]
+
+    fit_si, fit_so = si[fit_idx], so[fit_idx]
+    hold_si, hold_so = si[hold_idx], so[hold_idx]
+
     thresholds = _build_threshold_grid(fit_si, fit_so, M)
-    scores, labels = _make_scores_labels(fit_si, fit_so)
-
-    eps_by_threshold = []
+    fit_scores, fit_labels = _make_scores_labels(fit_si, fit_so)
+    best_t, best_eps_fit = None, 0.0
     for t in thresholds:
-        eps = compute_eps_lower_from_mia_given_t(scores, labels, GAMMA, DELTA, t, method)
-        if not np.isnan(float(eps)):
-            eps_by_threshold.append((float(eps), float(t)))
+        eps = compute_eps_lower_from_mia_given_t(fit_scores, fit_labels, GAMMA, DELTA, t, method)
+        v = float(eps)
+        if not np.isnan(v) and v > best_eps_fit:
+            best_eps_fit, best_t = v, t
 
-    eps_by_threshold.sort(reverse=True)
-    return [t for _, t in eps_by_threshold[:k]]
+    if best_t is None:
+        return 0.0
 
-
-def compute_eps_top_k_holdout(scores_in, scores_out, holdout_frac, method='GDP', seed=0, k=5):
-    """
-    Find top-k thresholds on fit set, evaluate all on holdout, report max eps.
-
-    This tests robustness: instead of trusting a single fit-set threshold,
-    try multiple and see which generalizes best to holdout.
-    """
-    fit_si, fit_so, hold_si, hold_so = _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed)
-
-    # Find top-k thresholds on fit set
-    top_thresholds = _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method)
-
-    # Evaluate each on holdout set
-    holdout_eps_vals = []
-    for t in top_thresholds:
-        eps = _eval_threshold_lib(hold_si, hold_so, t, GAMMA, DELTA, method)
-        holdout_eps_vals.append(eps)
-
-    max_holdout_eps = float(np.max(holdout_eps_vals)) if holdout_eps_vals else 0.0
-    return max_holdout_eps
+    hold_scores, hold_labels = _make_scores_labels(hold_si, hold_so)
+    eps = compute_eps_lower_from_mia_given_t(hold_scores, hold_labels, GAMMA, DELTA, best_t, method)
+    v = float(eps)
+    return v if not np.isnan(v) else 0.0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compute empirical epsilon bounds (GDP and CP, with/without holdout) using all_losses_in/out.npy.'
+        description='Compute per-sample empirical epsilon using all_losses_in/out.npy and report the max.'
     )
     parser.add_argument(
         'data_dir',
-        help='Directory containing all_losses_in.npy and all_losses_out.npy',
+        help='Directory containing all_losses_in.npy and all_losses_out.npy of shape (n_reps, n_samples)',
     )
     parser.add_argument('--seed', type=int, default=0, help='Random seed for holdout split')
+    parser.add_argument('--method', type=str, default='GDP', choices=['GDP', 'cp'],
+                        help='Epsilon computation method')
     args = parser.parse_args()
 
-    scores_in, scores_out = _load_scores(args.data_dir)
+    all_in, all_out = _load_scores(args.data_dir)
+    n_reps, n_samples = all_in.shape
 
     print(f"Data dir: {args.data_dir}")
-    print(f"scores_in:  n={len(scores_in)}  mean={scores_in.mean():.4f}  std={scores_in.std():.4f}")
-    print(f"scores_out: n={len(scores_out)}  mean={scores_out.mean():.4f}  std={scores_out.std():.4f}")
-    print(f"delta={DELTA}  gamma={GAMMA}  m={M}\n")
+    print(f"Shape: ({n_reps} reps, {n_samples} samples)  delta={DELTA}  gamma={GAMMA}")
+    print(f"Method: {args.method}")
+    print(f"Computing per-sample epsilon (no-holdout and 50% holdout)...\n")
 
-    # Sign-flip so larger scores always mean "more likely to be IN".
-    si, so = scores_in.copy(), scores_out.copy()
-    if si.mean() < so.mean():
-        si, so = -si, -so
+    # Sign-flip convention: ensure in-world has higher loss on average
+    if all_in.mean() < all_out.mean():
+        all_in, all_out = -all_in, -all_out
 
-    results = {}
+    no_holdout_eps = np.zeros(n_samples)
+    holdout_eps    = np.zeros(n_samples)
 
-    # No holdout (upper bound)
-    results['GDP no holdout'] = compute_eps_no_holdout(si, so, method='GDP')
-    results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp')
+    for i in range(n_samples):
+        si, so = all_in[:, i], all_out[:, i]
+        no_holdout_eps[i] = _compute_eps_no_holdout_1d(si, so, method=args.method)
+        holdout_eps[i]    = _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=args.seed, method=args.method)
 
-    # Holdout splits
-    for holdout_pct in [25, 50, 75]:
-        holdout_frac = float(holdout_pct) / 100.0
-        results[f'GDP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='GDP', seed=args.seed)
-        results[f'CP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='cp', seed=args.seed)
+        if (i + 1) % 5000 == 0:
+            print(f"  [{i+1}/{n_samples}] max no-holdout so far: {no_holdout_eps[:i+1].max():.4f}  "
+                  f"max holdout so far: {holdout_eps[:i+1].max():.4f}")
 
-    # Print first table (standard evaluation)
-    print(f"{'Method':<20}  {'Empirical eps':>14}")
-    print('-' * 37)
-    for label in ['GDP no holdout', 'GDP 25%', 'GDP 50%', 'GDP 75%', 'CP no holdout', 'CP 25%', 'CP 50%', 'CP 75%']:
-        eps = results[label]
-        print(f"{label:<20}  {eps:14.6f}")
+    max_nh_idx = int(np.argmax(no_holdout_eps))
+    max_h_idx  = int(np.argmax(holdout_eps))
 
-    # Compute second table (top-5 thresholds on fit, best on holdout)
-    print(f"\n(Top-5 evaluation: top-5 thresholds from fit set, max eps on holdout)")
-    top_k_results = {}
-    for holdout_pct in [25, 50, 75]:
-        holdout_frac = float(holdout_pct) / 100.0
-        top_k_results[f'GDP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='GDP', seed=args.seed, k=5)
-        top_k_results[f'CP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='cp', seed=args.seed, k=5)
-
-    # Print second table
-    print(f"\n{'Method':<20}  {'Empirical eps':>14}")
-    print('-' * 37)
-    for label in ['GDP 25%', 'GDP 50%', 'GDP 75%', 'CP 25%', 'CP 50%', 'CP 75%']:
-        eps = top_k_results[label]
-        print(f"{label:<20}  {eps:14.6f}")
+    print(f"\n{'='*55}")
+    print(f"{'Metric':<32}  {'Value':>10}  {'Sample idx':>10}")
+    print('-' * 55)
+    print(f"{'Max eps (no holdout)':<32}  {no_holdout_eps[max_nh_idx]:10.6f}  {max_nh_idx:>10}")
+    print(f"{'Max eps (50% holdout)':<32}  {holdout_eps[max_h_idx]:10.6f}  {max_h_idx:>10}")
+    print(f"{'Mean eps (no holdout)':<32}  {no_holdout_eps.mean():10.6f}")
+    print(f"{'Mean eps (50% holdout)':<32}  {holdout_eps.mean():10.6f}")
+    print(f"{'Median eps (no holdout)':<32}  {np.median(no_holdout_eps):10.6f}")
+    print(f"{'% samples with eps>0 (no holdout)':<32}  {(no_holdout_eps > 0).mean()*100:9.2f}%")
 
 
 if __name__ == '__main__':
