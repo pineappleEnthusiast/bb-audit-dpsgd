@@ -7,12 +7,15 @@ report the maximum (worst-case exposed sample).
 
 No holdout: fit and eval on full data (upper bound).
 Holdout 50%: threshold fit on 50% of reps, evaluated on remaining 50%.
+
+Uses multiprocessing to parallelize across samples.
 """
 
 import argparse
 import os
 import sys
 import numpy as np
+from multiprocessing import Pool, cpu_count
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
@@ -93,6 +96,14 @@ def _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=0, method='GDP'):
     return v if not np.isnan(v) else 0.0
 
 
+def _worker(args):
+    """Top-level worker function for multiprocessing (must be picklable)."""
+    si, so, method, seed = args
+    nh = _compute_eps_no_holdout_1d(si, so, method=method)
+    h  = _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=seed, method=method)
+    return nh, h
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Compute per-sample empirical epsilon using all_losses_in/out.npy and report the max.'
@@ -104,6 +115,8 @@ def main():
     parser.add_argument('--seed', type=int, default=0, help='Random seed for holdout split')
     parser.add_argument('--method', type=str, default='GDP', choices=['GDP', 'cp'],
                         help='Epsilon computation method')
+    parser.add_argument('--workers', type=int, default=cpu_count(),
+                        help='Number of parallel workers (default: all CPUs)')
     args = parser.parse_args()
 
     all_in, all_out = _load_scores(args.data_dir)
@@ -111,24 +124,22 @@ def main():
 
     print(f"Data dir: {args.data_dir}")
     print(f"Shape: ({n_reps} reps, {n_samples} samples)  delta={DELTA}  gamma={GAMMA}")
-    print(f"Method: {args.method}")
+    print(f"Method: {args.method}  workers: {args.workers}")
     print(f"Computing per-sample epsilon (no-holdout and 50% holdout)...\n")
 
     # Sign-flip convention: ensure in-world has higher loss on average
     if all_in.mean() < all_out.mean():
         all_in, all_out = -all_in, -all_out
 
-    no_holdout_eps = np.zeros(n_samples)
-    holdout_eps    = np.zeros(n_samples)
+    # Build list of per-sample args for workers
+    tasks = [(all_in[:, i].copy(), all_out[:, i].copy(), args.method, args.seed)
+             for i in range(n_samples)]
 
-    for i in range(n_samples):
-        si, so = all_in[:, i], all_out[:, i]
-        no_holdout_eps[i] = _compute_eps_no_holdout_1d(si, so, method=args.method)
-        holdout_eps[i]    = _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=args.seed, method=args.method)
+    with Pool(processes=args.workers) as pool:
+        results = pool.map(_worker, tasks, chunksize=max(1, n_samples // (args.workers * 4)))
 
-        if (i + 1) % 5000 == 0:
-            print(f"  [{i+1}/{n_samples}] max no-holdout so far: {no_holdout_eps[:i+1].max():.4f}  "
-                  f"max holdout so far: {holdout_eps[:i+1].max():.4f}")
+    no_holdout_eps = np.array([r[0] for r in results])
+    holdout_eps    = np.array([r[1] for r in results])
 
     max_nh_idx = int(np.argmax(no_holdout_eps))
     max_h_idx  = int(np.argmax(holdout_eps))
