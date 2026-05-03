@@ -31,8 +31,8 @@ def _load_scores(data_dir):
     if not os.path.exists(out_path):
         raise FileNotFoundError(f"Could not find all_losses_out.npy in {data_dir}")
 
-    scores_in = np.load(in_path).astype(np.float64)
-    scores_out = np.load(out_path).astype(np.float64)
+    scores_in = np.load(in_path, allow_pickle=True).astype(np.float64)
+    scores_out = np.load(out_path, allow_pickle=True).astype(np.float64)
     return scores_in, scores_out
 
 
