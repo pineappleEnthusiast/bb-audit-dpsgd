@@ -1,158 +1,388 @@
 """
-Compute per-sample empirical epsilon using all_losses_in/out.npy.
+Cross-run per-sample empirical epsilon: no-defense vs defense.
 
-Given a results folder with all_losses_in.npy and all_losses_out.npy of shape
-(n_reps, n_samples), compute per-sample empirical epsilon via GDP or CP and
-report the maximum (worst-case exposed sample).
+Takes two experiment directories (no_defense_dir, defense_dir), each containing
+all_losses_in.npy and all_losses_out.npy (shape: n_reps x n_samples), and
+computes four eps variants for every sample in both runs:
 
-No holdout: fit and eval on full data (upper bound).
-Holdout 50%: threshold fit on 50% of reps, evaluated on remaining 50%.
+  GDP no holdout  — optimize threshold on all reps, GDP conversion (inflated)
+  CP  no holdout  — optimize threshold on all reps, CP conversion  (inflated)
+  GDP 50% holdout — threshold fit on 50% of reps, evaluated on holdout (valid lb)
+  CP  50% holdout — threshold fit on 50% of reps, evaluated on holdout (valid lb)
 
-Uses multiprocessing to parallelize across samples.
+Primary question: for each method, is the defense problematic?
+
+  The defense is PROBLEMATIC if — after filtering — any sample in the dataset
+  achieves empirical eps greater than the canary's eps BEFORE the defense.
+
+  For each method:
+    eps_canary_no_defense  = canary's eps from no_defense_dir
+    max_eps_defense        = max eps over ALL samples in defense_dir
+    PROBLEMATIC if max_eps_defense > eps_canary_no_defense
+
+The canary is at index -1 by default (last sample). Override with --canary_idx.
+
+Parallelized across samples with multiprocessing.
 """
 
 import argparse
 import os
 import sys
+import time
+import multiprocessing as mp
 import numpy as np
-from multiprocessing import Pool, cpu_count
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from utils.audit import compute_eps_lower_from_mia, compute_eps_lower_from_mia_given_t
-
-DELTA = 1e-5
-GAMMA = 0.1
-M = 200  # number of threshold grid points
+from scipy.stats import beta as beta_dist, norm
 
 
-def _load_scores(data_dir):
-    """Load all_losses_in and all_losses_out, return as float64 arrays of shape (n_reps, n_samples)."""
-    in_path = os.path.join(data_dir, 'all_losses_in.npy')
-    out_path = os.path.join(data_dir, 'all_losses_out.npy')
+# ---------------------------------------------------------------------------
+# GDP vectorized eps
+# ---------------------------------------------------------------------------
 
-    if not os.path.exists(in_path):
-        raise FileNotFoundError(f"Could not find all_losses_in.npy in {data_dir}")
-    if not os.path.exists(out_path):
-        raise FileNotFoundError(f"Could not find all_losses_out.npy in {data_dir}")
-
-    scores_in = np.load(in_path, allow_pickle=True).astype(np.float64)
-    scores_out = np.load(out_path, allow_pickle=True).astype(np.float64)
-    return scores_in, scores_out
-
-
-def _build_threshold_grid(scores_in, scores_out, m):
-    """Build threshold grid as percentiles across both in and out."""
-    all_scores = np.concatenate([scores_in, scores_out])
-    percentiles = np.linspace(0.0, 100.0, num=int(m), endpoint=True)
-    return np.percentile(all_scores, percentiles)
-
-
-def _make_scores_labels(scores_in, scores_out):
-    """Concatenate in/out scores and labels (1 for in, 0 for out)."""
-    scores = np.concatenate([scores_in, scores_out]).astype(np.float32)
-    labels = np.concatenate([np.ones(len(scores_in)), np.zeros(len(scores_out))]).astype(np.int64)
-    return scores, labels
+def _beta_bounds(tp, fp, fn, tn, alpha):
+    """Clopper-Pearson upper bounds on FPR and FNR. Computed once, shared by GDP and CP."""
+    P = tp + fn
+    N = fp + tn
+    with np.errstate(invalid='ignore'):
+        fpr_upper = np.where(
+            (fp < N) & (N > 0),
+            beta_dist.ppf(1 - alpha, fp + 1, np.maximum(N - fp, 1e-12)),
+            1.0,
+        )
+        fnr_upper = np.where(
+            (fn < P) & (P > 0),
+            beta_dist.ppf(1 - alpha, fn + 1, np.maximum(P - fn, 1e-12)),
+            1.0,
+        )
+    return fpr_upper, fnr_upper
 
 
-def _compute_eps_no_holdout_1d(si, so, method='GDP'):
-    """Compute no-holdout epsilon for a single sample's in/out score vectors."""
-    thresholds = _build_threshold_grid(si, so, M)
-    scores, labels = _make_scores_labels(si, so)
-    best_eps = 0.0
-    for t in thresholds:
-        eps = compute_eps_lower_from_mia_given_t(scores, labels, GAMMA, DELTA, t, method)
-        v = float(eps)
-        if not np.isnan(v) and v > best_eps:
-            best_eps = v
-    return best_eps
+def _gdp_from_bounds(fpr_upper, fnr_upper, delta):
+    """GDP eps from pre-computed CP bounds."""
+    with np.errstate(invalid='ignore'):
+        mu_l = norm.ppf(1 - fpr_upper) - norm.ppf(fnr_upper)
+    mu_l = np.where(np.isfinite(mu_l), mu_l, 0.0)
+
+    eps = np.zeros_like(mu_l)
+    valid = mu_l > 0
+    if not valid.any():
+        return eps
+
+    mu_v = mu_l[valid]
+    lo = np.zeros_like(mu_v)
+    hi = np.full_like(mu_v, 50.0)
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        with np.errstate(over='ignore', invalid='ignore'):
+            f = (norm.cdf(-mid / mu_v + mu_v / 2)
+                 - np.exp(mid) * norm.cdf(-mid / mu_v - mu_v / 2)
+                 - delta)
+        f = np.where(np.isfinite(f), f, -1.0)
+        lo = np.where(f > 0, mid, lo)
+        hi = np.where(f > 0, hi, mid)
+
+    eps[valid] = 0.5 * (lo + hi)
+    return np.clip(eps, 0.0, None)
 
 
-def _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=0, method='GDP'):
-    """Compute holdout epsilon for a single sample's in/out score vectors."""
-    n = len(si)
+def _cp_from_bounds(fpr_upper, fnr_upper, delta):
+    """CP eps from pre-computed CP bounds."""
+    numerator = 1.0 - fnr_upper - delta
+    with np.errstate(divide='ignore', invalid='ignore'):
+        eps = np.where(
+            (numerator > 0) & (fpr_upper > 0),
+            np.log(numerator / np.maximum(fpr_upper, 1e-300)),
+            0.0,
+        )
+    return np.clip(eps, 0.0, None)
+
+
+# ---------------------------------------------------------------------------
+# Core per-sample computation
+# ---------------------------------------------------------------------------
+
+def _sweep_best_both(s_in, s_out, alpha, delta):
+    """Sweep thresholds + both directions; compute GDP and CP in one pass.
+
+    Returns ((gdp_eps, gdp_t, gdp_dir), (cp_eps, cp_t, cp_dir)).
+    beta_dist.ppf is called once per direction (shared between GDP and CP).
+    """
+    gdp_best = (0.0, None, +1.0)
+    cp_best  = (0.0, None, +1.0)
+    for direction in (+1.0, -1.0):
+        si = direction * s_in
+        so = direction * s_out
+        ts = np.unique(np.concatenate([si, so]))
+        si_s = np.sort(si)
+        so_s = np.sort(so)
+        tp = len(si) - np.searchsorted(si_s, ts, side='left')
+        fp = len(so) - np.searchsorted(so_s, ts, side='left')
+        fn = len(si) - tp
+        tn = len(so) - fp
+
+        fpr_upper, fnr_upper = _beta_bounds(
+            tp.astype(np.float64), fp.astype(np.float64),
+            fn.astype(np.float64), tn.astype(np.float64), alpha,
+        )
+
+        gdp_arr = _gdp_from_bounds(fpr_upper, fnr_upper, delta)
+        idx = int(np.argmax(gdp_arr))
+        if gdp_arr[idx] > gdp_best[0]:
+            gdp_best = (float(gdp_arr[idx]), float(ts[idx]), float(direction))
+
+        cp_arr = _cp_from_bounds(fpr_upper, fnr_upper, delta)
+        idx = int(np.argmax(cp_arr))
+        if cp_arr[idx] > cp_best[0]:
+            cp_best = (float(cp_arr[idx]), float(ts[idx]), float(direction))
+
+    return gdp_best, cp_best
+
+
+def _eval_fixed_both(hi, ho, gdp_t, gdp_dir, cp_t, cp_dir, alpha, delta):
+    """Evaluate fixed (direction, threshold) on holdout for both methods."""
+    def _eval(best_t, best_dir, method_fn):
+        if best_t is None:
+            return 0.0
+        sh = best_dir * hi
+        so = best_dir * ho
+        tp = np.array([float(np.sum(sh >= best_t))])
+        fp = np.array([float(np.sum(so >= best_t))])
+        fn = np.array([float(np.sum(sh < best_t))])
+        tn = np.array([float(np.sum(so < best_t))])
+        fpr_u, fnr_u = _beta_bounds(tp, fp, fn, tn, alpha)
+        return float(method_fn(fpr_u, fnr_u, delta)[0])
+
+    return _eval(gdp_t, gdp_dir, _gdp_from_bounds), _eval(cp_t, cp_dir, _cp_from_bounds)
+
+
+def per_sample_eps_all(losses_in_i, losses_out_i, seed, alpha, delta):
+    """Compute all 4 eps variants for one sample.
+
+    Returns (gdp_nh, cp_nh, gdp_h, cp_h):
+      gdp_nh / cp_nh : no-holdout (NOT valid lower bounds)
+      gdp_h  / cp_h  : 50% holdout (valid lower bounds at level alpha)
+    """
+    n = len(losses_in_i)
     rng = np.random.default_rng(seed)
-    idx = rng.permutation(n)
-    n_hold = max(1, min(int(round(n * holdout_frac)), n - 1))
-    hold_idx, fit_idx = idx[:n_hold], idx[n_hold:]
+    perm = rng.permutation(n)
+    n_hold = max(1, min(n // 2, n - 1))
+    hold_idx, fit_idx = perm[:n_hold], perm[n_hold:]
 
-    fit_si, fit_so = si[fit_idx], so[fit_idx]
-    hold_si, hold_so = si[hold_idx], so[hold_idx]
+    fi, fo = losses_in_i[fit_idx], losses_out_i[fit_idx]
+    hi, ho = losses_in_i[hold_idx], losses_out_i[hold_idx]
 
-    thresholds = _build_threshold_grid(fit_si, fit_so, M)
-    fit_scores, fit_labels = _make_scores_labels(fit_si, fit_so)
-    best_t, best_eps_fit = None, 0.0
-    for t in thresholds:
-        eps = compute_eps_lower_from_mia_given_t(fit_scores, fit_labels, GAMMA, DELTA, t, method)
-        v = float(eps)
-        if not np.isnan(v) and v > best_eps_fit:
-            best_eps_fit, best_t = v, t
+    (gdp_nh, _, _), (cp_nh, _, _) = _sweep_best_both(losses_in_i, losses_out_i, alpha, delta)
+    (_, gdp_t, gdp_dir), (_, cp_t, cp_dir) = _sweep_best_both(fi, fo, alpha, delta)
 
-    if best_t is None:
-        return 0.0
+    gdp_h, cp_h = _eval_fixed_both(hi, ho, gdp_t, gdp_dir, cp_t, cp_dir, alpha, delta)
 
-    hold_scores, hold_labels = _make_scores_labels(hold_si, hold_so)
-    eps = compute_eps_lower_from_mia_given_t(hold_scores, hold_labels, GAMMA, DELTA, best_t, method)
-    v = float(eps)
-    return v if not np.isnan(v) else 0.0
+    return gdp_nh, cp_nh, gdp_h, cp_h
 
 
-def _worker(args):
-    """Top-level worker function for multiprocessing (must be picklable)."""
-    si, so, method, seed = args
-    nh = _compute_eps_no_holdout_1d(si, so, method=method)
-    h  = _compute_eps_holdout_1d(si, so, holdout_frac=0.5, seed=seed, method=method)
-    return nh, h
+# ---------------------------------------------------------------------------
+# Worker pool
+# ---------------------------------------------------------------------------
+
+_G_IN = None
+_G_OUT = None
+_G_PARAMS = None
+
+
+def _init_worker(in_arr, out_arr, seed, alpha, delta):
+    global _G_IN, _G_OUT, _G_PARAMS
+    _G_IN = in_arr
+    _G_OUT = out_arr
+    _G_PARAMS = (seed, alpha, delta)
+
+
+def _worker_chunk(chunk_indices):
+    seed, alpha, delta = _G_PARAMS
+    out = np.zeros((len(chunk_indices), 4), dtype=np.float64)
+    for k, i in enumerate(chunk_indices):
+        out[k] = per_sample_eps_all(_G_IN[:, i], _G_OUT[:, i], seed, alpha, delta)
+    return chunk_indices, out
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def _load_losses(data_dir):
+    in_path  = os.path.join(data_dir, 'all_losses_in.npy')
+    out_path = os.path.join(data_dir, 'all_losses_out.npy')
+    if not os.path.exists(in_path) or not os.path.exists(out_path):
+        sys.exit(f"Missing all_losses_{{in,out}}.npy in {data_dir}")
+    all_in  = np.load(in_path,  allow_pickle=True).astype(np.float64)
+    all_out = np.load(out_path, allow_pickle=True).astype(np.float64)
+    if all_in.shape != all_out.shape:
+        sys.exit(f"Shape mismatch in {data_dir}: in={all_in.shape}, out={all_out.shape}")
+    return all_in, all_out
+
+
+def _compute_eps(label, all_in, all_out, seed, eff_alpha, delta, n_workers, chunk_size):
+    """Run per-sample eps computation; return (n_samples, 4) array."""
+    n_reps, n_samples = all_in.shape
+    chunks = [np.arange(i, min(i + chunk_size, n_samples))
+              for i in range(0, n_samples, chunk_size)]
+    eps_all = np.zeros((n_samples, 4), dtype=np.float64)
+
+    print(f"\n--- {label}: {n_reps} reps x {n_samples} samples ---")
+    t0 = time.time()
+
+    if n_workers > 1 and len(chunks) > 1:
+        with mp.Pool(
+            n_workers,
+            initializer=_init_worker,
+            initargs=(all_in, all_out, seed, eff_alpha, delta),
+        ) as pool:
+            n_done = 0
+            log_every = max(1, n_samples // 20)
+            next_log = log_every
+            for chunk_indices, out in pool.imap_unordered(_worker_chunk, chunks):
+                eps_all[chunk_indices] = out
+                n_done += len(chunk_indices)
+                if n_done >= next_log or n_done == n_samples:
+                    el = time.time() - t0
+                    rate = n_done / max(el, 1e-6)
+                    eta = (n_samples - n_done) / max(rate, 1e-6)
+                    mx = eps_all[:n_done].max(axis=0)
+                    print(f"  [{n_done}/{n_samples}] {el:.1f}s ({rate:.0f}/s, eta={eta:.0f}s) "
+                          f"max gdp_nh={mx[0]:.4f} cp_nh={mx[1]:.4f} "
+                          f"gdp_h={mx[2]:.4f} cp_h={mx[3]:.4f}",
+                          flush=True)
+                    next_log = n_done + log_every
+    else:
+        _init_worker(all_in, all_out, seed, eff_alpha, delta)
+        for chunk in chunks:
+            ci, out = _worker_chunk(chunk)
+            eps_all[ci] = out
+
+    print(f"  Done in {time.time() - t0:.1f}s")
+    return eps_all
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compute per-sample empirical epsilon using all_losses_in/out.npy and report the max.'
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        'data_dir',
-        help='Directory containing all_losses_in.npy and all_losses_out.npy of shape (n_reps, n_samples)',
-    )
-    parser.add_argument('--seed', type=int, default=0, help='Random seed for holdout split')
-    parser.add_argument('--method', type=str, default='GDP', choices=['GDP', 'cp'],
-                        help='Epsilon computation method')
-    parser.add_argument('--workers', type=int, default=cpu_count(),
-                        help='Number of parallel workers (default: all CPUs)')
+    parser.add_argument('no_defense_dir',
+                        help='Directory from the run WITHOUT the defense')
+    parser.add_argument('defense_dir',
+                        help='Directory from the run WITH the defense')
+    parser.add_argument('--canary_idx', type=int, default=-1,
+                        help='Canary index in the dataset (default -1: last sample)')
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--alpha', type=float, default=0.1,
+                        help='Per-sample significance level (default 0.1)')
+    parser.add_argument('--delta', type=float, default=1e-5)
+    parser.add_argument('--bonferroni', action='store_true',
+                        help='Use alpha/n_samples for a uniform bound across all samples')
+    parser.add_argument('--n_workers', type=int, default=None,
+                        help='Worker processes (default: min(cpu_count, 32))')
+    parser.add_argument('--chunk_size', type=int, default=200,
+                        help='Samples per worker chunk (default 200)')
+    parser.add_argument('--save', action='store_true',
+                        help='Save per_sample_eps_*.npy into each directory')
     args = parser.parse_args()
 
-    all_in, all_out = _load_scores(args.data_dir)
-    n_reps, n_samples = all_in.shape
+    nd_in,  nd_out  = _load_losses(args.no_defense_dir)
+    def_in, def_out = _load_losses(args.defense_dir)
 
-    print(f"Data dir: {args.data_dir}")
-    print(f"Shape: ({n_reps} reps, {n_samples} samples)  delta={DELTA}  gamma={GAMMA}")
-    print(f"Method: {args.method}  workers: {args.workers}")
-    print(f"Computing per-sample epsilon (no-holdout and 50% holdout)...\n")
+    n_reps_nd,  n_samples_nd  = nd_in.shape
+    n_reps_def, n_samples_def = def_in.shape
 
-    # Sign-flip convention: ensure in-world has higher loss on average
-    if all_in.mean() < all_out.mean():
-        all_in, all_out = -all_in, -all_out
+    if n_samples_nd != n_samples_def:
+        sys.exit(f"Sample count mismatch: no_defense={n_samples_nd}, defense={n_samples_def}")
 
-    # Build list of per-sample args for workers
-    tasks = [(all_in[:, i].copy(), all_out[:, i].copy(), args.method, args.seed)
-             for i in range(n_samples)]
+    n_samples = n_samples_nd
+    canary_idx = int(args.canary_idx) % n_samples
+    eff_alpha = (args.alpha / n_samples) if args.bonferroni else args.alpha
 
-    with Pool(processes=args.workers) as pool:
-        results = pool.map(_worker, tasks, chunksize=max(1, n_samples // (args.workers * 4)))
+    print(f"no_defense_dir : {args.no_defense_dir}  ({n_reps_nd} reps)")
+    print(f"defense_dir    : {args.defense_dir}  ({n_reps_def} reps)")
+    print(f"samples        : {n_samples}   canary_idx: {canary_idx}")
+    print(f"alpha={eff_alpha:.3e} ({'Bonferroni' if args.bonferroni else 'per-sample'}), "
+          f"delta={args.delta}")
 
-    no_holdout_eps = np.array([r[0] for r in results])
-    holdout_eps    = np.array([r[1] for r in results])
+    n_workers  = args.n_workers or min(mp.cpu_count(), 32)
+    chunk_size = max(1, int(args.chunk_size))
 
-    max_nh_idx = int(np.argmax(no_holdout_eps))
-    max_h_idx  = int(np.argmax(holdout_eps))
+    eps_nd  = _compute_eps("NO DEFENSE",  nd_in,  nd_out,
+                           args.seed, eff_alpha, args.delta, n_workers, chunk_size)
+    eps_def = _compute_eps("WITH DEFENSE", def_in, def_out,
+                           args.seed, eff_alpha, args.delta, n_workers, chunk_size)
 
-    print(f"\n{'='*55}")
-    print(f"{'Metric':<32}  {'Value':>10}  {'Sample idx':>10}")
-    print('-' * 55)
-    print(f"{'Max eps (no holdout)':<32}  {no_holdout_eps[max_nh_idx]:10.6f}  {max_nh_idx:>10}")
-    print(f"{'Max eps (50% holdout)':<32}  {holdout_eps[max_h_idx]:10.6f}  {max_h_idx:>10}")
-    print(f"{'Mean eps (no holdout)':<32}  {no_holdout_eps.mean():10.6f}")
-    print(f"{'Mean eps (50% holdout)':<32}  {holdout_eps.mean():10.6f}")
-    print(f"{'Median eps (no holdout)':<32}  {np.median(no_holdout_eps):10.6f}")
-    print(f"{'% samples with eps>0 (no holdout)':<32}  {(no_holdout_eps > 0).mean()*100:9.2f}%")
+    # column layout: [gdp_nh, cp_nh, gdp_h, cp_h]
+    METHOD_NAMES = [
+        'GDP no holdout  (inflated)',
+        'CP  no holdout  (inflated)',
+        'GDP 50% holdout (valid lb)',
+        'CP  50% holdout (valid lb)',
+    ]
+
+    nc_mask = np.ones(n_samples, dtype=bool)
+    nc_mask[canary_idx] = False
+
+    print(f"\n{'='*72}")
+    print("RESULTS")
+    print('='*72)
+
+    for col, name in enumerate(METHOD_NAMES):
+        nd  = eps_nd[:, col]
+        de  = eps_def[:, col]
+        nc_de = de[nc_mask]
+
+        canary_nd  = float(nd[canary_idx])
+        canary_de  = float(de[canary_idx])
+        max_de     = float(de.max())
+        max_de_idx = int(np.argmax(de))
+        nc_max_de  = float(nc_de.max())
+        nc_max_idx = int(np.where(nc_mask)[0][np.argmax(nc_de)])
+
+        problematic = max_de > canary_nd
+        verdict = "PROBLEMATIC" if problematic else "OK"
+
+        print(f"\n{'='*72}")
+        print(f"  {name}")
+        print(f"{'='*72}")
+
+        print(f"\n  No-defense distribution:")
+        print(f"    canary eps:        {canary_nd:.6f}")
+        print(f"    max (any sample):  {nd.max():.6f}  at idx {int(np.argmax(nd))}")
+        print(f"    max non-canary:    {float(nd[nc_mask].max()):.6f}")
+        print(f"    p99:               {np.percentile(nd, 99):.6f}")
+        print(f"    p95:               {np.percentile(nd, 95):.6f}")
+        print(f"    fraction > 0:      {(nd > 0).mean()*100:.2f}%")
+
+        print(f"\n  Defense distribution:")
+        print(f"    canary eps:        {canary_de:.6f}")
+        print(f"    max (any sample):  {max_de:.6f}  at idx {max_de_idx}")
+        print(f"    max non-canary:    {nc_max_de:.6f}  at idx {nc_max_idx}")
+        print(f"    p99:               {np.percentile(de, 99):.6f}")
+        print(f"    p95:               {np.percentile(de, 95):.6f}")
+        print(f"    fraction > 0:      {(de > 0).mean()*100:.2f}%")
+
+        print(f"\n  Cross-run check:")
+        print(f"    canary eps BEFORE defense:       {canary_nd:.6f}")
+        print(f"    max ANY sample eps AFTER defense: {max_de:.6f}  at idx {max_de_idx}")
+        print(f"    diff (max_defense - canary_nd):  {max_de - canary_nd:+.6f}")
+        print(f"    defense {verdict}  "
+              f"(max after defense {'>' if problematic else '<='} canary before defense)")
+
+    if not args.bonferroni and n_samples > 100:
+        print(f"\n  Note: no-holdout eps and all maxima are subject to multiple-testing "
+              f"inflation across {n_samples} samples. Re-run with --bonferroni for a "
+              f"uniform bound.")
+
+    if args.save:
+        for data_dir, eps_arr, tag in [
+            (args.no_defense_dir, eps_nd,  'no_defense'),
+            (args.defense_dir,    eps_def, 'defense'),
+        ]:
+            for col, method in [('gdp_no_holdout', 0), ('cp_no_holdout', 1),
+                                 ('gdp_holdout', 2),    ('cp_holdout', 3)]:
+                p = os.path.join(data_dir, f'per_sample_eps_{col}.npy')
+                np.save(p, eps_arr[:, method])
+                print(f"Saved {p}")
 
 
 if __name__ == '__main__':
