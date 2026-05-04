@@ -214,7 +214,7 @@ class IndexedTensorDataset(Dataset):
 
 def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_norm, 
                n_epochs, lr, block_size, batch_size, init_model=None, out_dim=10, aug_mult=1,
-               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, defense_filter_every: int = 1, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5, num_workers: int = 4, persistent_workers: bool = True, return_defense_state: bool = False):
+               gradient_space_audit=False, crafted_gradient=None, defense=False, defense_k: int = 5, defense_apply_ascent=True, defense_filter_every: int = 1, device='cuda:0', generator=None, dl_generator=None, rank=0, world_size=None, defense_score_norm='linf', defense_score_fn='grad_norm', sampling: str = 'poisson', loss_volatility_k: int = 5, grad_norm_percentile_k: int = 20, grad_dir_volatility_k: int = 5, grad_dir_proj_dim: int = 64, grad_dir_proj_seed: int = 0, rand_proj_var_m: int = 10, rand_proj_var_seed: int = 0, maxmin_proj_k: int = 10, maxmin_proj_seed: int = 0, grad_rank_mode: str = 'effdim', grad_rank_eps: float = 1e-12, grad_accel_proj_dim: int = 64, grad_accel_proj_seed: int = 0, grad_jerk_proj_dim: int = 64, grad_jerk_proj_seed: int = 0, dir_unique_k: int = 5, alignment_proj_k: int = 10, alignment_proj_seed: int = 0, grad_scatter_k: int = 5, num_workers: int = 4, persistent_workers: bool = True, return_defense_state: bool = False):
     """
     Train a single model on a single GPU (no DDP).
     """
@@ -280,23 +280,27 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         canary_idx = len(dataset) - 1
         global_idx_to_grad = {canary_idx: crafted_gradient}
     
-    sampler = torch.utils.data.RandomSampler(
-        dataset,
-        replacement=False,
-        num_samples=None,
-        generator=generator
-    )
-    
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        pin_memory=True,
-        num_workers=int(num_workers),
-        persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
-        drop_last=False,
-        generator=dl_generator
-    )
+    n_samples = len(dataset)
+    if sampling == 'poisson':
+        _poisson_q = batch_size / n_samples
+        _poisson_n_batches = (n_samples + batch_size - 1) // batch_size
+        loader = None
+    else:
+        _poisson_q = None
+        _poisson_n_batches = None
+        sampler = torch.utils.data.RandomSampler(
+            dataset, replacement=False, num_samples=None, generator=generator
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            pin_memory=True,
+            num_workers=int(num_workers),
+            persistent_workers=bool(persistent_workers) if int(num_workers) > 0 else False,
+            drop_last=False,
+            generator=dl_generator,
+        )
 
     prev_params = None
     prev_delta_theta = None
@@ -327,7 +331,19 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
         optimizer.zero_grad()
         print(f"Epoch: {epoch} (Active samples: {int((drop_mask == 0).sum())}/{len(drop_mask)})", end='', flush=True)
 
-        for batch_idx, (curr_X, curr_y, global_indices) in enumerate(loader):
+        if sampling == 'poisson':
+            def _poisson_iter():
+                for _ in range(_poisson_n_batches):
+                    mask = torch.rand(n_samples, generator=generator) < _poisson_q
+                    idx = torch.where(mask)[0]
+                    if len(idx) == 0:
+                        continue
+                    yield X[idx], y[idx], idx
+            batch_iter = enumerate(_poisson_iter())
+        else:
+            batch_iter = enumerate(loader)
+
+        for batch_idx, (curr_X, curr_y, global_indices) in batch_iter:
             curr_X, curr_y = curr_X.to(device, non_blocking=True), curr_y.to(device, non_blocking=True)
             global_indices = global_indices.to(device, non_blocking=True)
 
@@ -731,7 +747,31 @@ def main():
     parser.add_argument('--defense_filter_every', type=int, default=1, help='apply defense filtering every N epochs (default: 1, i.e., every epoch)')
     parser.add_argument('--aug_mult', type=int, default=1, help='augmentation multiplier (default: 1)')
     parser.add_argument('--defense_score_norm', type=str, default='linf', choices=['linf', 'l2', 'l1'], help='norm used to score per-sample gradients for defense (linf, l2, or l1)')
-    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=['grad_norm', 'grad_norm_percentile', 'grad_dir_volatility', 'rand_proj_var', 'maxmin_proj_ratio', 'gradient_rank', 'grad_accel', 'grad_jerk', 'norm_x_dir_uniqueness', 'alignment_with_rand_proj', 'gradient_sparsity', 'gradient_kurtosis', 'grad_dir_change_rate', 'norm_x_trajectory_orth', 'gradient_scatter', 'fisher', 'inv_confidence', 'prediction_margin', 'pred_entropy', 'cos_update', 'cos_theta0'], help='score function used for defense (grad_norm, grad_norm_percentile, grad_dir_volatility, rand_proj_var, maxmin_proj_ratio, gradient_rank, grad_accel, grad_jerk, norm_x_dir_uniqueness, alignment_with_rand_proj, gradient_sparsity, gradient_kurtosis, grad_dir_change_rate, norm_x_trajectory_orth, gradient_scatter, fisher, inv_confidence, prediction_margin, pred_entropy, cos_update, or cos_theta0)')
+    parser.add_argument('--sampling', type=str, default='poisson', choices=['poisson', 'shuffle'],
+                        help='Minibatch sampling strategy (poisson: each sample included independently with prob q; shuffle: standard random sampler)')
+    parser.add_argument('--defense_score_fn', type=str, default='grad_norm', choices=[
+        'grad_norm', 'grad_norm_unclipped', 'grad_norm_percentile',
+        'grad_dir_volatility', 'grad_dir_volatility_unclipped',
+        'rand_proj_var', 'rand_proj_var_unclipped',
+        'maxmin_proj_ratio', 'maxmin_proj_ratio_unclipped',
+        'gradient_rank', 'gradient_rank_unclipped',
+        'grad_accel', 'grad_accel_unclipped',
+        'grad_jerk', 'grad_jerk_unclipped',
+        'norm_x_dir_uniqueness', 'norm_x_dir_uniqueness_unclipped',
+        'alignment_with_rand_proj', 'alignment_with_rand_proj_unclipped',
+        'gradient_sparsity', 'gradient_sparsity_unclipped',
+        'gradient_kurtosis', 'gradient_kurtosis_unclipped',
+        'grad_dir_change_rate', 'grad_dir_change_rate_unclipped',
+        'norm_x_trajectory_orth', 'norm_x_trajectory_orth_unclipped',
+        'gradient_scatter', 'gradient_scatter_unclipped',
+        'fisher', 'fisher_unclipped',
+        'grad_norm_x_loss', 'grad_norm_x_loss_unclipped',
+        'cos_update', 'cos_update_unclipped',
+        'cos_theta0', 'cos_theta0_unclipped',
+        'inv_confidence', 'prediction_margin', 'pred_entropy',
+        'loss', 'loss_momentum', 'loss_volatility',
+    ], help='Scoring function used by the defense filter')
+    parser.add_argument('--loss_volatility_k', type=int, default=5, help='lookback window for loss_volatility score (std of loss over last k observations per sample)')
     parser.add_argument('--grad_norm_percentile_k', type=int, default=20, help='lookback window for grad_norm_percentile score (percentile of current grad norm within last k observed grad norms per sample)')
     parser.add_argument('--grad_dir_volatility_k', type=int, default=5, help='lookback window for grad_dir_volatility score (mean(1 - cos_sim(curr_dir, past_dir)) over last k directions)')
     parser.add_argument('--grad_dir_proj_dim', type=int, default=64, help='projection dimension for grad_dir_volatility direction embedding')
@@ -1088,7 +1128,9 @@ def main():
                 alignment_proj_k=args.alignment_proj_k,
                 alignment_proj_seed=args.alignment_proj_seed,
                 grad_scatter_k=args.grad_scatter_k,
-                defense_apply_ascent=args.defense_apply_ascent
+                defense_apply_ascent=args.defense_apply_ascent,
+                sampling=args.sampling,
+                loss_volatility_k=args.loss_volatility_k,
             )
             
             # Compute outputs and losses
