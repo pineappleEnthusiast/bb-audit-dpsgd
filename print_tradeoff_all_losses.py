@@ -2,17 +2,30 @@
 Cross-run per-sample empirical epsilon: no-defense vs defense.
 
 Takes two experiment directories (no_defense_dir, defense_dir), each containing
-all_losses_in.npy and all_losses_out.npy (shape: n_reps x n_samples), and
-computes four eps variants for every sample in both runs:
+all_losses_in.npy, all_losses_out.npy (shape: n_reps x n_samples), and also
+losses_in.npy / losses_out.npy (shape: n_reps, the canary's own losses).
 
-  GDP no holdout  — optimize threshold on all reps, GDP conversion (inflated)
-  CP  no holdout  — optimize threshold on all reps, CP conversion  (inflated)
-  GDP 50% holdout — threshold fit on 50% of reps, evaluated on holdout (valid lb)
-  CP  50% holdout — threshold fit on 50% of reps, evaluated on holdout (valid lb)
+What all_losses_in/out[:,i] actually measures
+---------------------------------------------
+parallel_audit_model.py trains n_reps 'in' models (with the canary) and n_reps
+'out' models (without the canary), then evaluates the FULL training set on each.
+So all_losses_in[:,i] = loss of training sample i when the CANARY is included;
+all_losses_out[:,i] = loss of training sample i when the canary is NOT included.
+
+For i != canary_idx: sample i is in training in BOTH worlds; eps_i measures
+"how well can an attacker detect the canary's membership by watching sample i's
+loss?" — a valid (but indirect) canary-membership signal.
+
+For i == canary_idx: all_losses_in[:,canary_idx] = target_X's loss under 'in'
+models (correct). BUT all_losses_out[:,canary_idx] is X_out[canary_idx]'s loss
+(a DIFFERENT sample, always a training member in 'out' world). This comparison
+is invalid and produces spurious eps. We fix this by replacing the canary column
+in all_out with the negated losses_out.npy (which correctly stores target_X's
+loss under 'out' models in -CE convention).
 
 Primary question: for each method, is the defense problematic?
 
-  The defense is PROBLEMATIC if — after filtering — any sample in the dataset
+  The defense is PROBLEMATIC if — after filtering — any sample's loss signal
   achieves empirical eps greater than the canary's eps BEFORE the defense.
 
   For each method:
@@ -211,11 +224,28 @@ def _load_losses(data_dir):
     out_path = os.path.join(data_dir, 'all_losses_out.npy')
     if not os.path.exists(in_path) or not os.path.exists(out_path):
         sys.exit(f"Missing all_losses_{{in,out}}.npy in {data_dir}")
-    all_in  = np.load(in_path,  allow_pickle=True).astype(np.float64)
-    all_out = np.load(out_path, allow_pickle=True).astype(np.float64)
+
+    def _to_2d(raw):
+        # Saved with dtype=object (list of per-rep loss arrays); stack into 2D float.
+        if raw.dtype == object:
+            return np.stack([np.asarray(x, dtype=np.float64) for x in raw])
+        return raw.astype(np.float64)
+
+    all_in  = _to_2d(np.load(in_path,  allow_pickle=True))
+    all_out = _to_2d(np.load(out_path, allow_pickle=True))
     if all_in.shape != all_out.shape:
         sys.exit(f"Shape mismatch in {data_dir}: in={all_in.shape}, out={all_out.shape}")
     return all_in, all_out
+
+
+def _load_canary_losses(data_dir):
+    """Load target_X's per-rep losses from losses_in/out.npy (stored as -CE)."""
+    in_path  = os.path.join(data_dir, 'losses_in.npy')
+    out_path = os.path.join(data_dir, 'losses_out.npy')
+    if not os.path.exists(in_path) or not os.path.exists(out_path):
+        return None, None
+    return (np.load(in_path).astype(np.float64),
+            np.load(out_path).astype(np.float64))
 
 
 def _compute_eps(label, all_in, all_out, seed, eff_alpha, delta, n_workers, chunk_size):
@@ -296,6 +326,31 @@ def main():
     n_samples = n_samples_nd
     canary_idx = int(args.canary_idx) % n_samples
     eff_alpha = (args.alpha / n_samples) if args.bonferroni else args.alpha
+
+    # Fix canary column in all_out: all_losses_out[:,canary_idx] stores a DIFFERENT
+    # training sample's loss (X_out[canary_idx]), not target_X's loss under 'out' models.
+    # losses_out.npy contains the correct target_X losses but in -CE convention;
+    # negate to match all_losses' positive-CE convention.
+    nd_canary_in,   nd_canary_out  = _load_canary_losses(args.no_defense_dir)
+    def_canary_in,  def_canary_out = _load_canary_losses(args.defense_dir)
+
+    if nd_canary_out is not None:
+        if len(nd_canary_out) != n_reps_nd:
+            sys.exit(f"losses_out.npy in {args.no_defense_dir} has {len(nd_canary_out)} reps "
+                     f"but all_losses has {n_reps_nd}")
+        nd_out[:, canary_idx] = -nd_canary_out  # -(-CE) = +CE, lower = member
+    else:
+        print(f"WARNING: losses_out.npy not found in {args.no_defense_dir}; "
+              f"canary eps from no-defense run may be wrong.")
+
+    if def_canary_out is not None:
+        if len(def_canary_out) != n_reps_def:
+            sys.exit(f"losses_out.npy in {args.defense_dir} has {len(def_canary_out)} reps "
+                     f"but all_losses has {n_reps_def}")
+        def_out[:, canary_idx] = -def_canary_out
+    else:
+        print(f"WARNING: losses_out.npy not found in {args.defense_dir}; "
+              f"canary eps from defense run may be wrong.")
 
     print(f"no_defense_dir : {args.no_defense_dir}  ({n_reps_nd} reps)")
     print(f"defense_dir    : {args.defense_dir}  ({n_reps_def} reps)")
