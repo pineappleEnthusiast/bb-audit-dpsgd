@@ -14,10 +14,13 @@ N_SG = 4
 
 def load(majority_pct, defense):
     tag = 'defense' if defense else 'no_defense'
-    path = os.path.join(PARENT_OUT, f'colored_mnist_maj{majority_pct}_{tag}', 'fairness_results.npy')
-    if not os.path.exists(path):
-        return None
-    return np.load(path, allow_pickle=True).item()
+    # Try both Python's str() representation (e.g. "0.9") and the 2-decimal
+    # form bash uses for round values (e.g. "0.90").
+    for pct_str in [str(majority_pct), f'{majority_pct:.2f}']:
+        path = os.path.join(PARENT_OUT, f'colored_mnist_maj{pct_str}_{tag}', 'fairness_results.npy')
+        if os.path.exists(path):
+            return np.load(path, allow_pickle=True).item()
+    return None
 
 
 def acc_stats(data, sg):
