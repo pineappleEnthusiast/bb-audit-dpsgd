@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 from models import Models
 from utils.data import load_data
 from utils.training import (
-    xavier_init_model, init_wideresnet, IndexedTensorDataset, test_model
+    xavier_init_model, init_wideresnet, IndexedTensorDataset
 )
 from utils.dpsgd import clip_and_accum_grads, DefenseConfig
 from utils.audit import compute_eps_lower_from_mia
@@ -511,8 +511,10 @@ def main():
     seed = args.seed
     np.random.seed(seed + rank)
 
-    # Load data
+    # Load data (load_data returns tensors; convert to numpy for this script)
     X, y, out_dim = load_data(args.data_name, n_df=args.n_df)
+    X = X.numpy() if isinstance(X, torch.Tensor) else X
+    y = y.numpy() if isinstance(y, torch.Tensor) else y
 
     # Load or create canary
     canary_x, canary_y = None, None
@@ -552,7 +554,6 @@ def main():
     my_reps = reps_per_rank[rank]
 
     binary_vectors = {'in': [], 'out': []}
-    train_accs = {'in': [], 'out': []}
 
     # Training loop
     for world in ['in', 'out']:
@@ -578,10 +579,6 @@ def main():
             # Train
             train_model(model, X_world, y_world, canary_x, canary_y, device, args,
                        defense_type=args.defense_type)
-
-            # Evaluate on original training set (for comparison)
-            train_acc = test_model(model, X, y, device)
-            train_accs[world].append(train_acc)
 
             # Generate augmentations and get binary vector
             use_flip = (args.data_name != 'mnist')
