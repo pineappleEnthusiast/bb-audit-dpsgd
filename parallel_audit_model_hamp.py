@@ -541,7 +541,7 @@ def main():
 
     # Fixed init model — all ranks use the same seed so they share identical initialization
     torch.manual_seed(seed)
-    init_model = Models[args.model_name]((X.shape[1:], out_dim))
+    init_model = Models[args.model_name](X.shape, out_dim=out_dim)
     if args.model_name == 'wideresnet':
         init_wideresnet(init_model)
     else:
