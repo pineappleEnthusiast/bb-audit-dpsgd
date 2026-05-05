@@ -447,16 +447,16 @@ def audit(binary_vectors_in, binary_vectors_out, alpha, delta):
         scores[i] = clf.predict_proba(all_features[i:i+1])[0, 1]
 
     # Compute empirical epsilon
-    emp_eps = compute_eps_lower_from_mia(
-        torch.from_numpy(scores).float(),
-        torch.from_numpy(all_labels).long(),
+    _, emp_eps = compute_eps_lower_from_mia(
+        scores,
+        all_labels,
         alpha,
         delta,
         method='GDP'
     )
 
     return {
-        'emp_eps': float(emp_eps),
+        'emp_eps': float(emp_eps) if emp_eps is not None else 0.0,
         'scores': scores,
         'labels': all_labels,
     }
