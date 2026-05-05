@@ -290,6 +290,14 @@ def _compute_eps(label, all_in, all_out, seed, eff_alpha, delta, n_workers, chun
     return eps_all
 
 
+def _recompute_subset(in_arr, out_arr, indices, seed, alpha, delta):
+    """Recompute per-sample eps for a subset of indices at a given alpha."""
+    out = np.zeros((len(indices), 4), dtype=np.float64)
+    for k, i in enumerate(indices):
+        out[k] = per_sample_eps_all(in_arr[:, i], out_arr[:, i], seed, alpha, delta)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -334,6 +342,7 @@ def main():
     nd_canary_in,   nd_canary_out  = _load_canary_losses(args.no_defense_dir)
     def_canary_in,  def_canary_out = _load_canary_losses(args.defense_dir)
 
+    # Patch FIRST — canary_eps_*_full must be computed from the corrected arrays.
     if nd_canary_out is not None:
         if len(nd_canary_out) != n_reps_nd:
             sys.exit(f"losses_out.npy in {args.no_defense_dir} has {len(nd_canary_out)} reps "
@@ -352,11 +361,28 @@ def main():
         print(f"WARNING: losses_out.npy not found in {args.defense_dir}; "
               f"canary eps from defense run may be wrong.")
 
+    # Canary eps at FULL alpha (not eff_alpha) — needed as the reference point in the
+    # asymmetric Bonferroni cross-run check regardless of whether --bonferroni is set.
+    # Computed AFTER the patch so nd_out[:,canary_idx] is target_X's 'out' losses.
+    canary_eps_nd_full = np.array(
+        per_sample_eps_all(nd_in[:, canary_idx], nd_out[:, canary_idx],
+                           args.seed, args.alpha, args.delta),
+        dtype=np.float64,
+    )
+    canary_eps_def_full = np.array(
+        per_sample_eps_all(def_in[:, canary_idx], def_out[:, canary_idx],
+                           args.seed, args.alpha, args.delta),
+        dtype=np.float64,
+    )
+    n_non_canary = n_samples - 1
+    bonf_alpha_check = args.alpha / max(n_non_canary, 1)
+
     print(f"no_defense_dir : {args.no_defense_dir}  ({n_reps_nd} reps)")
     print(f"defense_dir    : {args.defense_dir}  ({n_reps_def} reps)")
     print(f"samples        : {n_samples}   canary_idx: {canary_idx}")
     print(f"alpha={eff_alpha:.3e} ({'Bonferroni' if args.bonferroni else 'per-sample'}), "
           f"delta={args.delta}")
+    print(f"Bonferroni alpha for cross-run check: {bonf_alpha_check:.3e}")
 
     n_workers  = args.n_workers or min(mp.cpu_count(), 32)
     chunk_size = max(1, int(args.chunk_size))
@@ -386,14 +412,32 @@ def main():
         de  = eps_def[:, col]
         nc_de = de[nc_mask]
 
-        canary_nd  = float(nd[canary_idx])
-        canary_de  = float(de[canary_idx])
+        # Canary reference at FULL alpha (single test, no selection)
+        canary_nd_full = float(canary_eps_nd_full[col])
+        canary_de_full = float(canary_eps_def_full[col])
+
+        # For the defense non-canary max, use asymmetric Bonferroni:
+        # recompute only samples with eps > 0 at full alpha (efficiency trick:
+        # smaller alpha can only shrink eps, so eps=0 stays 0).
+        recompute_mask = nc_mask & (de > 0)
+        recompute_indices = np.where(recompute_mask)[0]
+
+        if len(recompute_indices) > 0:
+            rec = _recompute_subset(def_in, def_out, recompute_indices,
+                                    args.seed, bonf_alpha_check, args.delta)
+            nc_max_bonf = float(rec[:, col].max())
+            nc_max_bonf_idx = int(recompute_indices[int(np.argmax(rec[:, col]))])
+        else:
+            nc_max_bonf = 0.0
+            nc_max_bonf_idx = -1
+
+        # Distribution stats (at eff_alpha, for reference)
         max_de     = float(de.max())
         max_de_idx = int(np.argmax(de))
         nc_max_de  = float(nc_de.max())
         nc_max_idx = int(np.where(nc_mask)[0][np.argmax(nc_de)])
 
-        problematic = max_de > canary_nd
+        problematic = nc_max_bonf > canary_nd_full
         verdict = "PROBLEMATIC" if problematic else "OK"
 
         print(f"\n{'='*72}")
@@ -401,7 +445,7 @@ def main():
         print(f"{'='*72}")
 
         print(f"\n  No-defense distribution:")
-        print(f"    canary eps:        {canary_nd:.6f}")
+        print(f"    canary eps:        {canary_nd_full:.6f}")
         print(f"    max (any sample):  {nd.max():.6f}  at idx {int(np.argmax(nd))}")
         print(f"    max non-canary:    {float(nd[nc_mask].max()):.6f}")
         print(f"    p99:               {np.percentile(nd, 99):.6f}")
@@ -409,24 +453,24 @@ def main():
         print(f"    fraction > 0:      {(nd > 0).mean()*100:.2f}%")
 
         print(f"\n  Defense distribution:")
-        print(f"    canary eps:        {canary_de:.6f}")
+        print(f"    canary eps:        {canary_de_full:.6f}")
         print(f"    max (any sample):  {max_de:.6f}  at idx {max_de_idx}")
         print(f"    max non-canary:    {nc_max_de:.6f}  at idx {nc_max_idx}")
         print(f"    p99:               {np.percentile(de, 99):.6f}")
         print(f"    p95:               {np.percentile(de, 95):.6f}")
         print(f"    fraction > 0:      {(de > 0).mean()*100:.2f}%")
 
-        print(f"\n  Cross-run check:")
-        print(f"    canary eps BEFORE defense:       {canary_nd:.6f}")
-        print(f"    max ANY sample eps AFTER defense: {max_de:.6f}  at idx {max_de_idx}")
-        print(f"    diff (max_defense - canary_nd):  {max_de - canary_nd:+.6f}")
+        print(f"\n  Cross-run check (asymmetric Bonferroni):")
+        print(f"    canary eps BEFORE defense (full α):            {canary_nd_full:.6f}")
+        print(f"    max non-canary AFTER defense (α/{n_non_canary}): {nc_max_bonf:.6f}  "
+              f"at idx {nc_max_bonf_idx}")
+        print(f"    diff (max_bonf - canary_nd):                   {nc_max_bonf - canary_nd_full:+.6f}")
         print(f"    defense {verdict}  "
               f"(max after defense {'>' if problematic else '<='} canary before defense)")
+        if len(recompute_indices) > 0:
+            print(f"    (recomputed {len(recompute_indices)}/{n_non_canary} non-canary samples "
+                  f"at α={bonf_alpha_check:.3e})")
 
-    if not args.bonferroni and n_samples > 100:
-        print(f"\n  Note: no-holdout eps and all maxima are subject to multiple-testing "
-              f"inflation across {n_samples} samples. Re-run with --bonferroni for a "
-              f"uniform bound.")
 
     if args.save:
         for data_dir, eps_arr, tag in [
