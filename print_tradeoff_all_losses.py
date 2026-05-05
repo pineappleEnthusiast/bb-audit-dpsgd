@@ -416,20 +416,20 @@ def main():
         canary_nd_full = float(canary_eps_nd_full[col])
         canary_de_full = float(canary_eps_def_full[col])
 
-        # For the defense non-canary max, use asymmetric Bonferroni:
-        # recompute only samples with eps > 0 at full alpha (efficiency trick:
-        # smaller alpha can only shrink eps, so eps=0 stays 0).
-        recompute_mask = nc_mask & (de > 0)
-        recompute_indices = np.where(recompute_mask)[0]
-
-        if len(recompute_indices) > 0:
-            rec = _recompute_subset(def_in, def_out, recompute_indices,
+        # Bonferroni recompute for BOTH no-defense and defense non-canary samples.
+        # Efficiency: Bonferroni eps <= full-alpha eps, so eps=0 at full alpha stays 0.
+        def _bonf_recompute(in_arr, out_arr, base_eps_col):
+            mask = nc_mask & (base_eps_col > 0)
+            idx  = np.where(mask)[0]
+            if len(idx) == 0:
+                return 0.0, -1, 0
+            rec = _recompute_subset(in_arr, out_arr, idx,
                                     args.seed, bonf_alpha_check, args.delta)
-            nc_max_bonf = float(rec[:, col].max())
-            nc_max_bonf_idx = int(recompute_indices[int(np.argmax(rec[:, col]))])
-        else:
-            nc_max_bonf = 0.0
-            nc_max_bonf_idx = -1
+            best = int(np.argmax(rec[:, col]))
+            return float(rec[best, col]), int(idx[best]), len(idx)
+
+        nc_max_bonf_nd,  nc_max_bonf_nd_idx,  n_recomp_nd  = _bonf_recompute(nd_in,  nd_out,  nd)
+        nc_max_bonf_def, nc_max_bonf_def_idx, n_recomp_def = _bonf_recompute(def_in, def_out, de)
 
         # Distribution stats (at eff_alpha, for reference)
         max_de     = float(de.max())
@@ -437,14 +437,14 @@ def main():
         nc_max_de  = float(nc_de.max())
         nc_max_idx = int(np.where(nc_mask)[0][np.argmax(nc_de)])
 
-        problematic = nc_max_bonf > canary_nd_full
+        problematic = nc_max_bonf_def > canary_nd_full
         verdict = "PROBLEMATIC" if problematic else "OK"
 
         print(f"\n{'='*72}")
         print(f"  {name}")
         print(f"{'='*72}")
 
-        print(f"\n  No-defense distribution:")
+        print(f"\n  No-defense distribution (α={eff_alpha:.2e}):")
         print(f"    canary eps:        {canary_nd_full:.6f}")
         print(f"    max (any sample):  {nd.max():.6f}  at idx {int(np.argmax(nd))}")
         print(f"    max non-canary:    {float(nd[nc_mask].max()):.6f}")
@@ -452,7 +452,7 @@ def main():
         print(f"    p95:               {np.percentile(nd, 95):.6f}")
         print(f"    fraction > 0:      {(nd > 0).mean()*100:.2f}%")
 
-        print(f"\n  Defense distribution:")
+        print(f"\n  Defense distribution (α={eff_alpha:.2e}):")
         print(f"    canary eps:        {canary_de_full:.6f}")
         print(f"    max (any sample):  {max_de:.6f}  at idx {max_de_idx}")
         print(f"    max non-canary:    {nc_max_de:.6f}  at idx {nc_max_idx}")
@@ -460,16 +460,16 @@ def main():
         print(f"    p95:               {np.percentile(de, 95):.6f}")
         print(f"    fraction > 0:      {(de > 0).mean()*100:.2f}%")
 
-        print(f"\n  Cross-run check (asymmetric Bonferroni):")
-        print(f"    canary eps BEFORE defense (full α):            {canary_nd_full:.6f}")
-        print(f"    max non-canary AFTER defense (α/{n_non_canary}): {nc_max_bonf:.6f}  "
-              f"at idx {nc_max_bonf_idx}")
-        print(f"    diff (max_bonf - canary_nd):                   {nc_max_bonf - canary_nd_full:+.6f}")
+        print(f"\n  Cross-run check (Bonferroni α={bonf_alpha_check:.2e} per non-canary test):")
+        print(f"    canary eps BEFORE defense (full α):  {canary_nd_full:.6f}")
+        print(f"    max non-canary BEFORE defense:       {nc_max_bonf_nd:.6f}"
+              f"  at idx {nc_max_bonf_nd_idx}"
+              f"  ({n_recomp_nd} recomputed)")
+        print(f"    max non-canary AFTER  defense:       {nc_max_bonf_def:.6f}"
+              f"  at idx {nc_max_bonf_def_idx}"
+              f"  ({n_recomp_def} recomputed)")
         print(f"    defense {verdict}  "
-              f"(max after defense {'>' if problematic else '<='} canary before defense)")
-        if len(recompute_indices) > 0:
-            print(f"    (recomputed {len(recompute_indices)}/{n_non_canary} non-canary samples "
-                  f"at α={bonf_alpha_check:.3e})")
+              f"(max after {'>' if problematic else '<='} canary before)")
 
 
     if args.save:
