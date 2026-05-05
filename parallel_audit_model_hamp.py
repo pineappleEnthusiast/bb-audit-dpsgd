@@ -512,7 +512,9 @@ def main():
     np.random.seed(seed + rank)
 
     # Load data (load_data returns tensors; convert to numpy for this script)
-    X, y, out_dim = load_data(args.data_name, n_df=args.n_df)
+    # n_df=0 means "full dataset" in build_parser but load_data only handles None/<0
+    n_df = None if args.n_df == 0 else args.n_df
+    X, y, out_dim = load_data(args.data_name, n_df=n_df)
     X = X.numpy() if isinstance(X, torch.Tensor) else X
     y = y.numpy() if isinstance(y, torch.Tensor) else y
 
