@@ -386,8 +386,8 @@ def _plot_defense_figures(
                     bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
         plt.tight_layout()
-        out_path = os.path.join(plot_out, f'defense_eps_dist_fig{fig_num}.pdf')
-        plt.savefig(out_path, bbox_inches='tight')
+        out_path = os.path.join(plot_out, f'defense_eps_dist_fig{fig_num}.png')
+        plt.savefig(out_path, dpi=150, bbox_inches='tight')
         print(f'Saved {out_path}')
         plt.close(fig)
 
