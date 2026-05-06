@@ -246,7 +246,7 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
     dataset = IndexedTensorDataset(X_tensor, y_tensor)
     num_classes = int(y_tensor.max().item()) + 1
 
-    if defense_type in ('none', 'hamp'):
+    if defense_type in ('none', 'hamp', 'hamp_testonly'):
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         hamp_gamma = getattr(args, 'hamp_gamma', 0.95)
@@ -265,6 +265,11 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
                     soft_labels = generate_soft_labels(y_b, num_classes, p).to(device)
                     loss = kl_divergence_with_entropy_regularization(logits, soft_labels, hamp_alpha_entropy)
                 else:
+                    # 'none' and 'hamp_testonly' both train with standard CE.
+                    # hamp_testonly applies rank-preserving confidence randomization at
+                    # inference time only, which preserves argmax and therefore has no
+                    # effect on the binary correctness vector — demonstrating that
+                    # HAMP's test-time defense cannot hide membership from a label-only attack.
                     loss = F.cross_entropy(logits, y_b)
 
                 loss.backward()
@@ -484,8 +489,8 @@ def main():
 
     # Add HAMP-specific arguments
     parser.add_argument('--defense_type', type=str, default='none',
-                        choices=['none', 'hamp', 'filter'],
-                        help='Defense type: none, hamp, or filter')
+                        choices=['none', 'hamp', 'hamp_testonly', 'filter'],
+                        help='Defense type: none, hamp (train+test), hamp_testonly (test-time only), or filter')
     parser.add_argument('--hamp_gamma', type=float, default=0.95,
                         help='HAMP target entropy as fraction of max (0-1)')
     parser.add_argument('--hamp_alpha_entropy', type=float, default=1.0,
