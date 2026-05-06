@@ -10,10 +10,18 @@ Supports three defense types:
 - none: standard CE training
 - hamp: entropy regularization + label smoothing (train-time) + confidence randomization (test-time)
 - filter: gradient-norm filtering during training
+
+Bug fixes applied:
+1. compute_eps_lower_from_mia return values were unpacked in wrong order (max_t, emp_eps).
+2. drop_mask mutations inside clip_and_accum_grads were not propagated back to the
+   outer drop_mask array because batch_drop_mask was only a view/copy.
+3. Epoch-end per-class filter could include samples still flagged as 1 (pending ascent)
+   in the active set; all 1s are now flushed to 2 before the filter runs.
+4. generate_augmentations used torch.roll which wraps pixel content across boundaries;
+   replaced with zero-padded shifting so augmentations match real pipeline behaviour.
 """
 
 import os
-import time
 import copy
 import torch
 import torch.nn as nn
@@ -150,24 +158,64 @@ def rank_preserving_score_replacement(logits):
 # Augmentation and Attack Functions
 # ============================================================================
 
+def shift_image(x, shift_h, shift_w):
+    """
+    Shift a (C, H, W) image tensor by (shift_h, shift_w) pixels using zero-padding.
+
+    Positive shift_h moves content DOWN (rows shift toward higher indices).
+    Positive shift_w moves content RIGHT (cols shift toward higher indices).
+
+    Unlike torch.roll, pixels shifted beyond the boundary are replaced with zeros
+    rather than wrapping around, matching standard data-augmentation behaviour.
+
+    Args:
+        x: tensor of shape (..., H, W)
+        shift_h: vertical shift in pixels (may be negative)
+        shift_w: horizontal shift in pixels (may be negative)
+
+    Returns:
+        shifted tensor of the same shape as x
+    """
+    if shift_h == 0 and shift_w == 0:
+        return x.clone()
+
+    pad_h = abs(shift_h)
+    pad_w = abs(shift_w)
+
+    # F.pad order: (left, right, top, bottom)
+    x_padded = F.pad(x, (pad_w, pad_w, pad_h, pad_h), mode='constant', value=0)
+
+    # Crop back to original spatial size, offset by the shift direction
+    H_orig = x.shape[-2]
+    W_orig = x.shape[-1]
+
+    # If shift_h > 0 we want content moved DOWN, so crop starting from top=0 (not pad_h)
+    top  = pad_h - shift_h   # shift_h > 0 → top < pad_h → crop starts earlier (moves down)
+    left = pad_w - shift_w
+
+    return x_padded[..., top:top + H_orig, left:left + W_orig].clone()
+
+
 def generate_augmentations(x, num_augmentations, use_flip=True):
     """
-    Generate fixed augmentations: shifts + horizontal flips.
+    Generate fixed augmentations: zero-padded shifts + horizontal flips.
+
+    FIX (Bug 4): replaced torch.roll (wrap-around) with zero-padded shifting so
+    augmented images do not contain wrap-around pixel artefacts.
 
     For CIFAR (use_flip=True): 2 flips × 3 shifts × 3 shifts = 18 augmentations
     For MNIST (use_flip=False): first 18 of 5×5 shifts
 
     Args:
-        x: input tensor, shape (..., H, W) or (..., C, H, W)
+        x: input tensor, shape (C, H, W)
         num_augmentations: number to generate
         use_flip: whether to apply horizontal flips
 
     Returns:
-        list of augmented tensors
+        list of augmented tensors, each shape (C, H, W)
     """
     augmentations = []
     shifts = [-4, -2, 0] if use_flip else list(range(-2, 3))
-
     flip_opts = [False, True] if use_flip else [False]
 
     for do_flip in flip_opts:
@@ -180,9 +228,8 @@ def generate_augmentations(x, num_augmentations, use_flip=True):
                 if do_flip:
                     aug = torch.flip(aug, dims=[-2])
 
-                aug = torch.roll(aug, shifts=shift_h, dims=-2)
-                aug = torch.roll(aug, shifts=shift_w, dims=-1)
-
+                # BUG FIX: use zero-padded shift instead of torch.roll
+                aug = shift_image(aug, shift_h, shift_w)
                 augmentations.append(aug)
 
     return augmentations
@@ -197,9 +244,9 @@ def generate_binary_correctness_vector(model, x, y, augmentations, device):
 
     Args:
         model: trained model (in eval mode)
-        x: original input (unused, augmentations already prepared)
-        y: true class
-        augmentations: list of augmented inputs
+        x: original input (unused here; augmentations already prepared)
+        y: true class (int)
+        augmentations: list of augmented inputs, each shape (C, H, W)
         device: torch device
 
     Returns:
@@ -232,7 +279,7 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
         canary_x, canary_y: unused here, kept for signature consistency
         device: torch device
         args: argument namespace
-        defense_type: 'none', 'hamp', or 'filter'
+        defense_type: 'none', 'hamp', 'hamp_testonly', or 'filter'
 
     Returns:
         trained model
@@ -287,12 +334,12 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
 
         criterion = nn.CrossEntropyLoss()
         scores = np.zeros(len(dataset), dtype=np.float32)
-        # 0 = active, 1 = flagged for gradient ascent, 2 = dropped
+        # 0 = active, 1 = flagged for gradient ascent, 2 = permanently dropped
         drop_mask = np.zeros(len(dataset), dtype=np.int8)
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-        # Lazy projection matrix state (updated by clip_and_accum_grads_block internally)
+        # Lazy projection matrix state (populated inside clip_and_accum_grads)
         grad_dir_proj = rand_proj_mat = maxmin_proj_mat = None
         alignment_proj_mat = grad_accel_proj = grad_jerk_proj = None
         grad_norm_hist = grad_norm_hist_pos = None
@@ -345,7 +392,11 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
                 )
 
                 batch_indices = global_indices.cpu().numpy()
-                batch_drop_mask = drop_mask[batch_indices]
+
+                # BUG FIX (Bug 2): take an explicit copy so that mutations made
+                # inside clip_and_accum_grads are written back into batch_drop_mask
+                # and then propagated back into the global drop_mask array below.
+                batch_drop_mask = drop_mask[batch_indices].copy()
 
                 curr_accumulated_gradients, scores = clip_and_accum_grads(
                     model, curr_X, curr_y, optimizer, criterion, max_grad_norm,
@@ -361,6 +412,13 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
                     defense_apply_ascent=defense_apply_ascent,
                 )
 
+                # BUG FIX (Bug 2 cont.): write batch_drop_mask mutations back to
+                # the global drop_mask *before* we use it for the ascent promotion.
+                drop_mask[batch_indices] = batch_drop_mask
+
+                # Samples that received gradient ascent (1) are now permanently dropped (2)
+                drop_mask[batch_indices[batch_drop_mask == 1]] = 2
+
                 # Propagate lazily created projection matrices back from defense_cfg
                 if defense_cfg.grad_dir_proj is not None:
                     grad_dir_proj = defense_cfg.grad_dir_proj
@@ -374,9 +432,6 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
                     grad_accel_proj = defense_cfg.grad_accel_proj
                 if defense_cfg.grad_jerk_proj is not None:
                     grad_jerk_proj = defense_cfg.grad_jerk_proj
-
-                # Samples that received gradient ascent (1) are now permanently dropped (2)
-                drop_mask[batch_indices[batch_drop_mask == 1]] = 2
 
                 # Apply the accumulated gradients
                 with torch.no_grad():
@@ -392,6 +447,12 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
 
                 optimizer.step()
                 optimizer.zero_grad()
+
+            # BUG FIX (Bug 3): flush all pending-ascent entries (1 → 2) before
+            # building active_mask for the epoch-end per-class filter.  Without
+            # this, samples flagged in the last batch of the epoch are still 1
+            # and would be incorrectly included in the active set.
+            drop_mask[drop_mask == 1] = 2
 
             # Filter top-k samples per class at end of each epoch
             if epoch % defense_filter_every == 0:
@@ -425,7 +486,7 @@ def audit(binary_vectors_in, binary_vectors_out, alpha, delta):
         delta: DP delta parameter
 
     Returns:
-        dict with 'emp_eps', 'scores', 'labels', 'threshold'
+        dict with 'emp_eps', 'scores', 'labels'
     """
     # Stack features: (2N, 18)
     all_features = np.vstack([binary_vectors_in, binary_vectors_out])
@@ -438,7 +499,6 @@ def audit(binary_vectors_in, binary_vectors_out, alpha, delta):
     # LOO cross-validation with logistic regression
     scores = np.zeros(len(all_features))
     for i in range(len(all_features)):
-        # Train on all except i-th
         train_mask = np.ones(len(all_features), dtype=bool)
         train_mask[i] = False
 
@@ -448,11 +508,13 @@ def audit(binary_vectors_in, binary_vectors_out, alpha, delta):
         clf = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
         clf.fit(X_train, y_train)
 
-        # Score held-out sample (probability of class 1)
+        # Score held-out sample (probability of class 1 = in-world)
         scores[i] = clf.predict_proba(all_features[i:i+1])[0, 1]
 
-    # Compute empirical epsilon
-    _, emp_eps = compute_eps_lower_from_mia(
+    # BUG FIX (Bug 1): compute_eps_lower_from_mia returns (max_t, emp_eps).
+    # The original code had them unpacked as (_, emp_eps) which discarded emp_eps
+    # and stored max_t instead, producing a wrong (typically very small) epsilon.
+    max_t, emp_eps = compute_eps_lower_from_mia(
         scores,
         all_labels,
         alpha,
@@ -462,6 +524,7 @@ def audit(binary_vectors_in, binary_vectors_out, alpha, delta):
 
     return {
         'emp_eps': float(emp_eps) if emp_eps is not None else 0.0,
+        'max_t': float(max_t) if max_t is not None else 0.0,
         'scores': scores,
         'labels': all_labels,
     }
@@ -484,7 +547,6 @@ def distribute_reps(n_reps, world_size):
 # ============================================================================
 
 def main():
-    # Parse arguments
     parser = build_parser()
 
     # Add HAMP-specific arguments
@@ -505,6 +567,7 @@ def main():
         rank = int(os.environ.get('RANK', 0))
         world_size = int(os.environ.get('WORLD_SIZE', 1))
         device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(device)
     else:
         rank = 0
         world_size = 1
@@ -512,12 +575,10 @@ def main():
 
     is_rank_zero = (rank == 0)
 
-    # Seeding
     seed = args.seed
     np.random.seed(seed + rank)
 
-    # Load data (load_data returns tensors; convert to numpy for this script)
-    # n_df=0 means "full dataset" in build_parser but load_data only handles None/<0
+    # Load data
     n_df = None if args.n_df == 0 else args.n_df
     X, y, out_dim = load_data(args.data_name, n_df=n_df)
     X = X.numpy() if isinstance(X, torch.Tensor) else X
@@ -529,7 +590,6 @@ def main():
         canary_x = torch.zeros(X.shape[1:], dtype=torch.float32)
         canary_y = 0
     elif args.target_type == 'mislabeled':
-        # Use a random training sample, mislabel it
         idx = np.random.randint(len(X))
         canary_x = torch.from_numpy(X[idx]).float()
         canary_y = args.mislabeled_target_class
@@ -546,14 +606,15 @@ def main():
         print(f"Defense: {args.defense_type}")
         print(f"Distributed: rank={rank}, world_size={world_size}")
 
-    # Fixed init model — all ranks use the same seed so they share identical initialization
+    # Fixed init — all ranks share the same initialisation seed so they start
+    # from an identical model; rank-specific seed is set afterwards for per-rep
+    # training variation.
     torch.manual_seed(seed)
     init_model = Models[args.model_name](X.shape, out_dim=out_dim)
     if args.model_name == 'wideresnet':
         init_wideresnet(init_model)
     else:
         xavier_init_model(init_model)
-    # Rank-specific seed for per-rep training variation
     torch.manual_seed(seed + rank)
 
     # Distribute reps
@@ -562,32 +623,25 @@ def main():
 
     binary_vectors = {'in': [], 'out': []}
 
-    # Training loop
     for world in ['in', 'out']:
         for rep_id in my_reps:
             if is_rank_zero:
                 print(f"[{world}] Rep {rep_id}")
 
-            # Prepare data for this world
             X_world = X.copy()
             y_world = y.copy()
 
-            # For in-world: include canary in training set
             if world == 'in':
                 canary_x_np = canary_x.cpu().numpy() if isinstance(canary_x, torch.Tensor) else canary_x
                 X_world = np.vstack([X_world, canary_x_np[np.newaxis, ...]])
                 y_world = np.concatenate([y_world, [canary_y]])
-            # For out-world: canary is NOT in training set
 
-            # Create model copy
             model = copy.deepcopy(init_model)
             model.to(device)
 
-            # Train
             train_model(model, X_world, y_world, canary_x, canary_y, device, args,
                        defense_type=args.defense_type)
 
-            # Generate augmentations and get binary vector
             use_flip = (args.data_name != 'mnist')
             augmentations = generate_augmentations(canary_x, 18, use_flip=use_flip)
             binary_vec = generate_binary_correctness_vector(model, canary_x, canary_y,
@@ -625,11 +679,9 @@ def main():
             binary_vectors_in = np.vstack(all_binary_in)
             binary_vectors_out = np.vstack(all_binary_out)
 
-            # Run audit
             audit_result = audit(binary_vectors_in, binary_vectors_out,
                                 alpha=args.alpha, delta=args.delta)
 
-            # Save outputs
             np.save(output_dir / 'binary_vectors_in.npy', binary_vectors_in)
             np.save(output_dir / 'binary_vectors_out.npy', binary_vectors_out)
             np.save(output_dir / 'emp_eps.npy', np.array(audit_result['emp_eps']))
