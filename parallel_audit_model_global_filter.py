@@ -252,8 +252,7 @@ def train_model(model_name, X, y, X_target, y_target, epsilon, delta, max_grad_n
             target_epsilon=epsilon,
             target_delta=delta,
             sample_rate=sample_rate,
-            epochs=n_epochs,
-            accountant='rdp'
+            epochs=n_epochs
         )
         if rank == 0:
             print(f"DP config: eps={epsilon}, delta={delta}, sample_rate={sample_rate:.6f}, epochs={n_epochs}, noise_multiplier={noise_multiplier}")
