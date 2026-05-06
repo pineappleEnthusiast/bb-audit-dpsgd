@@ -298,6 +298,100 @@ def _recompute_subset(in_arr, out_arr, indices, seed, alpha, delta):
     return out
 
 
+def _plot_defense_figures(
+    eps_def,
+    canary_eps_nd_full,
+    nc_mask,
+    def_in,
+    def_out,
+    args,
+    n_samples,
+    eff_alpha,
+    plot_out,
+):
+    """
+    Figure 1: histogram of non-canary post-defense eps at eff_alpha,
+              with a reference line at canary pre-defense eps.
+    Figure 2: same but non-canary eps recomputed at Bonferroni alpha/n.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except ImportError:
+        sys.exit("matplotlib required for --plot: pip install matplotlib")
+
+    import os
+
+    METHODS = [
+        ('GDP no holdout (inflated)', 0),
+        ('GDP 50% holdout (valid lb)', 2),
+        ('CP  no holdout (inflated)', 1),
+        ('CP  50% holdout (valid lb)', 3),
+    ]
+
+    bonf_alpha = args.alpha / n_samples
+
+    # Recompute defense eps at Bonferroni alpha (only for currently-nonzero samples).
+    print(f'\nRecomputing non-canary defense eps at Bonferroni α/n = {bonf_alpha:.2e} for Figure 2...')
+    eps_def_bonf = np.zeros((n_samples, 4))
+    for col in range(4):
+        idx = np.where(nc_mask & (eps_def[:, col] > 0))[0]
+        if len(idx) > 0:
+            rec = _recompute_subset(def_in, def_out, idx, args.seed, bonf_alpha, args.delta)
+            eps_def_bonf[idx, col] = rec[:, col]
+
+    os.makedirs(plot_out, exist_ok=True)
+
+    configs = [
+        (eps_def,      eff_alpha,  f'per-sample α = {eff_alpha:.2e}',       1),
+        (eps_def_bonf, bonf_alpha, f'Bonferroni α/n = {bonf_alpha:.2e}',    2),
+    ]
+
+    for eps_use, alpha_val, alpha_label, fig_num in configs:
+        fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+        fig.suptitle(
+            'Non-canary empirical ε (post-defense) vs. canary ε (pre-defense)\n'
+            f'{alpha_label}',
+            fontsize=12,
+        )
+
+        for ax, (mname, col) in zip(axes.flatten(), METHODS):
+            nc_eps  = eps_use[nc_mask, col]
+            ref_eps = float(canary_eps_nd_full[col])
+
+            x_hi = max(float(nc_eps.max()), ref_eps * 1.05, 0.05)
+            bins = np.linspace(0.0, x_hi, 61)
+            counts, edges = np.histogram(nc_eps, bins=bins)
+
+            ax.bar(edges[:-1], np.where(counts > 0, counts, np.nan),
+                   width=np.diff(edges), align='edge',
+                   color='steelblue', alpha=0.75, label='Non-canary (defense)')
+
+            ax.axvline(ref_eps, color='crimson', linestyle='--', linewidth=2,
+                       label=f'Canary ε (pre-defense) = {ref_eps:.2f}')
+
+            ax.set_yscale('log')
+            ax.set_ylim(bottom=0.5)
+            ax.set_xlabel('Empirical ε', fontsize=10)
+            ax.set_ylabel('# samples', fontsize=10)
+            ax.set_title(mname, fontsize=10)
+            ax.legend(fontsize=8)
+
+            frac_pos   = 100.0 * (nc_eps > 0).mean()
+            frac_above = 100.0 * (nc_eps > ref_eps).mean()
+            ax.text(0.97, 0.03,
+                    f'{frac_pos:.1f}% have ε > 0\n{frac_above:.1f}% exceed canary ref',
+                    transform=ax.transAxes, ha='right', va='bottom', fontsize=8,
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+
+        plt.tight_layout()
+        out_path = os.path.join(plot_out, f'defense_eps_dist_fig{fig_num}.pdf')
+        plt.savefig(out_path, bbox_inches='tight')
+        print(f'Saved {out_path}')
+        plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -320,6 +414,10 @@ def main():
                         help='Samples per worker chunk (default 200)')
     parser.add_argument('--save', action='store_true',
                         help='Save per_sample_eps_*.npy into each directory')
+    parser.add_argument('--plot', action='store_true',
+                        help='Generate eps distribution figures (requires matplotlib)')
+    parser.add_argument('--plot_out', type=str, default='.',
+                        help='Directory to write figures (default: current dir)')
     args = parser.parse_args()
 
     nd_in,  nd_out  = _load_losses(args.no_defense_dir)
@@ -482,6 +580,19 @@ def main():
                 p = os.path.join(data_dir, f'per_sample_eps_{col}.npy')
                 np.save(p, eps_arr[:, method])
                 print(f"Saved {p}")
+
+    if args.plot:
+        _plot_defense_figures(
+            eps_def=eps_def,
+            canary_eps_nd_full=canary_eps_nd_full,
+            nc_mask=nc_mask,
+            def_in=def_in,
+            def_out=def_out,
+            args=args,
+            n_samples=n_samples,
+            eff_alpha=eff_alpha,
+            plot_out=args.plot_out,
+        )
 
 
 if __name__ == '__main__':
