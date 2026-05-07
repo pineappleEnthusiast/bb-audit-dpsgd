@@ -636,6 +636,12 @@ def main():
             np.save(output_dir / 'mia_scores.npy', audit_result['scores'])
             np.save(output_dir / 'mia_labels.npy', audit_result['labels'])
 
+            # Split mia_scores back into per-world arrays so print_tradeoff.py works.
+            labels = audit_result['labels']
+            scores = audit_result['scores']
+            np.save(output_dir / 'scores_in.npy',  scores[labels == 1].astype(np.float32))
+            np.save(output_dir / 'scores_out.npy', scores[labels == 0].astype(np.float32))
+
             print(f"Empirical epsilon: {audit_result['emp_eps']:.6f}")
             print(f"Outputs saved to {output_dir}")
 
