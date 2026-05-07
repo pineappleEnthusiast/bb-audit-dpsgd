@@ -5,9 +5,10 @@ Usage:
     python reaudit_hamp.py <out_dir>
 
 Loads binary_vectors_in.npy and binary_vectors_out.npy from <out_dir>,
-re-runs the LOO logistic regression with class_weight='balanced' (fixes the
-LOO class-imbalance artifact that inflates eps when there is no real signal),
-saves new scores_in.npy / scores_out.npy, and prints the GDP no-holdout eps.
+re-runs the LOO logistic regression with an exactly-balanced training set per
+fold (fixes the LOO class-imbalance artifact that inflates eps when there is no
+real signal), saves new scores_in.npy / scores_out.npy, and prints the GDP
+no-holdout eps.
 
 Run print_tradeoff.py on <out_dir> afterwards to get the full
 GDP/CP x no-holdout/holdout breakdown.
@@ -36,13 +37,30 @@ def reaudit(out_dir, alpha=0.1, delta=1e-5):
         np.zeros(len(bv_out), dtype=np.int64),
     ])
 
+    in_idx  = np.where(all_labels == 1)[0]
+    out_idx = np.where(all_labels == 0)[0]
+
     scores = np.zeros(len(all_features))
     for i in range(len(all_features)):
-        mask = np.ones(len(all_features), dtype=bool)
-        mask[i] = False
-        clf = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs',
-                                 class_weight='balanced')
-        clf.fit(all_features[mask], all_labels[mask])
+        # Build a balanced training set: remove sample i, then subsample the
+        # majority class down to match the minority class size.  This ensures
+        # the LR intercept is not biased by class imbalance (N-1 vs N), which
+        # would create artifactually separated score clusters even for
+        # uninformative (all-zero) binary vectors.
+        rng = np.random.default_rng(seed=i)
+        if all_labels[i] == 1:
+            train_in  = in_idx[in_idx != i]           # N-1 in-world
+            train_out = rng.choice(out_idx, size=len(train_in), replace=False)
+        else:
+            train_out = out_idx[out_idx != i]          # N-1 out-world
+            train_in  = rng.choice(in_idx, size=len(train_out), replace=False)
+
+        train_idx = np.concatenate([train_in, train_out])
+        X_train = all_features[train_idx]
+        y_train = all_labels[train_idx]
+
+        clf = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
+        clf.fit(X_train, y_train)
         scores[i] = clf.predict_proba(all_features[i:i+1])[0, 1]
 
     scores_in  = scores[all_labels == 1]
