@@ -11,7 +11,7 @@
 module load cuda/12.4
 
 set -e
-cd $SCRATCH
+cd $WORK
 eval "$(conda shell.bash hook)"
 conda activate bb_audit_dpsgd
 cd bb-audit-dpsgd
