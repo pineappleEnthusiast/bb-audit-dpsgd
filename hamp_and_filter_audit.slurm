@@ -49,9 +49,9 @@ if [ "${DEFENSE_TYPE}" = "filter" ]; then
     LR="3.0"
     EXTRA_ARGS="--epsilon 10.0 --max_grad_norm 1.0 --defense_k 5 --defense_score_fn grad_norm_unclipped --defense_score_norm linf"
 elif [ "${DEFENSE_TYPE}" = "hamp" ]; then
-    # HAMP default learning rate and entropy regularization arguments
+    # HAMP default learning rate and entropy regularization arguments (matched to paper's sweep)
     LR="0.05"
-    EXTRA_ARGS="--hamp_gamma 0.95 --hamp_alpha_entropy 1.0"
+    EXTRA_ARGS="--hamp_gamma 0.9997 --hamp_alpha_entropy 0.005"
 else
     # Baseline with no defense
     LR="0.05"
