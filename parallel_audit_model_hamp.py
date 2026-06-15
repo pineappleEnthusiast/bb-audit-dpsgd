@@ -36,7 +36,7 @@ from torch.utils.data import DataLoader
 from models import Models
 from utils.data import load_data
 from utils.training import (
-    xavier_init_model, init_wideresnet, IndexedTensorDataset
+    xavier_init_model, init_wideresnet, IndexedTensorDataset, test_model
 )
 from utils.dpsgd import clip_and_accum_grads, DefenseConfig
 from utils.audit import compute_eps_lower_from_mia
@@ -623,6 +623,7 @@ def main():
     # Load data
     n_df = None if args.n_df == 0 else args.n_df
     X, y, out_dim = load_data(args.data_name, n_df=n_df)
+    X_test, y_test, _ = load_data(args.data_name, None, split='test')
     X = X.numpy() if isinstance(X, torch.Tensor) else X
     y = y.numpy() if isinstance(y, torch.Tensor) else y
 
@@ -688,6 +689,8 @@ def main():
     my_shadow_models = reps_per_rank[rank]
 
     local_binary_vectors = []
+    local_train_accs = []
+    local_test_accs = []
 
     for shadow_idx in my_shadow_models:
         if is_rank_zero:
@@ -703,6 +706,12 @@ def main():
 
         train_model(model, X_train, y_train, None, None, device, args,
                     defense_type=args.defense_type)
+
+        # Compute train/test accuracy of this shadow model
+        train_acc = test_model(model, torch.from_numpy(X_train).float(), torch.from_numpy(y_train).long())
+        test_acc = test_model(model, X_test, y_test)
+        local_train_accs.append(train_acc)
+        local_test_accs.append(test_acc)
 
         # Evaluate correctness vector over 18 augmentations for all canaries
         model.eval()
@@ -726,6 +735,8 @@ def main():
     if len(local_binary_vectors) > 0:
         np.save(output_dir / f'binary_vectors_rank{rank}.npy', np.array(local_binary_vectors))
         np.save(output_dir / f'shadow_indices_rank{rank}.npy', np.array(my_shadow_models))
+        np.save(output_dir / f'train_accs_rank{rank}.npy', np.array(local_train_accs))
+        np.save(output_dir / f'test_accs_rank{rank}.npy', np.array(local_test_accs))
 
     if world_size > 1:
         dist.barrier()
@@ -733,10 +744,14 @@ def main():
     # Rank 0: aggregate and audit
     if is_rank_zero:
         correctness_full = np.zeros((args.num_canaries, args.num_shadow, 18), dtype=np.float32)
+        all_train_accs = np.zeros(args.num_shadow, dtype=np.float32)
+        all_test_accs = np.zeros(args.num_shadow, dtype=np.float32)
 
         for r in range(world_size):
             path_vectors = output_dir / f'binary_vectors_rank{r}.npy'
             path_indices = output_dir / f'shadow_indices_rank{r}.npy'
+            path_train_accs = output_dir / f'train_accs_rank{r}.npy'
+            path_test_accs = output_dir / f'test_accs_rank{r}.npy'
 
             if path_vectors.exists() and path_indices.exists():
                 local_vectors = np.load(path_vectors)
@@ -744,6 +759,13 @@ def main():
 
                 for i, shadow_idx in enumerate(local_indices):
                     correctness_full[:, shadow_idx, :] = local_vectors[i]
+
+                if path_train_accs.exists() and path_test_accs.exists():
+                    local_train_accs = np.load(path_train_accs)
+                    local_test_accs = np.load(path_test_accs)
+                    for i, shadow_idx in enumerate(local_indices):
+                        all_train_accs[shadow_idx] = local_train_accs[i]
+                        all_test_accs[shadow_idx] = local_test_accs[i]
 
         # Audit with tuned C
         tuned_result = audit_multi_canary(
@@ -761,6 +783,9 @@ def main():
         print("=" * 60)
         print("AUDIT RESULTS (Leave-One-Out CV Logistic Regression)")
         print("=" * 60)
+        print(f"Mean Train Accuracy of Shadow Models: {all_train_accs.mean() * 100:.2f}%")
+        print(f"Mean Test Accuracy of Shadow Models:  {all_test_accs.mean() * 100:.2f}%")
+        print("-" * 40)
         print(f"Tuned C ({args.logreg_c}):")
         print(f"  Balanced Accuracy : {tuned_result['balanced_accuracy']:.4f}")
         print(f"  Empirical Epsilon : {tuned_result['emp_eps']:.6f}")
@@ -783,6 +808,8 @@ def main():
         np.save(output_dir / 'mia_labels.npy', tuned_result['labels'])
         np.save(output_dir / 'scores_in.npy',  tuned_result['scores_in'].astype(np.float32))
         np.save(output_dir / 'scores_out.npy', tuned_result['scores_out'].astype(np.float32))
+        np.save(output_dir / 'shadow_train_accs.npy', all_train_accs)
+        np.save(output_dir / 'shadow_test_accs.npy', all_test_accs)
 
         print(f"Outputs saved to {output_dir}")
 
