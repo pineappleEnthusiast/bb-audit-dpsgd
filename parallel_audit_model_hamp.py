@@ -511,17 +511,20 @@ def audit_multi_canary(correctness_full, shadow_membership_mask, canary_indices,
             # test_xs: correctness features of this canary on the target shadow model (shape (1, 18))
             test_xs = correctness_full[sample_idx, target_model_idx].reshape(1, -1)
 
-            clf = LogisticRegression(
-                C=logreg_C,
-                penalty="l2",
-                random_state=seed,
-                warm_start=False,
-                max_iter=1000,
-                solver="lbfgs"
-            )
-            clf.fit(train_xs, train_ys)
-
-            scores_raw[sample_idx, target_model_idx] = clf.predict_proba(test_xs)[0, 1]
+            if len(np.unique(train_ys)) < 2:
+                # Fallback if there is only one class in the training labels (e.g. during small sanity checks)
+                scores_raw[sample_idx, target_model_idx] = float(train_ys[0])
+            else:
+                clf = LogisticRegression(
+                    C=logreg_C,
+                    penalty="l2",
+                    random_state=seed,
+                    warm_start=False,
+                    max_iter=1000,
+                    solver="lbfgs"
+                )
+                clf.fit(train_xs, train_ys)
+                scores_raw[sample_idx, target_model_idx] = clf.predict_proba(test_xs)[0, 1]
 
     all_scores = scores_raw.flatten()
     all_labels = canary_membership.flatten()
