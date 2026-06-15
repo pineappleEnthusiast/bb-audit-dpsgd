@@ -787,6 +787,7 @@ def main():
         print(f"Outputs saved to {output_dir}")
 
     if world_size > 1:
+        dist.barrier()
         dist.destroy_process_group()
 
 
