@@ -215,7 +215,7 @@ def generate_augmentations(x, num_augmentations, use_flip=True):
         list of augmented tensors, each shape (C, H, W)
     """
     augmentations = []
-    shifts = [-4, -2, 0] if use_flip else list(range(-2, 3))
+    shifts = [0, -4, 4] if use_flip else list(range(-2, 3))
     flip_opts = [False, True] if use_flip else [False]
 
     for do_flip in flip_opts:
@@ -226,7 +226,7 @@ def generate_augmentations(x, num_augmentations, use_flip=True):
 
                 aug = x.clone()
                 if do_flip:
-                    aug = torch.flip(aug, dims=[-2])
+                    aug = torch.flip(aug, dims=[-1])
 
                 # BUG FIX: use zero-padded shift instead of torch.roll
                 aug = shift_image(aug, shift_h, shift_w)
@@ -475,58 +475,89 @@ def train_model(model, X, y, canary_x, canary_y, device, args, defense_type='non
 # Audit Function
 # ============================================================================
 
-def audit(binary_vectors_in, binary_vectors_out, alpha, delta):
+def audit_multi_canary(correctness_full, shadow_membership_mask, canary_indices, logreg_C, seed, alpha, delta):
     """
-    Audit membership inference using LOO logistic regression.
+    Audit membership inference using LOO logistic regression per canary * per shadow model.
 
     Args:
-        binary_vectors_in: shape (N, 18) - binary vectors from in-world models
-        binary_vectors_out: shape (N, 18) - binary vectors from out-world models
-        alpha: significance level
+        correctness_full: shape (num_canaries, num_shadow, 18)
+        shadow_membership_mask: shape (num_samples, num_shadow)
+        canary_indices: array/list of canary sample indices
+        logreg_C: logistic regression C parameter
+        seed: random seed for reproducibility
+        alpha: significance level for empirical epsilon
         delta: DP delta parameter
 
     Returns:
-        dict with 'emp_eps', 'scores', 'labels'
+        dict with metrics and scores
     """
-    # Stack features: (2N, 18)
-    all_features = np.vstack([binary_vectors_in, binary_vectors_out])
-    # Stack labels: 1 for in, 0 for out
-    all_labels = np.concatenate([
-        np.ones(len(binary_vectors_in), dtype=np.int64),
-        np.zeros(len(binary_vectors_out), dtype=np.int64)
-    ])
+    import sklearn.metrics
+    num_canaries = len(canary_indices)
+    num_shadow = correctness_full.shape[1]
 
-    # LOO cross-validation with logistic regression
-    scores = np.zeros(len(all_features))
-    for i in range(len(all_features)):
-        train_mask = np.ones(len(all_features), dtype=bool)
-        train_mask[i] = False
+    # Extract the membership mask specifically for the canary indices (1 for IN, 0 for OUT)
+    canary_membership = shadow_membership_mask[canary_indices].astype(int)
 
-        X_train = all_features[train_mask]
-        y_train = all_labels[train_mask]
+    scores_raw = np.zeros((num_canaries, num_shadow), dtype=np.float32)
 
-        clf = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
-        clf.fit(X_train, y_train)
+    for target_model_idx in range(num_shadow):
+        for sample_idx in range(num_canaries):
+            # train_ys: membership of this canary across all other shadow models (length num_shadow - 1)
+            train_ys = np.delete(canary_membership[sample_idx], target_model_idx, axis=0)
 
-        # Score held-out sample (probability of class 1 = in-world)
-        scores[i] = clf.predict_proba(all_features[i:i+1])[0, 1]
+            # train_xs: correctness features of this canary across all other shadow models (shape (num_shadow - 1, 18))
+            train_xs = np.delete(correctness_full[sample_idx], target_model_idx, axis=0)
 
-    # BUG FIX (Bug 1): compute_eps_lower_from_mia returns (max_t, emp_eps).
-    # The original code had them unpacked as (_, emp_eps) which discarded emp_eps
-    # and stored max_t instead, producing a wrong (typically very small) epsilon.
+            # test_xs: correctness features of this canary on the target shadow model (shape (1, 18))
+            test_xs = correctness_full[sample_idx, target_model_idx].reshape(1, -1)
+
+            clf = LogisticRegression(
+                C=logreg_C,
+                penalty="l2",
+                random_state=seed,
+                warm_start=False,
+                max_iter=1000,
+                solver="lbfgs"
+            )
+            clf.fit(train_xs, train_ys)
+
+            scores_raw[sample_idx, target_model_idx] = clf.predict_proba(test_xs)[0, 1]
+
+    all_scores = scores_raw.flatten()
+    all_labels = canary_membership.flatten()
+
     max_t, emp_eps = compute_eps_lower_from_mia(
-        scores,
+        all_scores,
         all_labels,
         alpha,
         delta,
         method='GDP'
     )
 
+    # Balanced accuracy calculation: threshold at median of all scores
+    prediction_threshold = np.median(all_scores)
+    pred_membership = all_scores > prediction_threshold
+    balanced_accuracy = np.mean(pred_membership == all_labels)
+
+    # TPR at FPR calculation
+    fpr, tpr, _ = sklearn.metrics.roc_curve(y_true=all_labels, y_score=all_scores)
+    tpr_at_fpr = {}
+    target_fprs = (0.001, 0.002, 0.005, 0.01, 0.02, 0.05)
+    for target_fpr in target_fprs:
+        valid_tpr = tpr[fpr <= target_fpr]
+        tpr_at_fpr[target_fpr] = valid_tpr[-1] if len(valid_tpr) > 0 else 0.0
+
     return {
         'emp_eps': float(emp_eps) if emp_eps is not None else 0.0,
         'max_t': float(max_t) if max_t is not None else 0.0,
-        'scores': scores,
+        'balanced_accuracy': float(balanced_accuracy),
+        'tpr_at_fpr': tpr_at_fpr,
+        'scores_in': all_scores[all_labels == 1],
+        'scores_out': all_scores[all_labels == 0],
+        'scores': all_scores,
         'labels': all_labels,
+        'correctness_in': correctness_full[canary_membership == 1],
+        'correctness_out': correctness_full[canary_membership == 0],
     }
 
 
@@ -557,6 +588,14 @@ def main():
                         help='HAMP target entropy as fraction of max (0-1)')
     parser.add_argument('--hamp_alpha_entropy', type=float, default=1.0,
                         help='HAMP entropy regularization weight')
+    
+    # Paper-style multi-canary audit arguments
+    parser.add_argument('--num_shadow', type=int, default=64,
+                        help='Number of shadow models to train')
+    parser.add_argument('--num_canaries', type=int, default=500,
+                        help='Number of canaries to audit')
+    parser.add_argument('--logreg_c', type=float, default=1.0,
+                        help='Logistic regression regularization parameter C')
 
     args = parser.parse_args()
 
@@ -584,31 +623,55 @@ def main():
     X = X.numpy() if isinstance(X, torch.Tensor) else X
     y = y.numpy() if isinstance(y, torch.Tensor) else y
 
-    # Load or create canary
-    canary_x, canary_y = None, None
-    if args.target_type == 'blank':
-        canary_x = torch.zeros(X.shape[1:], dtype=torch.float32)
-        canary_y = 0
-    elif args.target_type == 'mislabeled':
-        idx = np.random.randint(len(X))
-        canary_x = torch.from_numpy(X[idx]).float()
-        canary_y = args.mislabeled_target_class
-    elif args.target_type.endswith('.pt'):
-        canary_data = torch.load(args.target_type)
-        canary_x = canary_data['canary'].float()
-        canary_y = int(canary_data['label'])
+    # Select canary indices and generate labels (mislabeled/label-noise or clean)
+    rng = np.random.default_rng(seed)
+    num_samples = len(X)
+    
+    canary_order = rng.permutation(num_samples)
+    canary_indices = canary_order[:args.num_canaries]
+    
+    # Confirm canary generation and setup targets
+    y_noisy = y.copy()
+    if args.target_type in ('mislabeled', 'label_noise'):
+        if is_rank_zero:
+            print(f"[Confirm] Generating {args.num_canaries} mislabeled (label-noise) canaries by keeping features unchanged and randomly flipping labels to incorrect classes.")
+        for idx in canary_indices:
+            true_label = y[idx]
+            available = [cls for cls in range(out_dim) if cls != true_label]
+            y_noisy[idx] = rng.choice(available)
+    elif args.target_type == 'blank':
+        if is_rank_zero:
+            print(f"[Confirm] Generating {args.num_canaries} blank image canaries.")
+        for idx in canary_indices:
+            X[idx] = np.zeros_like(X[idx])
+            y_noisy[idx] = 0
     else:
-        raise ValueError(f"Unknown target_type: {args.target_type}")
+        if is_rank_zero:
+            print(f"[Confirm] Generating {args.num_canaries} clean canaries (no changes to features or labels).")
+
+    # Generate shadow model membership splits (each sample IN for exactly half the models)
+    rng_splits = np.random.default_rng(seed + 42)
+    assert args.num_shadow % 2 == 0, "num_shadow must be even"
+    uniforms = rng_splits.uniform(size=(args.num_shadow, num_samples))
+    shadow_in_indices_t = np.argsort(uniforms, axis=0)[:args.num_shadow // 2].T
+    
+    shadow_membership_mask = np.zeros((num_samples, args.num_shadow), dtype=bool)
+    for sample_idx in range(num_samples):
+        shadow_membership_mask[sample_idx, shadow_in_indices_t[sample_idx]] = True
+        
+    # Force non-canaries to be IN for all shadow models
+    canary_mask = np.zeros(num_samples, dtype=bool)
+    canary_mask[canary_indices] = True
+    shadow_membership_mask[~canary_mask] = True
 
     if is_rank_zero:
         print(f"Data: {args.data_name}, shape={X.shape}, out_dim={out_dim}")
-        print(f"Canary: {args.target_type}, label={canary_y}")
+        print(f"Canaries: {args.num_canaries} ({args.target_type})")
+        print(f"Shadow Models: {args.num_shadow}")
         print(f"Defense: {args.defense_type}")
         print(f"Distributed: rank={rank}, world_size={world_size}")
 
-    # Fixed init — all ranks share the same initialisation seed so they start
-    # from an identical model; rank-specific seed is set afterwards for per-rep
-    # training variation.
+    # Fixed init for synchronization across ranks
     torch.manual_seed(seed)
     init_model = Models[args.model_name](X.shape, out_dim=out_dim)
     if args.model_name == 'wideresnet':
@@ -617,85 +680,108 @@ def main():
         xavier_init_model(init_model)
     torch.manual_seed(seed + rank)
 
-    # Distribute reps
-    reps_per_rank = distribute_reps(args.n_reps // 2, world_size)
-    my_reps = reps_per_rank[rank]
+    # Distribute shadow models
+    reps_per_rank = distribute_reps(args.num_shadow, world_size)
+    my_shadow_models = reps_per_rank[rank]
 
-    binary_vectors = {'in': [], 'out': []}
+    local_binary_vectors = []
 
-    for world in ['in', 'out']:
-        for rep_id in my_reps:
-            if is_rank_zero:
-                print(f"[{world}] Rep {rep_id}")
+    for shadow_idx in my_shadow_models:
+        if is_rank_zero:
+            print(f"Training shadow model {shadow_idx + 1}/{args.num_shadow}...")
 
-            X_world = X.copy()
-            y_world = y.copy()
+        # Get training subset where membership is True
+        train_idx = np.where(shadow_membership_mask[:, shadow_idx])[0]
+        X_train = X[train_idx]
+        y_train = y_noisy[train_idx]
 
-            if world == 'in':
-                canary_x_np = canary_x.cpu().numpy() if isinstance(canary_x, torch.Tensor) else canary_x
-                X_world = np.vstack([X_world, canary_x_np[np.newaxis, ...]])
-                y_world = np.concatenate([y_world, [canary_y]])
+        model = copy.deepcopy(init_model)
+        model.to(device)
 
-            model = copy.deepcopy(init_model)
-            model.to(device)
+        train_model(model, X_train, y_train, None, None, device, args,
+                    defense_type=args.defense_type)
 
-            train_model(model, X_world, y_world, canary_x, canary_y, device, args,
-                       defense_type=args.defense_type)
+        # Evaluate correctness vector over 18 augmentations for all canaries
+        model.eval()
+        correctness_this_model = []
+        use_flip = (args.data_name != 'mnist')
 
-            use_flip = (args.data_name != 'mnist')
-            augmentations = generate_augmentations(canary_x, 18, use_flip=use_flip)
-            binary_vec = generate_binary_correctness_vector(model, canary_x, canary_y,
-                                                            augmentations, device)
-            binary_vectors[world].append(binary_vec)
+        with torch.no_grad():
+            for c_idx in canary_indices:
+                cx = torch.from_numpy(X[c_idx]).float()
+                cy = int(y_noisy[c_idx])
+                augmentations = generate_augmentations(cx, 18, use_flip=use_flip)
+                binary_vec = generate_binary_correctness_vector(model, cx, cy, augmentations, device)
+                correctness_this_model.append(binary_vec)
+
+        local_binary_vectors.append(np.array(correctness_this_model, dtype=np.float32))
 
     # Save per-rank results
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if len(binary_vectors['in']) > 0:
-        np.save(output_dir / f'binary_vectors_in_rank{rank}.npy',
-                np.array(binary_vectors['in']))
-        np.save(output_dir / f'binary_vectors_out_rank{rank}.npy',
-                np.array(binary_vectors['out']))
+    if len(local_binary_vectors) > 0:
+        np.save(output_dir / f'binary_vectors_rank{rank}.npy', np.array(local_binary_vectors))
+        np.save(output_dir / f'shadow_indices_rank{rank}.npy', np.array(my_shadow_models))
 
     if world_size > 1:
         dist.barrier()
 
     # Rank 0: aggregate and audit
     if is_rank_zero:
-        all_binary_in = []
-        all_binary_out = []
+        correctness_full = np.zeros((args.num_canaries, args.num_shadow, 18), dtype=np.float32)
 
         for r in range(world_size):
-            path_in = output_dir / f'binary_vectors_in_rank{r}.npy'
-            path_out = output_dir / f'binary_vectors_out_rank{r}.npy'
+            path_vectors = output_dir / f'binary_vectors_rank{r}.npy'
+            path_indices = output_dir / f'shadow_indices_rank{r}.npy'
 
-            if path_in.exists():
-                all_binary_in.append(np.load(path_in))
-            if path_out.exists():
-                all_binary_out.append(np.load(path_out))
+            if path_vectors.exists() and path_indices.exists():
+                local_vectors = np.load(path_vectors)
+                local_indices = np.load(path_indices)
 
-        if len(all_binary_in) > 0 and len(all_binary_out) > 0:
-            binary_vectors_in = np.vstack(all_binary_in)
-            binary_vectors_out = np.vstack(all_binary_out)
+                for i, shadow_idx in enumerate(local_indices):
+                    correctness_full[:, shadow_idx, :] = local_vectors[i]
 
-            audit_result = audit(binary_vectors_in, binary_vectors_out,
-                                alpha=args.alpha, delta=args.delta)
+        # Audit with tuned C
+        tuned_result = audit_multi_canary(
+            correctness_full, shadow_membership_mask, canary_indices,
+            logreg_C=args.logreg_c, seed=args.seed, alpha=args.alpha, delta=args.delta
+        )
 
-            np.save(output_dir / 'binary_vectors_in.npy', binary_vectors_in)
-            np.save(output_dir / 'binary_vectors_out.npy', binary_vectors_out)
-            np.save(output_dir / 'emp_eps.npy', np.array(audit_result['emp_eps']))
-            np.save(output_dir / 'mia_scores.npy', audit_result['scores'])
-            np.save(output_dir / 'mia_labels.npy', audit_result['labels'])
+        # Audit with default C = 1.0
+        default_result = audit_multi_canary(
+            correctness_full, shadow_membership_mask, canary_indices,
+            logreg_C=1.0, seed=args.seed, alpha=args.alpha, delta=args.delta
+        )
 
-            # Split mia_scores back into per-world arrays so print_tradeoff.py works.
-            labels = audit_result['labels']
-            scores = audit_result['scores']
-            np.save(output_dir / 'scores_in.npy',  scores[labels == 1].astype(np.float32))
-            np.save(output_dir / 'scores_out.npy', scores[labels == 0].astype(np.float32))
+        # Print results exactly like the paper's output
+        print("=" * 60)
+        print("AUDIT RESULTS (Leave-One-Out CV Logistic Regression)")
+        print("=" * 60)
+        print(f"Tuned C ({args.logreg_c}):")
+        print(f"  Balanced Accuracy : {tuned_result['balanced_accuracy']:.4f}")
+        print(f"  Empirical Epsilon : {tuned_result['emp_eps']:.6f}")
+        for fpr_val, tpr_val in tuned_result['tpr_at_fpr'].items():
+            print(f"  TPR at FPR {fpr_val*100:.1f}% : {tpr_val*100:.4f}%")
+            
+        print("-" * 40)
+        print("Default C (1.0):")
+        print(f"  Balanced Accuracy : {default_result['balanced_accuracy']:.4f}")
+        print(f"  Empirical Epsilon : {default_result['emp_eps']:.6f}")
+        for fpr_val, tpr_val in default_result['tpr_at_fpr'].items():
+            print(f"  TPR at FPR {fpr_val*100:.1f}% : {tpr_val*100:.4f}%")
+        print("=" * 60)
 
-            print(f"Empirical epsilon: {audit_result['emp_eps']:.6f}")
-            print(f"Outputs saved to {output_dir}")
+        # Save files for compatibility with plotting / downstream scripts
+        np.save(output_dir / 'binary_vectors_in.npy', tuned_result['correctness_in'])
+        np.save(output_dir / 'binary_vectors_out.npy', tuned_result['correctness_out'])
+        np.save(output_dir / 'emp_eps.npy', np.array(tuned_result['emp_eps']))
+        np.save(output_dir / 'mia_scores.npy', tuned_result['scores'])
+        np.save(output_dir / 'mia_labels.npy', tuned_result['labels'])
+        np.save(output_dir / 'scores_in.npy',  tuned_result['scores_in'].astype(np.float32))
+        np.save(output_dir / 'scores_out.npy', tuned_result['scores_out'].astype(np.float32))
+
+        print(f"Outputs saved to {output_dir}")
 
     if world_size > 1:
         dist.destroy_process_group()
