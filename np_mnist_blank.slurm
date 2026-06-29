@@ -3,9 +3,9 @@
 #SBATCH -o status/np_mnist_blank_%A_%a.o
 #SBATCH -e status/np_mnist_blank_%A_%a.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 50
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 1:00:00
+#SBATCH -t 15:00:00
 #SBATCH -A ASC25102
 #SBATCH --array=0-1
 
@@ -22,10 +22,10 @@ mkdir -p status
 DATA_NAME="mnist"
 MODEL_NAME="cnn"
 LR=3
-BATCH_SIZE=4000
-BLOCK_SIZE=4000
+BATCH_SIZE=4096
+BLOCK_SIZE=4096
 AUG_MULT=1
-N_REPS=400
+N_REPS=20000
 N_EPOCHS=100
 SEED=0
 TARGET_TYPE="blank"
@@ -74,6 +74,7 @@ srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
     --fixed_init \
     --sampling poisson \
     --holdout_audit \
+    --store_all_losses \
     '"${DEFENSE_ARGS}"' \
     --out '"${PARENT_OUT}"'/'"${OUT_NAME}"''
 

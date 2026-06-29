@@ -3,9 +3,9 @@
 #SBATCH -o status/tc_mnist_blank_%A_%a.o
 #SBATCH -e status/tc_mnist_blank_%A_%a.e
 #SBATCH -p gh
-#SBATCH -N 20
+#SBATCH -N 50
 #SBATCH --ntasks-per-node=1
-#SBATCH -t 4:00:00
+#SBATCH -t 15:00:00
 #SBATCH -A ASC25102
 #SBATCH --array=0-9
 
@@ -23,10 +23,10 @@ mkdir -p status
 DATA_NAME="mnist"
 MODEL_NAME="cnn"
 LR=3
-BATCH_SIZE=4000
-BLOCK_SIZE=4000
+BATCH_SIZE=4096
+BLOCK_SIZE=4096
 AUG_MULT=1
-N_REPS=400
+N_REPS=20000
 N_EPOCHS=100
 MAX_GRAD_NORM=1
 DELTA=1e-5
@@ -65,10 +65,8 @@ if [ "${DEFENSE}" = "true" ]; then
     DEFENSE_ARGS="--defense --defense_k ${DEFENSE_K} --defense_score_fn ${DEFENSE_SCORE_FN} --defense_score_norm ${DEFENSE_SCORE_NORM}"
 fi
 
-STORE_LOSSES_FLAG=""
-if [ "${EPSILON}" = "10.0" ]; then
-    STORE_LOSSES_FLAG="--store_all_losses"
-fi
+# Store per-sample losses for every task so we can audit all samples, not just the canary
+STORE_LOSSES_FLAG="--store_all_losses"
 
 srun --ntasks=$SLURM_NTASKS --nodes=$SLURM_JOB_NUM_NODES bash -c '
   MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1);
