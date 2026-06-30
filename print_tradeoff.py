@@ -103,7 +103,7 @@ def _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed):
     )
 
 
-def compute_eps_with_holdout(scores_in, scores_out, holdout_frac, method='GDP', seed=0):
+def compute_eps_with_holdout(scores_in, scores_out, holdout_frac, method='GDP', seed=0, m=M):
     """
     Compute eps by fitting threshold on fit set, evaluating on holdout.
 
@@ -112,25 +112,25 @@ def compute_eps_with_holdout(scores_in, scores_out, holdout_frac, method='GDP', 
     fit_si, fit_so, hold_si, hold_so = _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed)
 
     # Find best threshold on fit set
-    best_threshold, _ = _fit_best_threshold_lib(fit_si, fit_so, GAMMA, DELTA, method, m=M)
+    best_threshold, _ = _fit_best_threshold_lib(fit_si, fit_so, GAMMA, DELTA, method, m=m)
 
     # Evaluate on holdout
     holdout_eps = _eval_threshold_lib(hold_si, hold_so, best_threshold, GAMMA, DELTA, method)
     return holdout_eps
 
 
-def compute_eps_no_holdout(scores_in, scores_out, method='GDP'):
+def compute_eps_no_holdout(scores_in, scores_out, method='GDP', m=M):
     """
     Compute eps by fitting and evaluating on full data (not a valid lower bound).
     """
     # Find best threshold on full data
-    best_threshold, best_eps = _fit_best_threshold_lib(scores_in, scores_out, GAMMA, DELTA, method, m=M)
+    best_threshold, best_eps = _fit_best_threshold_lib(scores_in, scores_out, GAMMA, DELTA, method, m=m)
     return best_eps
 
 
-def _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method='GDP'):
+def _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method='GDP', m=M):
     """Find top-k thresholds ranked by eps on fit set."""
-    thresholds = _build_threshold_grid(fit_si, fit_so, M)
+    thresholds = _build_threshold_grid(fit_si, fit_so, m)
     scores, labels = _make_scores_labels(fit_si, fit_so)
 
     eps_by_threshold = []
@@ -143,7 +143,7 @@ def _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method='GDP'):
     return [t for _, t in eps_by_threshold[:k]]
 
 
-def compute_eps_top_k_holdout(scores_in, scores_out, holdout_frac, method='GDP', seed=0, k=5):
+def compute_eps_top_k_holdout(scores_in, scores_out, holdout_frac, method='GDP', seed=0, k=5, m=M):
     """
     Find top-k thresholds on fit set, evaluate all on holdout, report max eps.
 
@@ -153,7 +153,7 @@ def compute_eps_top_k_holdout(scores_in, scores_out, holdout_frac, method='GDP',
     fit_si, fit_so, hold_si, hold_so = _split_scores_for_holdout(scores_in, scores_out, holdout_frac, seed)
 
     # Find top-k thresholds on fit set
-    top_thresholds = _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method)
+    top_thresholds = _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method, m=m)
 
     # Evaluate each on holdout set
     holdout_eps_vals = []
@@ -174,6 +174,7 @@ def main():
         help='Directory containing losses_in.npy/scores_in.npy and losses_out.npy/scores_out.npy',
     )
     parser.add_argument('--seed', type=int, default=0, help='Random seed for holdout split')
+    parser.add_argument('--m', type=int, default=M, help='Number of threshold grid points')
     args = parser.parse_args()
 
     scores_in, scores_out = _load_scores(args.data_dir)
@@ -181,7 +182,7 @@ def main():
     print(f"Data dir: {args.data_dir}")
     print(f"scores_in:  n={len(scores_in)}  mean={scores_in.mean():.4f}  std={scores_in.std():.4f}")
     print(f"scores_out: n={len(scores_out)}  mean={scores_out.mean():.4f}  std={scores_out.std():.4f}")
-    print(f"delta={DELTA}  gamma={GAMMA}  m={M}\n")
+    print(f"delta={DELTA}  gamma={GAMMA}  m={args.m}\n")
 
     # Sign-flip so larger scores always mean "more likely to be IN".
     si, so = scores_in.copy(), scores_out.copy()
@@ -191,14 +192,14 @@ def main():
     results = {}
 
     # No holdout (upper bound)
-    results['GDP no holdout'] = compute_eps_no_holdout(si, so, method='GDP')
-    results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp')
+    results['GDP no holdout'] = compute_eps_no_holdout(si, so, method='GDP', m=args.m)
+    results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp', m=args.m)
 
     # Holdout splits
     for holdout_pct in [25, 50, 75]:
         holdout_frac = float(holdout_pct) / 100.0
-        results[f'GDP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='GDP', seed=args.seed)
-        results[f'CP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='cp', seed=args.seed)
+        results[f'GDP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='GDP', seed=args.seed, m=args.m)
+        results[f'CP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='cp', seed=args.seed, m=args.m)
 
     # Print first table (standard evaluation)
     print(f"{'Method':<20}  {'Empirical eps':>14}")
@@ -212,8 +213,8 @@ def main():
     top_k_results = {}
     for holdout_pct in [25, 50, 75]:
         holdout_frac = float(holdout_pct) / 100.0
-        top_k_results[f'GDP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='GDP', seed=args.seed, k=5)
-        top_k_results[f'CP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='cp', seed=args.seed, k=5)
+        top_k_results[f'GDP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='GDP', seed=args.seed, k=5, m=args.m)
+        top_k_results[f'CP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='cp', seed=args.seed, k=5, m=args.m)
 
     # Print second table
     print(f"\n{'Method':<20}  {'Empirical eps':>14}")
