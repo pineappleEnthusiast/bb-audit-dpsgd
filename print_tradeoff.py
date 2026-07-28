@@ -124,8 +124,8 @@ def compute_eps_no_holdout(scores_in, scores_out, method='GDP'):
     Compute eps by fitting and evaluating on full data (not a valid lower bound).
     """
     # Find best threshold on full data
-    best_threshold, best_eps = _fit_best_threshold_lib(scores_in, scores_out, GAMMA, DELTA, method, m=M)
-    return best_eps
+    best_threshold, best_eps, eps_hi = _fit_best_threshold_lib(scores_in, scores_out, GAMMA, DELTA, method, m=M)
+    return best_eps, eps_hi
 
 
 def _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method='GDP'):
@@ -194,33 +194,35 @@ def main():
     results['GDP no holdout'] = compute_eps_no_holdout(si, so, method='GDP')
     results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp')
 
-    # Holdout splits
-    for holdout_pct in [25, 50, 75]:
-        holdout_frac = float(holdout_pct) / 100.0
-        results[f'GDP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='GDP', seed=args.seed)
-        results[f'CP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='cp', seed=args.seed)
+    print(results['GDP no holdout'])
 
-    # Print first table (standard evaluation)
-    print(f"{'Method':<20}  {'Empirical eps':>14}")
-    print('-' * 37)
-    for label in ['GDP no holdout', 'GDP 25%', 'GDP 50%', 'GDP 75%', 'CP no holdout', 'CP 25%', 'CP 50%', 'CP 75%']:
-        eps = results[label]
-        print(f"{label:<20}  {eps:14.6f}")
+    # # Holdout splits
+    # for holdout_pct in [25, 50, 75]:
+    #     holdout_frac = float(holdout_pct) / 100.0
+    #     results[f'GDP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='GDP', seed=args.seed)
+    #     results[f'CP {holdout_pct}%'] = compute_eps_with_holdout(si, so, holdout_frac, method='cp', seed=args.seed)
 
-    # Compute second table (top-5 thresholds on fit, best on holdout)
-    print(f"\n(Top-5 evaluation: top-5 thresholds from fit set, max eps on holdout)")
-    top_k_results = {}
-    for holdout_pct in [25, 50, 75]:
-        holdout_frac = float(holdout_pct) / 100.0
-        top_k_results[f'GDP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='GDP', seed=args.seed, k=5)
-        top_k_results[f'CP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='cp', seed=args.seed, k=5)
+    # # Print first table (standard evaluation)
+    # print(f"{'Method':<20}  {'Empirical eps':>14}")
+    # print('-' * 37)
+    # for label in ['GDP no holdout', 'GDP 25%', 'GDP 50%', 'GDP 75%', 'CP no holdout', 'CP 25%', 'CP 50%', 'CP 75%']:
+    #     eps = results[label]
+    #     print(f"{label:<20}  {eps:14.6f}")
 
-    # Print second table
-    print(f"\n{'Method':<20}  {'Empirical eps':>14}")
-    print('-' * 37)
-    for label in ['GDP 25%', 'GDP 50%', 'GDP 75%', 'CP 25%', 'CP 50%', 'CP 75%']:
-        eps = top_k_results[label]
-        print(f"{label:<20}  {eps:14.6f}")
+    # # Compute second table (top-5 thresholds on fit, best on holdout)
+    # print(f"\n(Top-5 evaluation: top-5 thresholds from fit set, max eps on holdout)")
+    # top_k_results = {}
+    # for holdout_pct in [25, 50, 75]:
+    #     holdout_frac = float(holdout_pct) / 100.0
+    #     top_k_results[f'GDP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='GDP', seed=args.seed, k=5)
+    #     top_k_results[f'CP {holdout_pct}%'] = compute_eps_top_k_holdout(si, so, holdout_frac, method='cp', seed=args.seed, k=5)
+
+    # # Print second table
+    # print(f"\n{'Method':<20}  {'Empirical eps':>14}")
+    # print('-' * 37)
+    # for label in ['GDP 25%', 'GDP 50%', 'GDP 75%', 'CP 25%', 'CP 50%', 'CP 75%']:
+    #     eps = top_k_results[label]
+    #     print(f"{label:<20}  {eps:14.6f}")
 
 
 if __name__ == '__main__':
