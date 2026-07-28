@@ -20,9 +20,6 @@ def compute_eps_lower_gdp(results, alpha, delta):
 
     if mu_l < 0:
         return 0, mu_r
-        
-    if mu_r < 0:
-        return mu_l, 0
 
     try:
         # Step 3: convert mu-GDP to (eps, delta)-DP using Equation (6) from Tight Auditing DPML paper
@@ -41,7 +38,8 @@ def compute_eps_lower_gdp(results, alpha, delta):
 
         sol = root_scalar(eq6, bracket=[0, 50], method='brentq')
         eps_r = sol.root
-    except Exception:
+    except Exception as e:
+        print(e)
         eps_r = 0
 
     return eps_l, eps_r
