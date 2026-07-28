@@ -18,9 +18,11 @@ def compute_eps_lower_gdp(results, alpha, delta):
     mu_r = norm.ppf(1 - fpr_l) - norm.ppf(fnr_l)
 
 
-    if mu_l < 0 or mu_r < 0:
-        # GDP is not defined for mu < 0
-        return 0, 0
+    if mu_l < 0:
+        return 0, mu_r
+        
+    if mu_r < 0:
+        return mu_l, 0
 
     try:
         # Step 3: convert mu-GDP to (eps, delta)-DP using Equation (6) from Tight Auditing DPML paper
