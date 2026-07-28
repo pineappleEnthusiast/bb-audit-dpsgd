@@ -194,7 +194,7 @@ def main():
 
     # No holdout (upper bound)
     results['GDP no holdout'] = compute_eps_no_holdout(si, so, method='GDP')
-    results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp')
+    # results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp')
 
     print(results['GDP no holdout'])
 
