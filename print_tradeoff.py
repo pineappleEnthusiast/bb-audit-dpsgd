@@ -127,7 +127,7 @@ def compute_eps_no_holdout(scores_in, scores_out, method='GDP'):
     """
     # Find best threshold on full data
     best_threshold, best_eps, eps_hi = _fit_best_threshold_lib(scores_in, scores_out, GAMMA, DELTA, method, m=M)
-    return best_eps, eps_hi
+    return best_threshold, best_eps, eps_hi
 
 
 def _find_top_k_thresholds_on_fit(fit_si, fit_so, k, method='GDP'):
@@ -193,10 +193,20 @@ def main():
     results = {}
 
     # No holdout (upper bound)
-    results['GDP no holdout'] = compute_eps_no_holdout(si, so, method='GDP')
+    best_t, best_eps, eps_hi = compute_eps_no_holdout(si, so, method='GDP')
+    results['GDP no holdout'] = (best_eps, eps_hi)
     # results['CP no holdout'] = compute_eps_no_holdout(si, so, method='cp')
 
     print(results['GDP no holdout'])
+
+    # Print confusion matrix at best threshold
+    if best_t is not None:
+        tp = int(np.sum(si >= best_t))
+        fp = int(np.sum(so >= best_t))
+        fn = int(np.sum(si < best_t))
+        tn = int(np.sum(so < best_t))
+        print(f"\nAt best threshold t={best_t:.4f}:")
+        print(f"  TP={tp}  FP={fp}  FN={fn}  TN={tn}")
 
     # # Holdout splits
     # for holdout_pct in [25, 50, 75]:
