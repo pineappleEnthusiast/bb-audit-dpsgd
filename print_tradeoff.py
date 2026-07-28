@@ -60,14 +60,16 @@ def _fit_best_threshold_lib(fit_si, fit_so, alpha, delta, method, m=M):
     scores, labels = _make_scores_labels(fit_si, fit_so)
 
     best_eps = 0.0
+    keep_eps_hi = 0.0
     best_threshold = None
     for t in thresholds:
-        eps = compute_eps_lower_from_mia_given_t(scores, labels, alpha, delta, t, method)
+        eps, eps_hi = compute_eps_lower_from_mia_given_t(scores, labels, alpha, delta, t, method)
         if not np.isnan(float(eps)) and float(eps) > best_eps:
             best_eps = float(eps)
+            keep_eps_hi = float(eps_hi)
             best_threshold = float(t)
 
-    return best_threshold, best_eps
+    return best_threshold, best_eps, keep_eps_hi
 
 
 def _eval_threshold_lib(hold_si, hold_so, t, alpha, delta, method):
