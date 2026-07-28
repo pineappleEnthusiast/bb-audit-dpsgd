@@ -31,16 +31,19 @@ def compute_eps_lower_gdp(results, alpha, delta):
     except Exception:
         eps_l = 0
     
-    try:
-        # Step 3: convert mu-GDP to (eps, delta)-DP using Equation (6) from Tight Auditing DPML paper
-        def eq6(epsilon):
-            return norm.cdf(-epsilon / mu_r + mu_r / 2) - np.exp(epsilon) * norm.cdf(-epsilon / mu_r - mu_r / 2) - delta
+    if not np.isfinite(mu_r) or mu_r <= 0:
+        eps_r = float('inf') if mu_r > 0 else 0
+    else:
+        try:
+            # Step 3: convert mu-GDP to (eps, delta)-DP using Equation (6) from Tight Auditing DPML paper
+            def eq6(epsilon):
+                return norm.cdf(-epsilon / mu_r + mu_r / 2) - np.exp(epsilon) * norm.cdf(-epsilon / mu_r - mu_r / 2) - delta
 
-        sol = root_scalar(eq6, bracket=[0, 5000], method='brentq')
-        eps_r = sol.root
-    except Exception as e:
-        print(e)
-        eps_r = 0
+            sol = root_scalar(eq6, bracket=[0, 500], method='brentq')
+            eps_r = sol.root
+        except Exception as e:
+            print(e)
+            eps_r = 0
 
     return eps_l, eps_r
 
