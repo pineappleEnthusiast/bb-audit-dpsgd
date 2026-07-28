@@ -36,7 +36,7 @@ def compute_eps_lower_gdp(results, alpha, delta):
         def eq6(epsilon):
             return norm.cdf(-epsilon / mu_r + mu_r / 2) - np.exp(epsilon) * norm.cdf(-epsilon / mu_r - mu_r / 2) - delta
 
-        sol = root_scalar(eq6, bracket=[0, 500], method='brentq')
+        sol = root_scalar(eq6, bracket=[0, 5000], method='brentq')
         eps_r = sol.root
     except Exception as e:
         print(e)
