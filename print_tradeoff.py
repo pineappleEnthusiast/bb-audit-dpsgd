@@ -208,6 +208,33 @@ def main():
         print(f"\nAt best threshold t={best_t:.4f}:")
         print(f"  TP={tp}  FP={fp}  FN={fn}  TN={tn}")
 
+        # Compute raw eps from empirical FPR/FNR (no CI adjustment)
+        n_in = tp + fn
+        n_out = fp + tn
+        fpr = fp / n_out
+        fnr = fn / n_in
+        print(f"  FPR={fpr:.4f}  FNR={fnr:.4f}")
+
+        from scipy.stats import norm as sp_norm
+        from scipy.optimize import root_scalar as sp_root_scalar
+
+        mu_raw = sp_norm.ppf(1 - fpr) - sp_norm.ppf(fnr)
+        print(f"  mu_raw={mu_raw:.4f}")
+
+        if mu_raw > 0 and np.isfinite(mu_raw):
+            try:
+                def eq6_raw(epsilon):
+                    return (sp_norm.cdf(-epsilon / mu_raw + mu_raw / 2)
+                            - np.exp(epsilon) * sp_norm.cdf(-epsilon / mu_raw - mu_raw / 2)
+                            - DELTA)
+                sol = sp_root_scalar(eq6_raw, bracket=[0, 500], method='brentq')
+                raw_eps = sol.root
+            except Exception:
+                raw_eps = float('nan')
+        else:
+            raw_eps = 0.0
+        print(f"  raw_eps (no CI)={raw_eps:.6f}")
+
     # # Holdout splits
     # for holdout_pct in [25, 50, 75]:
     #     holdout_frac = float(holdout_pct) / 100.0
